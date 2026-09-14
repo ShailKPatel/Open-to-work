@@ -1,0 +1,209 @@
+{% extends "_base.html" %}
+{% block title %}Build a resume · Open to Work{% endblock %}
+{% block content %}
+<div x-data="resumeBuildApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+    {% set data_active = 'resume' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <div class="mt-8">
+      <h1 class="font-display text-4xl">Build a resume</h1>
+      <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+        A tailored resume is generated from your synced projects, your skills, and every
+        one of your experience entries, in full. Only the summary and which projects/skills
+        to include are written for you; your work history is never edited or trimmed.
+      </p>
+      <p class="mt-3 text-sm">
+        <a href="/portfolio/resume" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] underline">Resume library →</a>
+      </p>
+    </div>
+
+    <!-- No job picked yet: point at /jobs, this page has no posting
+         picker of its own any more (see /jobs). -->
+    <section x-cloak x-show="!jobPostingId" class="otw-tile p-6 mt-8 text-center">
+      <p class="text-[color:var(--muted)]">Pick a job posting to build a resume for.</p>
+      <a href="/jobs" class="otw-btn text-sm px-4 py-2 mt-4 inline-block">Go to Jobs →</a>
+    </section>
+
+    <template x-if="jobPostingId">
+      <div>
+        <section class="otw-tile p-6 mt-8">
+          <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Building for</p>
+          <template x-if="posting">
+            <h2 class="font-display text-xl mt-1">
+              <span x-text="posting.title"></span>
+              <span class="text-[color:var(--muted)]"> · </span>
+              <span class="text-[color:var(--muted)]" x-text="posting.company"></span>
+            </h2>
+          </template>
+          <p x-show="!posting && !postingError" class="text-sm text-[color:var(--muted)] mt-1">Loading…</p>
+          <p x-show="postingError" x-text="postingError" class="text-sm otw-error mt-1"></p>
+          <a href="/jobs" class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] underline mt-2 inline-block">Pick a different job →</a>
+        </section>
+
+        <!-- Closest existing resumes: a semantic-search shortcut to a
+             resume already in the library, instead of generating a new
+             one. Non-blocking: Generate below always stays available
+             alongside it. -->
+        <section x-cloak x-show="closestResumes.length > 0" class="otw-tile p-6 mt-6">
+          <h2 class="font-display text-xl">Closest existing resumes</h2>
+          <p class="mt-1 text-sm text-[color:var(--muted)]">Already have something close? View it, or generate a new one below.</p>
+          <div class="mt-4 space-y-2">
+            <template x-for="hit in closestResumes" :key="hit.resume.id">
+              <div class="otw-tile w-full p-3 flex items-center justify-between gap-3">
+                <span class="min-w-0">
+                  <span class="font-medium" x-text="hit.resume.name || hit.resume.filename"></span>
+                  <span class="text-xs text-[color:var(--muted)]" x-text="' · ' + Math.round(hit.score * 100) + '% match'"></span>
+                </span>
+                <a href="/portfolio/resume" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">View in library →</a>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <section class="otw-tile p-6 mt-6">
+          <h2 class="font-display text-xl">Template</h2>
+          <div class="mt-3 flex gap-4">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" x-model="template" value="onepage" class="otw-checkbox" />
+              <span>One page</span>
+            </label>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="radio" x-model="template" value="twopage" class="otw-checkbox" />
+              <span>Two pages</span>
+            </label>
+          </div>
+        </section>
+
+        <div class="mt-6">
+          <button
+            type="button"
+            class="otw-btn px-6 py-3"
+            :disabled="generating"
+            @click="generate()"
+          >
+            <span x-show="!generating">Generate resume from scratch</span>
+            <span x-show="generating" class="otw-working">Generating… this can take a minute</span>
+          </button>
+          <p x-show="generateError" x-text="generateError" class="text-sm otw-error mt-2"></p>
+        </div>
+
+        <section x-cloak x-show="resultUrl" class="otw-tile p-6 mt-6">
+          <div class="flex items-center justify-between flex-wrap gap-3">
+            <h2 class="font-display text-xl">Your resume</h2>
+            <div class="flex items-center gap-3">
+              <a :href="resultUrl" target="_blank" class="otw-btn-ghost text-sm px-4 py-2">Open in new tab</a>
+              <a :href="resultUrl" download="resume.pdf" class="otw-btn text-sm px-4 py-2">Download</a>
+            </div>
+          </div>
+          <p x-show="pageFitAchieved === false" class="text-sm otw-error mt-3">
+            Could not trim this down to the target page count automatically
+            (<span x-text="pageCount"></span> page<span x-show="pageCount !== 1">s</span> instead). This is
+            still the best version reached; edit it with a prompt on the resume library, or
+            switch templates and try again.
+          </p>
+          <p x-show="resultResumeId" class="text-sm mt-3">
+            Saved to your <a href="/portfolio/resume" class="underline hover:text-[color:var(--ink)]">resume library</a>; edit it there with a prompt any time.
+          </p>
+          <iframe x-show="resultUrl" :src="resultUrl" class="w-full mt-4" style="height: 70vh; border: 1px solid var(--line);"></iframe>
+        </section>
+      </div>
+    </template>
+  </main>
+</div>
+
+<script>
+  function resumeBuildApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      jobPostingId: null,
+      posting: null,
+      postingError: '',
+      closestResumes: [],
+      template: 'onepage',
+      generating: false,
+      generateError: '',
+      resultUrl: null,
+      resultResumeId: null,
+      pageFitAchieved: null,
+      pageCount: null,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        const params = new URLSearchParams(window.location.search);
+        const id = params.get('job_posting_id');
+        if (id) {
+          this.jobPostingId = Number(id);
+          await this.loadPosting();
+          await this.loadClosestResumes();
+        }
+      },
+
+      async loadPosting() {
+        try {
+          const res = await fetch(`/api/job-postings/${this.jobPostingId}`);
+          if (!res.ok) {
+            this.postingError = 'Could not find that job posting.';
+            return;
+          }
+          this.posting = await res.json();
+        } catch (e) {
+          this.postingError = 'Could not reach the server.';
+        }
+      },
+
+      async loadClosestResumes() {
+        try {
+          const res = await fetch(`/api/resume/search?account_id=${this.accountId}&job_posting_id=${this.jobPostingId}`);
+          if (res.ok) this.closestResumes = await res.json();
+        } catch (e) {
+          // best-effort suggestion panel, generating from scratch stays available either way
+        }
+      },
+
+      async generate() {
+        if (!this.jobPostingId) return;
+        this.generating = true;
+        this.generateError = '';
+        this.resultUrl = null;
+        this.resultResumeId = null;
+        try {
+          const res = await fetch('/api/resume-build/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              account_id: Number(this.accountId),
+              job_posting_id: this.jobPostingId,
+              template: this.template,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.generateError = err.detail || `Generation failed (${res.status}).`;
+            return;
+          }
+          this.pageFitAchieved = res.headers.get('X-Page-Fit-Achieved') === 'true';
+          this.pageCount = Number(res.headers.get('X-Page-Count') || '0');
+          this.resultResumeId = res.headers.get('X-Resume-Id') || null;
+          const blob = await res.blob();
+          this.resultUrl = URL.createObjectURL(blob);
+        } catch (e) {
+          this.generateError = 'Could not reach the server.';
+        } finally {
+          this.generating = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

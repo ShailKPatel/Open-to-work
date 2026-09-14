@@ -1,0 +1,223 @@
+\documentclass[10pt, letterpaper]{article}
+
+% Preamble is RenderCV's own template styling (github.com/rendercv/rendercv,
+% MIT licensed) - structural LaTeX only, no personal data. Every actual
+% resume value below is a Jinja placeholder filled in by
+% app/resume_build/context.py + app/resume_build/latex.py, never hardcoded
+% here.
+
+% Packages:
+\usepackage[
+    ignoreheadfoot,
+    top=1 cm,
+    bottom=1 cm,
+    left=2 cm,
+    right=2 cm,
+    footskip=1.0 cm,
+]{geometry}
+\usepackage{titlesec}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage[dvipsnames]{xcolor}
+\definecolor{primaryColor}{RGB}{0, 79, 144}
+\usepackage{enumitem}
+\usepackage{fontawesome5}
+\usepackage{amsmath}
+\usepackage[
+    pdftitle={\VAR{full_name | latex} - Resume},
+    pdfauthor={\VAR{full_name | latex}},
+    pdfcreator={LaTeX},
+    colorlinks=true,
+    urlcolor=black,
+    linkcolor=primaryColor
+]{hyperref}
+\usepackage[pscoord]{eso-pic}
+\usepackage{calc}
+\usepackage{bookmark}
+\usepackage{lastpage}
+\usepackage{changepage}
+\usepackage{paracol}
+\usepackage{ifthen}
+\usepackage{needspace}
+\usepackage{iftex}
+\usepackage{graphicx}
+
+\ifPDFTeX
+    \input{glyphtounicode}
+    \pdfgentounicode=1
+    \usepackage[utf8]{inputenc}
+    \usepackage{lmodern}
+\fi
+
+\AtBeginEnvironment{adjustwidth}{\partopsep0pt}
+\pagestyle{empty}
+\setcounter{secnumdepth}{0}
+\setlength{\parindent}{0pt}
+\setlength{\topskip}{0pt}
+\setlength{\columnsep}{0cm}
+\makeatletter
+\let\ps@customFooterStyle\ps@empty
+\makeatother
+\pagestyle{customFooterStyle}
+
+\titleformat{\section}{\needspace{4\baselineskip}\bfseries\large}{}{0pt}{}[\vspace{1pt}\titlerule]
+
+\titlespacing{\section}{-1pt}{0.3 cm}{0.2 cm}
+
+\renewcommand\labelitemi{$\circ$}
+\newenvironment{highlights}{
+    \begin{itemize}[
+        topsep=0.10 cm,
+        parsep=0.10 cm,
+        partopsep=0pt,
+        itemsep=0pt,
+        leftmargin=0.4 cm + 10pt
+    ]
+}{
+    \end{itemize}
+}
+
+\newenvironment{onecolentry}{
+    \begin{adjustwidth}{0.2 cm + 0.00001 cm}{0.2 cm + 0.00001 cm}
+}{
+    \end{adjustwidth}
+}
+
+\newenvironment{twocolentry}[2][]{
+    \onecolentry
+    \def\secondColumn{#2}
+    \setcolumnwidth{\fill, 4.5 cm}
+    \begin{paracol}{2}
+}{
+    \switchcolumn \raggedleft \secondColumn
+    \end{paracol}
+    \endonecolentry
+}
+
+\newenvironment{header}{
+    \setlength{\topsep}{0pt}\par\kern\topsep\centering\linespread{1.5}
+}{
+    \par\kern\topsep
+}
+
+\let\hrefWithoutArrow\href
+
+\begin{document}
+
+    \begin{header}
+        \textbf{\fontsize{24 pt}{24 pt}\selectfont \VAR{full_name | latex}}
+        \vspace{0.3 cm}
+
+        \normalsize
+        {\color{black}
+        \BLOCK{for item in contact_items}
+        \BLOCK{if item.href}\mbox{\hrefWithoutArrow{\VAR{item.href}}{\VAR{item.icon}\ \VAR{item.text | latex}}}\BLOCK{else}\mbox{\VAR{item.icon}\ \VAR{item.text | latex}}\BLOCK{endif}%
+        \BLOCK{if not loop.last}\kern 0.20 cm\textbar\kern 0.20 cm\BLOCK{endif}
+        \BLOCK{endfor}
+        }
+
+        \BLOCK{if social_items}
+        \vspace{0.05 cm}
+
+        {\color{black}
+        \BLOCK{for item in social_items}
+        \BLOCK{if item.href}\mbox{\hrefWithoutArrow{\VAR{item.href}}{\VAR{item.icon}\ \VAR{item.text | latex}}}\BLOCK{else}\mbox{\VAR{item.icon}\ \VAR{item.text | latex}}\BLOCK{endif}%
+        \BLOCK{if not loop.last}\kern 0.20 cm\textbar\kern 0.20 cm\BLOCK{endif}
+        \BLOCK{endfor}
+        }
+        \BLOCK{endif}
+
+    \end{header}
+
+\vspace{0.3 cm - 0.3 cm}
+
+\BLOCK{if summary}
+\section{Summary}
+\begin{onecolentry}
+    \VAR{summary | latex}
+\end{onecolentry}
+\BLOCK{endif}
+
+\BLOCK{if experience}
+\section{Experience}
+\BLOCK{for role in experience}
+    \begin{twocolentry}{
+        \BLOCK{if role.location}\textit{\VAR{role.location | latex}} \\\BLOCK{endif}
+        \textit{\VAR{role.date_range | latex}}
+    }
+        \textbf{\VAR{role.title | latex}} \\
+        \textit{\VAR{role.company | latex}}
+    \end{twocolentry}
+
+    \BLOCK{if role.points}
+    \vspace{0.10 cm}
+    \begin{onecolentry}
+        \begin{highlights}
+            \BLOCK{for point in role.points}
+            \item \VAR{point | latex}
+            \BLOCK{endfor}
+        \end{highlights}
+    \end{onecolentry}
+    \BLOCK{endif}
+
+    \BLOCK{if not loop.last}\vspace{0.10 cm}\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+\BLOCK{if projects}
+\section{Projects}
+\BLOCK{for project in projects}
+\begin{twocolentry}{
+    \textit{\VAR{project.date_range | latex}}
+}
+    \textbf{\VAR{project.name | latex}}\BLOCK{if project.tagline} -- \VAR{project.tagline | latex}\BLOCK{endif} \\
+    \BLOCK{if project.href}\href{\VAR{project.href}}{\VAR{project.url_display | latex}}\BLOCK{endif}
+\end{twocolentry}
+
+\BLOCK{if project.points}
+\vspace{0.10 cm}
+\begin{onecolentry}
+    \begin{highlights}
+        \BLOCK{for point in project.points}
+        \item \VAR{point | latex}
+        \BLOCK{endfor}
+    \end{highlights}
+\end{onecolentry}
+\BLOCK{endif}
+\BLOCK{if project.note}
+\vspace{0.05cm}
+{\small \VAR{project.note | latex}}
+\BLOCK{endif}
+
+\BLOCK{if not loop.last}\vspace{0.2 cm}\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+\BLOCK{if education}
+\section{Education}
+\BLOCK{for school in education}
+    \begin{twocolentry}{
+        \textit{\VAR{school.date_range | latex}}
+    }
+        \textbf{\VAR{school.institution | latex}} \\
+        \textit{\VAR{school.degree | latex}}
+    \end{twocolentry}
+    \BLOCK{if not loop.last}\vspace{0.10 cm}\BLOCK{endif}
+\BLOCK{endfor}
+\BLOCK{endif}
+
+\BLOCK{if technologies}
+\section{Technologies}
+\begin{onecolentry}
+    \VAR{technologies | join(', ') | latex}
+\end{onecolentry}
+\BLOCK{endif}
+
+\BLOCK{if skills}
+\section{Skills}
+\begin{onecolentry}
+    \VAR{skills | join(', ') | latex}
+\end{onecolentry}
+\BLOCK{endif}
+
+\end{document}

@@ -1,0 +1,265 @@
+{% extends "_base.html" %}
+{% block title %}Home · Open to Work{% endblock %}
+{% block content %}
+<div x-data="homeApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'home' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
+    <h1 class="font-display text-4xl">Welcome<span x-show="accountName">, <span x-text="accountName"></span></span></h1>
+    <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+      Portfolio, job tracking, and resume building are all live. These numbers
+      cover your synced/added data plus what your collected job postings ask for.
+    </p>
+
+    <div x-cloak x-show="!loading" class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <a href="/portfolio/projects" class="otw-kpi block">
+        <p class="otw-kpi-label">Projects</p>
+        <p class="otw-kpi-value" x-text="totalProjects"></p>
+        <p class="otw-kpi-sub">synced from GitHub, or added by hand</p>
+      </a>
+
+      <div class="otw-kpi otw-kpi-clickable" @click="showPendingModal = true">
+        <p class="otw-kpi-label">Pending</p>
+        <p class="otw-kpi-value" :class="pendingCount ? '' : 'otw-good'" x-text="pendingCount"></p>
+        <p class="otw-kpi-sub" :class="pendingCount ? '' : 'otw-good'" x-text="pendingCount ? 'click to review →' : '✓ nothing pending'"></p>
+      </div>
+
+      <a href="/portfolio/skills" class="otw-kpi block">
+        <p class="otw-kpi-label">Skills</p>
+        <p class="otw-kpi-value" x-text="skillCount"></p>
+        <p class="otw-kpi-sub">across projects, experience, and manual entries</p>
+      </a>
+
+      <a href="/apis" class="otw-kpi otw-kpi-clickable block">
+        <p class="otw-kpi-label" x-text="llmStatus.provider_label + ' API'"></p>
+        <p class="otw-kpi-value text-2xl" x-show="llmStatus.configured">
+          <span x-show="llmStatus.status === 'valid'" class="otw-tick" style="font-size: 1.2rem;"><span>✓</span> Working</span>
+          <span x-show="llmStatus.status === 'invalid'" class="otw-error" style="font-size: 1.2rem;">✕ Invalid</span>
+          <span x-show="llmStatus.status === 'rate_limited'" style="font-size: 1.2rem; color: var(--accent);">○ Exhausted</span>
+          <span x-show="llmStatus.status === 'unknown'" class="text-[color:var(--muted)]" style="font-size: 1.2rem;">Unchecked</span>
+        </p>
+        <p class="otw-kpi-value text-2xl text-[color:var(--muted)]" x-show="!llmStatus.configured">Not set up</p>
+        <p class="otw-kpi-sub">key that powers skill extraction</p>
+      </a>
+
+      <a href="/jobs/analytics" class="otw-kpi block">
+        <p class="otw-kpi-label">Missing skills</p>
+        <p class="otw-kpi-value" :class="missingSkillCount ? '' : 'otw-good'" x-text="missingSkillCount"></p>
+        <p class="otw-kpi-sub" x-text="missingSkillCount ? 'asked for across your saved jobs' : (jobPostingCount ? '✓ you cover everything asked' : 'add jobs to see this')"></p>
+      </a>
+    </div>
+
+    <!-- Recommended skills: top missing skills across every collected job
+         posting, most-requested first, computed by app/api/job_analytics.py. -->
+    <div x-cloak x-show="!loading && topMissingSkills.length > 0" class="mt-8 otw-tile p-5">
+      <div class="flex items-center justify-between gap-4">
+        <h2 class="font-display text-lg">Recommended skills</h2>
+        <a href="/jobs/analytics" class="text-xs underline">Full breakdown →</a>
+      </div>
+      <p class="text-xs text-[color:var(--muted)] mt-1">
+        Most-requested skills across your saved job postings that aren't in your portfolio yet.
+      </p>
+      <div class="flex flex-wrap gap-1.5 mt-3">
+        <template x-for="s in topMissingSkills" :key="s.skill">
+          <span class="otw-chip" x-text="s.skill + ' (' + s.posting_count + ')'"></span>
+        </template>
+      </div>
+    </div>
+
+    <div x-cloak x-show="!loading" class="mt-10">
+      <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Jump to</p>
+      <div class="mt-3 flex flex-wrap gap-2">
+        <a href="/sync" class="otw-btn-ghost text-sm px-4 py-2">Sync GitHub</a>
+        <a href="/jobs" class="otw-btn-ghost text-sm px-4 py-2">Add a job posting</a>
+        <a href="/portfolio/resume/build" class="otw-btn-ghost text-sm px-4 py-2">Build a resume</a>
+        <a href="/portfolio/experience" class="otw-btn-ghost text-sm px-4 py-2">Add experience</a>
+        <a href="/monitor" class="otw-btn-ghost text-sm px-4 py-2">Monitor usage</a>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- Pending-review popup: reprocessing left. One entry point, cards
+       inside; never a navigation away from here. -->
+  <div x-show="showPendingModal" x-cloak class="otw-modal-backdrop" @keydown.escape.window="showPendingModal = false" @click.self="showPendingModal = false">
+    <div class="otw-modal">
+      <div class="flex items-start justify-between gap-4">
+        <h3 class="font-display text-2xl">Review pending information <span class="text-[color:var(--muted)]">(<span x-text="pendingCount"></span>)</span></h3>
+        <button @click="showPendingModal = false" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] text-xl leading-none">×</button>
+      </div>
+
+      <p x-show="pendingCount === 0" class="mt-4 text-sm text-[color:var(--muted)] otw-good">✓ Nothing pending.</p>
+
+      <div class="mt-5 space-y-3">
+        <!-- Reprocessing: one aggregate card, not one per project. -->
+        <div x-show="unprocessedVisible.length > 0" x-cloak class="otw-pending-card">
+          <p class="text-sm">
+            Reprocessing left for
+            <span x-text="unprocessedVisible.map(p => p.name).join(', ')"></span>.
+          </p>
+          <p class="mt-1 text-xs text-[color:var(--muted)]" x-show="processing">
+            <span class="otw-working">Processing in the background</span>
+            <span x-show="processedTotal"> · <span x-text="processedIndex"></span> / <span x-text="processedTotal"></span></span>
+          </p>
+          <div class="flex items-center justify-between gap-3 mt-3">
+            <button @click="dismissReprocessCard" class="otw-btn-ghost text-xs px-3 py-1.5">Do it later</button>
+            <button @click="reprocessAll" :disabled="processing" class="otw-btn-accent text-xs px-3 py-1.5">
+              <span x-show="!processing">Reprocess</span>
+              <span x-show="processing" class="otw-working">Working…</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .otw-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    color: var(--ink);
+    background: rgba(242, 242, 240, 0.06);
+    border: 1px solid var(--line);
+  }
+  .otw-pending-card { background: var(--surface); border: 1px solid var(--line); padding: 1.1rem 1.25rem; }
+</style>
+
+<script>
+  function homeApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      projects: [],
+      skills: [],
+      skillCount: 0,
+      llmStatus: { configured: false, status: 'unknown', provider_label: 'LLM' },
+      skillDemand: [],
+      jobPostingCount: 0,
+      loading: true,
+      processing: false,
+      processedIndex: 0,
+      processedTotal: 0,
+      extractionSource: null,
+      showPendingModal: false,
+      reprocessCardDismissed: false,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.load();
+      },
+
+      get totalProjects() {
+        return this.projects.length;
+      },
+
+      get unprocessed() {
+        return this.projects.filter(
+          (p) => p.skill_extraction_status !== 'extracted' && p.skill_extraction_status !== 'no_signal'
+        );
+      },
+
+      get unprocessedVisible() {
+        return this.reprocessCardDismissed ? [] : this.unprocessed;
+      },
+
+      get pendingCount() {
+        return this.unprocessedVisible.length;
+      },
+
+      get topMissingSkills() {
+        return this.skillDemand.filter((d) => !d.have_it).slice(0, 10);
+      },
+
+      get missingSkillCount() {
+        return this.skillDemand.filter((d) => !d.have_it).length;
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const [projectsRes, skillsRes, defaultProviderRes, keysRes, demandRes, jobsRes] = await Promise.all([
+            fetch(`/api/projects?account_id=${this.accountId}`),
+            fetch(`/api/skills?account_id=${this.accountId}`),
+            fetch('/api/api-keys/default-provider'),
+            fetch('/api/api-keys'),
+            fetch(`/api/job-analytics/skills-demand?account_id=${this.accountId}`),
+            fetch(`/api/job-postings?account_id=${this.accountId}`),
+          ]);
+          this.projects = await projectsRes.json();
+          this.skills = await skillsRes.json();
+          this.skillCount = this.skills.length;
+          this.skillDemand = demandRes.ok ? await demandRes.json() : [];
+          const jobs = jobsRes.ok ? await jobsRes.json() : [];
+          this.jobPostingCount = jobs.length;
+
+          // "the" LLM status tile follows whichever provider the bulk
+          // tier (skill extraction) actually dispatches to; see
+          // app/api/api_keys.py's default-provider endpoint.
+          const defaultProvider = await defaultProviderRes.json();
+          const keys = await keysRes.json();
+          const activeKey = keys.find((k) => k.provider === defaultProvider.bulk && k.is_active);
+          this.llmStatus = activeKey
+            ? { configured: true, status: activeKey.status, provider_label: defaultProvider.bulk_label }
+            : { configured: false, status: 'unknown', provider_label: defaultProvider.bulk_label };
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      // Same background-job pattern as data/projects: starts (or
+      // reattaches to) the extraction worker and streams its progress.
+      // A mid-batch rate limit stops the job but keeps everything already
+      // done; this same button resumes it later.
+      reprocessAll() {
+        if (this.extractionSource) return;
+        this.processing = true;
+        const source = new EventSource(
+          `/api/projects/process-pending/stream?account_id=${this.accountId}`
+        );
+        this.extractionSource = source;
+        source.onmessage = (e) => {
+          const state = JSON.parse(e.data);
+          if (state.stage === 'repo_progress') {
+            this.processedIndex = state.index;
+            this.processedTotal = state.total;
+            this.load();
+          }
+          if (!state.running) {
+            this.processing = false;
+            source.close();
+            this.extractionSource = null;
+            this.load();
+          }
+        };
+        source.onerror = () => {
+          this.processing = false;
+          source.close();
+          this.extractionSource = null;
+        };
+      },
+
+      // "Do it later" on the reprocessing card: hides it for the rest of
+      // this visit, doesn't touch any project. Resets on reload.
+      dismissReprocessCard() {
+        this.reprocessCardDismissed = true;
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+    };
+  }
+</script>
+{% endblock %}

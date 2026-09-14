@@ -1,0 +1,45 @@
+.PHONY: test test-live lint ingest eval dev up down start
+
+# Local (host venv): fast inner loop while writing code.
+test:
+	.venv/bin/pytest
+
+# Real, billed LLM calls. Needs LIVE_LLM_API_KEY (and optionally
+# LIVE_LLM_PROVIDER) in the environment; see tests/live/test_llm_live.py.
+# Never run by `make test` or CI. -s keeps the per-test cost/token report.
+test-live:
+	.venv/bin/pytest tests/live -v -s
+
+lint:
+	.venv/bin/ruff check .
+	.venv/bin/mypy app
+
+# username is always explicit, no env default (it's a per-call input, not
+# deployment config). Not named USER: that collides with the shell's own
+# $USER env var, which Make inherits, so a missing argument would silently
+# fall back to your OS login name instead of erroring.
+# make ingest ACCOUNT=octocat
+ingest:
+	.venv/bin/python -m app.ingest.github $(ACCOUNT)
+
+# make eval ACCOUNT=<account_id>: runs the retrieval/groundedness eval
+# suite (app/evals/), prints a metrics table, writes the full report to
+# evals/results/. Pass NO_GROUNDEDNESS=1 to skip the LLM-judge pass (no
+# LLM calls, no cost, no API key needed) and only run the free
+# dense-vs-BM25 retrieval comparison.
+eval:
+	.venv/bin/python -m app.evals $(ACCOUNT) $(if $(NO_GROUNDEDNESS),--no-groundedness,)
+
+# Docker (one command, no host Python setup).
+up:
+	docker compose up --build
+
+down:
+	docker compose down
+
+dev: up
+
+# Friendlier front door: checks Docker, preps .env, waits for health,
+# opens the browser. `make up` still works for raw compose output.
+start:
+	./start.sh

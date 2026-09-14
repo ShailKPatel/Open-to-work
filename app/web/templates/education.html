@@ -1,0 +1,221 @@
+{% extends "_base.html" %}
+{% block title %}Education · Open to Work{% endblock %}
+{% block content %}
+<div x-data="educationApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
+    {% set data_active = 'education' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <div class="flex items-start justify-between gap-4 flex-wrap mt-8">
+      <div>
+        <h1 class="font-display text-4xl">Education</h1>
+        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+          Schools and degrees, entered by hand. Included on a generated
+          resume in full every time, same as your work experience, never
+          picked or trimmed.
+        </p>
+      </div>
+      <button @click="addingOpen = !addingOpen" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">
+        <span x-show="!addingOpen">+ Add education</span>
+        <span x-show="addingOpen">Close</span>
+      </button>
+    </div>
+
+    <div x-show="addingOpen" x-cloak class="otw-tile p-6 mt-6">
+      <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">New entry</p>
+      <div class="mt-3 grid gap-3 sm:grid-cols-2">
+        <input x-model="draft.institution" placeholder="Institution" class="otw-input" />
+        <input x-model="draft.degree" placeholder="Degree (e.g. B.Eng in Computer Science)" class="otw-input" />
+        <input x-model="draft.location" placeholder="Location (optional)" class="otw-input sm:col-span-2" />
+        <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+          Start date
+          <input x-model="draft.start_date" type="date" class="otw-input" />
+        </label>
+        <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+          End date (leave blank if in progress)
+          <input x-model="draft.end_date" type="date" class="otw-input" />
+        </label>
+      </div>
+      <p x-show="addError" class="otw-error text-xs mt-3" x-text="addError"></p>
+      <div class="flex items-center justify-end gap-2 mt-4">
+        <button @click="cancelAdd" class="otw-btn-ghost text-sm px-4 py-2">Cancel</button>
+        <button
+          @click="submitAdd"
+          :disabled="!draft.institution.trim() || !draft.degree.trim() || adding"
+          class="otw-btn text-sm px-4 py-2"
+        >
+          <span x-show="!adding">Add education</span>
+          <span x-show="adding" class="otw-working">Adding…</span>
+        </button>
+      </div>
+    </div>
+
+    <div x-cloak x-show="!loading && rows.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No education added yet.</p>
+    </div>
+
+    <div x-cloak class="mt-10 space-y-4">
+      <template x-for="row in rows" :key="row.id">
+        <div class="otw-tile p-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div class="min-w-0 flex-1 grid gap-2 sm:grid-cols-2">
+              <input
+                x-model="edit[row.id].institution"
+                @blur="save(row)"
+                @keydown.enter.prevent="$event.target.blur()"
+                placeholder="Institution"
+                class="otw-input font-display text-lg bg-transparent border-none outline-none p-0 focus:outline-none"
+              />
+              <input
+                x-model="edit[row.id].degree"
+                @blur="save(row)"
+                @keydown.enter.prevent="$event.target.blur()"
+                placeholder="Degree"
+                class="otw-input text-sm text-[color:var(--muted)] bg-transparent border-none outline-none p-0 focus:outline-none"
+              />
+              <input
+                x-model="edit[row.id].location"
+                @blur="save(row)"
+                @keydown.enter.prevent="$event.target.blur()"
+                placeholder="Location (optional)"
+                class="otw-input text-sm bg-transparent border-none outline-none p-0 focus:outline-none"
+              />
+              <div class="flex items-center gap-2 text-sm">
+                <input x-model="edit[row.id].start_date" @change="save(row)" type="date" class="otw-input text-xs" />
+                <span class="text-[color:var(--muted)]">–</span>
+                <input x-model="edit[row.id].end_date" @change="save(row)" type="date" class="otw-input text-xs" />
+              </div>
+            </div>
+            <button
+              @click="remove(row)"
+              :disabled="deleting[row.id]"
+              class="otw-btn-danger-text text-xs shrink-0"
+            >
+              <span x-show="!deleting[row.id]">Delete</span>
+              <span x-show="deleting[row.id]" class="otw-working">Deleting…</span>
+            </button>
+          </div>
+          <p x-show="saveError[row.id]" class="otw-error text-xs mt-2" x-text="saveError[row.id]"></p>
+        </div>
+      </template>
+    </div>
+  </main>
+</div>
+
+<script>
+  function educationApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      rows: [],
+      loading: true,
+      addingOpen: false,
+      adding: false,
+      addError: '',
+      draft: { institution: '', degree: '', location: '', start_date: '', end_date: '' },
+      edit: {},
+      saveError: {},
+      deleting: {},
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.load();
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const res = await fetch(`/api/education?account_id=${this.accountId}`);
+          this.rows = await res.json();
+          for (const r of this.rows) {
+            this.edit[r.id] = {
+              institution: r.institution, degree: r.degree, location: r.location || '',
+              start_date: r.start_date || '', end_date: r.end_date || '',
+            };
+          }
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      cancelAdd() {
+        this.addingOpen = false;
+        this.addError = '';
+        this.draft = { institution: '', degree: '', location: '', start_date: '', end_date: '' };
+      },
+
+      async submitAdd() {
+        this.adding = true;
+        this.addError = '';
+        try {
+          const res = await fetch('/api/education', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              account_id: Number(this.accountId),
+              institution: this.draft.institution,
+              degree: this.draft.degree,
+              location: this.draft.location || null,
+              start_date: this.draft.start_date || null,
+              end_date: this.draft.end_date || null,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.addError = err.detail || 'Could not add this entry.';
+            return;
+          }
+          this.cancelAdd();
+          await this.load();
+        } finally {
+          this.adding = false;
+        }
+      },
+
+      async save(row) {
+        const e = this.edit[row.id];
+        this.saveError[row.id] = '';
+        const res = await fetch(`/api/education/${row.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            institution: e.institution,
+            degree: e.degree,
+            location: e.location || null,
+            start_date: e.start_date || null,
+            end_date: e.end_date || null,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          this.saveError[row.id] = err.detail || 'Could not save.';
+          return;
+        }
+        const updated = await res.json();
+        const idx = this.rows.findIndex((r) => r.id === row.id);
+        if (idx !== -1) this.rows[idx] = updated;
+      },
+
+      async remove(row) {
+        if (!confirm(`Delete "${row.institution}"?`)) return;
+        this.deleting[row.id] = true;
+        try {
+          await fetch(`/api/education/${row.id}`, { method: 'DELETE' });
+          this.rows = this.rows.filter((r) => r.id !== row.id);
+        } finally {
+          this.deleting[row.id] = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,318 @@
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import app.core.db as db_module
+from app.core.db import init_db
+from app.core.llm import (
+    BudgetExceededError,
+    LLMRateLimitedError,
+    complete,
+    file_part,
+    image_part,
+    system_message,
+    user_message,
+)
+from app.core.settings import get_settings
+
+
+@dataclass
+class FakeMessage:
+    content: str
+
+
+@dataclass
+class FakeChoice:
+    message: FakeMessage
+
+
+@dataclass
+class FakeUsage:
+    prompt_tokens: int = 10
+    completion_tokens: int = 5
+
+
+@dataclass
+class FakeResponse:
+    choices: list = field(default_factory=list)
+    usage: FakeUsage = field(default_factory=FakeUsage)
+
+
+def _reset_db(tmp_path: Path, monthly_budget_usd: float = 20.0):
+    import os
+
+    db_module._engine = None
+    db_module._SessionLocal = None
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
+    os.environ["MONTHLY_BUDGET_USD"] = str(monthly_budget_usd)
+    get_settings.cache_clear()
+    init_db()
+
+
+def _fake_completion_fn(response_text: str, cost: float = 0.01, calls: list | None = None):
+    def _fn(**kwargs):
+        if calls is not None:
+            calls.append(kwargs)
+        return FakeResponse(choices=[FakeChoice(message=FakeMessage(content=response_text))])
+
+    return _fn
+
+
+def test_complete_records_call_and_cost(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.0123, raising=False
+    )
+    calls: list = []
+    result = complete(
+        "bulk",
+        [{"role": "user", "content": "hello"}],
+        _completion_fn=_fake_completion_fn("hi there", calls=calls),
+    )
+
+    assert result.content == "hi there"
+    assert result.cached is False
+    assert result.cost_usd == 0.0123
+    assert len(calls) == 1
+
+
+def test_complete_second_identical_call_hits_cache(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.05, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    first = complete("bulk", messages, _completion_fn=_fake_completion_fn("hi", calls=calls))
+    second = complete("bulk", messages, _completion_fn=_fake_completion_fn("hi", calls=calls))
+
+    assert first.cost_usd == 0.05
+    assert second.cost_usd == 0.0
+    assert second.cached is True
+    assert second.content == "hi"
+    # underlying completion function only invoked once; the cache path
+    # must not call it at all
+    assert len(calls) == 1
+
+
+def test_complete_different_tier_is_not_a_cache_hit(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    complete("bulk", messages, _completion_fn=_fake_completion_fn("a", calls=calls))
+    complete("quality", messages, _completion_fn=_fake_completion_fn("b", calls=calls))
+
+    assert len(calls) == 2
+
+
+def test_complete_refuses_dispatch_over_budget(tmp_path, monkeypatch):
+    _reset_db(tmp_path, monthly_budget_usd=0.01)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.05, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "expensive"}]
+
+    complete("bulk", messages, _completion_fn=_fake_completion_fn("first", calls=calls))
+    assert len(calls) == 1
+
+    try:
+        complete(
+            "bulk",
+            [{"role": "user", "content": "different prompt"}],
+            _completion_fn=_fake_completion_fn("second", calls=calls),
+        )
+        raised = False
+    except BudgetExceededError:
+        raised = True
+
+    assert raised is True
+    # budget check must happen before dispatch, so no second call is made
+    assert len(calls) == 1
+
+
+def test_complete_wraps_litellm_rate_limit_error(tmp_path, monkeypatch):
+    """Real litellm.RateLimitError (the exception class a provider 429
+    raises through litellm), not a stand-in, so the wrap is proven against
+    the real type rather than something string-matched."""
+    import litellm
+
+    _reset_db(tmp_path)
+
+    def raises_rate_limit(**kwargs):
+        raise litellm.RateLimitError(
+            message="quota exceeded", llm_provider="openai", model="gpt-4o-mini"
+        )
+
+    try:
+        complete("bulk", [{"role": "user", "content": "x"}], _completion_fn=raises_rate_limit)
+        raised = None
+    except LLMRateLimitedError as e:
+        raised = e
+
+    assert raised is not None
+    assert "quota exceeded" in str(raised)
+
+
+def test_complete_does_not_wrap_other_errors(tmp_path, monkeypatch):
+    """Only rate-limit errors get translated. Anything else (network
+    error, auth error, etc.) propagates as whatever litellm actually
+    raised, unchanged."""
+    _reset_db(tmp_path)
+
+    def raises_something_else(**kwargs):
+        raise ConnectionError("network unreachable")
+
+    try:
+        complete("bulk", [{"role": "user", "content": "x"}], _completion_fn=raises_something_else)
+        raised = None
+    except Exception as e:
+        raised = e
+
+    assert isinstance(raised, ConnectionError)
+    assert not isinstance(raised, LLMRateLimitedError)
+
+
+def test_user_message_text_only_is_plain_string_content():
+    msg = user_message("describe this repo")
+    assert msg == {"role": "user", "content": "describe this repo"}
+
+
+def test_user_message_with_images_builds_multimodal_content():
+    msg = user_message("what's in this screenshot?", images=[b"\x89PNG\r\n"])
+    assert msg["role"] == "user"
+    assert msg["content"][0] == {"type": "text", "text": "what's in this screenshot?"}
+    assert msg["content"][1]["type"] == "image_url"
+    assert msg["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_image_part_passes_through_url_unchanged():
+    part = image_part("https://example.com/screenshot.png")
+    assert part == {
+        "type": "image_url",
+        "image_url": {"url": "https://example.com/screenshot.png"},
+    }
+
+
+def test_system_message():
+    assert system_message("be terse") == {"role": "system", "content": "be terse"}
+
+
+def test_file_part_bytes_becomes_base64_file_data():
+    part = file_part(b"%PDF-1.4 fake", mime_type="application/pdf")
+    assert part["type"] == "file"
+    assert part["file"]["file_data"].startswith("data:application/pdf;base64,")
+
+
+def test_file_part_string_passes_through_as_file_id():
+    part = file_part("https://example.com/doc.pdf")
+    assert part == {"type": "file", "file": {"file_id": "https://example.com/doc.pdf"}}
+
+
+def test_user_message_with_files_builds_multimodal_content():
+    msg = user_message("summarize this doc", files=[b"%PDF-1.4 fake"])
+    assert msg["content"][0] == {"type": "text", "text": "summarize this doc"}
+    assert msg["content"][1]["type"] == "file"
+
+
+def test_user_message_with_both_images_and_files():
+    msg = user_message("compare these", images=[b"img"], files=[b"doc"])
+    types = [part["type"] for part in msg["content"]]
+    assert types == ["text", "image_url", "file"]
+
+
+def test_complete_response_carries_token_counts(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    result = complete(
+        "bulk",
+        [{"role": "user", "content": "hello"}],
+        _completion_fn=_fake_completion_fn("hi"),
+    )
+    assert result.tokens_in == 10  # FakeUsage defaults
+    assert result.tokens_out == 5
+
+
+def test_complete_records_account_id_even_via_injected_completion_fn(tmp_path, monkeypatch):
+    """account_id is a plain parameter to complete(), independent of the
+    key-resolution branch a test's _completion_fn bypasses (see LLMCall's
+    docstring in app/core/db.py); it should land on the row either way."""
+    from sqlalchemy import select
+
+    from app.core.db import LLMCall, get_db
+
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    complete(
+        "bulk",
+        [{"role": "user", "content": "hello"}],
+        account_id=7,
+        _completion_fn=_fake_completion_fn("hi"),
+    )
+
+    db = get_db()
+    row = db.execute(select(LLMCall).order_by(LLMCall.id.desc())).scalars().first()
+    db.close()
+    assert row.account_id == 7
+    assert row.key_id is None  # never resolved a key on the injected-fn path
+
+
+def test_complete_resolves_and_records_key_id_on_real_dispatch(tmp_path, monkeypatch):
+    """The one path that DOES resolve a real ApiKey: no _completion_fn
+    passed, so complete() calls app.core.api_keys_store.resolve_dispatch_key()
+    itself and should stamp the resolved key's id onto the LLMCall row."""
+    from sqlalchemy import select
+
+    from app.core import api_keys_store
+    from app.core.db import LLMCall, get_db
+
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "app.core.api_keys_store.validate_credentials", lambda provider, creds: ("valid", "ok")
+    )
+    added, _ = api_keys_store.add_key("openai", "Test key", {"api_key": "sk-test"}, None)
+    assert added is not None
+    key_id = added["id"]
+
+    monkeypatch.setattr(
+        "litellm.completion",
+        _fake_completion_fn("hi from openai"),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.02, raising=False
+    )
+
+    complete("bulk", [{"role": "user", "content": "hello"}], account_id=3)
+
+    db = get_db()
+    row = db.execute(select(LLMCall).order_by(LLMCall.id.desc())).scalars().first()
+    db.close()
+    assert row.key_id == key_id
+    assert row.account_id == 3
+    assert row.cost_usd == 0.02
+
+
+def test_complete_accepts_multimodal_user_message(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.02, raising=False
+    )
+    calls: list = []
+    messages = [user_message("what does this diagram show?", images=[b"fake-bytes"])]
+
+    result = complete(
+        "quality", messages, _completion_fn=_fake_completion_fn("a flowchart", calls=calls)
+    )
+
+    assert result.content == "a flowchart"
+    # the multimodal message shape reached the completion call untouched
+    assert calls[0]["messages"][0]["content"][1]["type"] == "image_url"

@@ -1,0 +1,370 @@
+{% extends "_base.html" %}
+{% block title %}Projects · Open to Work{% endblock %}
+{% block content %}
+<div x-data="projectsApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
+    {% set data_active = 'projects' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <div class="flex items-start justify-between gap-4 flex-wrap mt-8">
+      <div>
+        <h1 class="font-display text-4xl">Detected projects</h1>
+        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+          Every repo pulled from GitHub, and what we could extract from each.
+          Nothing here required a full read of the repository, just its
+          README, its short description, and its declared dependencies.
+        </p>
+      </div>
+      <button @click="addingOpen = !addingOpen" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">
+        <span x-show="!addingOpen">+ Add project manually</span>
+        <span x-show="addingOpen">Close</span>
+      </button>
+    </div>
+
+    <!-- Manual add: same editable-inline pattern as the detail page, no
+         separate "form mode", just fields and a Save (here, Add). -->
+    <div x-show="addingOpen" x-cloak class="otw-tile p-6 mt-6">
+      <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">New project</p>
+      <div class="mt-3 grid gap-3 sm:grid-cols-2">
+        <input x-model="draft.name" placeholder="Project title" class="otw-input" />
+        <input x-model="draft.full_name" placeholder="owner/repo (optional)" class="otw-input" />
+        <input x-model="draft.url" placeholder="https://… (optional)" class="otw-input sm:col-span-2" />
+        <input x-model="draft.primary_language" placeholder="Primary language (optional)" class="otw-input" />
+        <label class="flex items-center gap-2 text-sm text-[color:var(--muted)]">
+          <input type="checkbox" x-model="draft.is_fork" class="otw-checkbox" /> Fork
+        </label>
+        <textarea x-model="draft.description" rows="2" placeholder="Description (optional)" class="otw-input sm:col-span-2"></textarea>
+        <textarea x-model="draft.readme" rows="4" placeholder="README text (optional), used for skill extraction" class="otw-input sm:col-span-2 text-xs font-mono"></textarea>
+      </div>
+      <p x-show="addError" class="otw-error text-xs mt-3" x-text="addError"></p>
+      <div class="flex items-center justify-end gap-2 mt-4">
+        <button @click="cancelAdd" class="otw-btn-ghost text-sm px-4 py-2">Cancel</button>
+        <button
+          @click="submitAdd"
+          :disabled="!draft.name.trim() || adding"
+          class="otw-btn text-sm px-4 py-2"
+        >
+          <span x-show="!adding">Add project</span>
+          <span x-show="adding" class="otw-working">Adding…</span>
+        </button>
+      </div>
+    </div>
+
+    <div x-show="processing" x-cloak class="mt-8 otw-tile p-4 text-sm">
+      <div class="flex items-center justify-between gap-4">
+        <p>
+          <span class="otw-working">Extracting skills in the background</span>
+          <span x-show="processedTotal"> · <span x-text="processedIndex"></span> / <span x-text="processedTotal"></span></span>
+        </p>
+      </div>
+      <p class="mt-1 text-xs text-[color:var(--muted)]">
+        Runs on its own, browse anywhere else on the site: this keeps going and this page picks it back up when you return.
+      </p>
+    </div>
+
+    <div x-cloak x-show="!processing && rateLimitedCount > 0" class="mt-8 otw-tile p-5 flex items-center justify-between gap-4">
+      <p class="text-sm">
+        <span x-text="rateLimitedCount"></span> repo<span x-show="rateLimitedCount !== 1">s</span>
+        stopped early (LLM rate limit or budget cap). Everything already
+        extracted stays that way; this only picks up where it left off.
+      </p>
+      <button @click="continueProcessing" class="otw-btn-accent text-sm px-4 py-2 shrink-0">
+        Continue processing →
+      </button>
+    </div>
+
+    <div x-cloak x-show="!loading && projects.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No projects yet.</p>
+      <a href="/sync" class="otw-btn inline-block mt-4">Sync GitHub</a>
+      <p class="mt-3 text-sm">
+        <a href="/settings/sources" class="text-[color:var(--muted)] underline hover:text-[color:var(--ink)]">
+          or manage what to fetch from →
+        </a>
+      </p>
+    </div>
+
+    <div x-cloak class="mt-10 space-y-4">
+      <template x-for="project in pagedProjects" :key="project.id">
+        <div
+          @click="goToDetail(project)"
+          class="otw-tile p-6 cursor-pointer"
+        >
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <div class="flex items-center gap-3">
+                <button
+                  @click.stop="toggleStar(project)"
+                  :disabled="Boolean(starBusy[project.id])"
+                  :title="project.starred ? 'Unstar' : 'Star (max ' + maxStarred + ')'"
+                  class="text-lg leading-none"
+                  :class="project.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+                ><span x-text="project.starred ? '★' : '☆'"></span></button>
+                <a
+                  @click.stop
+                  :href="'/portfolio/projects/' + project.id"
+                  class="font-display text-xl hover:underline"
+                  x-text="project.name"
+                ></a>
+                <a
+                  x-show="project.url"
+                  @click.stop
+                  :href="project.url"
+                  target="_blank"
+                  rel="noopener"
+                  class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] underline"
+                >GitHub ↗</a>
+                <span x-show="project.is_fork" class="text-xs text-[color:var(--muted)] border border-[color:var(--line)] px-2 py-0.5">fork</span>
+                <span x-show="project.is_manual" class="text-xs text-[color:var(--muted)] border border-[color:var(--line)] px-2 py-0.5">added manually</span>
+              </div>
+              <p class="text-sm text-[color:var(--muted)] mt-1" x-text="project.description || 'No description on GitHub.'"></p>
+              <p x-show="!project.has_readme" class="text-xs text-[color:var(--muted)] mt-2 italic">
+                No README in this repo.
+                <template x-if="!project.description">
+                  <span> No description either, nothing to extract skills from beyond declared dependencies.</span>
+                </template>
+              </p>
+              <p x-show="starError[project.id]" class="otw-error text-xs mt-1" x-text="starError[project.id]"></p>
+            </div>
+
+            <div class="text-right shrink-0">
+              <p class="text-sm" x-text="statusLabel(project)"></p>
+              <p x-show="project.skill_count > 0" class="text-xs text-[color:var(--muted)] mt-0.5">
+                <span x-text="project.skill_count"></span> skill<span x-show="project.skill_count !== 1">s</span>
+              </p>
+              <button
+                @click.stop="reprocess(project)"
+                :disabled="Boolean(reprocessing[project.id])"
+                class="otw-btn-accent text-xs px-3 py-1.5 mt-2"
+              >
+                <span x-show="!reprocessing[project.id]">Reprocess</span>
+                <span x-show="reprocessing[project.id]" class="otw-working">Working…</span>
+              </button>
+            </div>
+          </div>
+
+          <p
+            x-show="project.skill_extraction_status === 'failed' || project.skill_extraction_status === 'rate_limited'"
+            class="text-xs text-[color:var(--muted)] mt-3 border-t border-[color:var(--line)] pt-3"
+          >
+            <span x-text="project.skill_extraction_error"></span>
+          </p>
+        </div>
+      </template>
+    </div>
+
+    <div x-cloak x-show="!loading && projects.length > pageSize" class="otw-pagination">
+      <button @click="page = Math.max(1, page - 1)" :disabled="page <= 1">← Prev</button>
+      <span>Page <span x-text="page"></span> of <span x-text="totalPages"></span></span>
+      <button @click="page = Math.min(totalPages, page + 1)" :disabled="page >= totalPages">Next →</button>
+    </div>
+  </main>
+</div>
+
+<script>
+  function projectsApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      projects: [],
+      loading: true,
+      processing: false,
+      processedIndex: 0,
+      processedTotal: 0,
+      extractionSource: null,
+      reprocessing: {},
+      maxStarred: 3,
+      starBusy: {},
+      starError: {},
+      addingOpen: false,
+      adding: false,
+      addError: '',
+      draft: { name: '', full_name: '', url: '', description: '', primary_language: '', readme: '', is_fork: false },
+      page: 1,
+      pageSize: 10,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.load();
+        // Auto-start only for never-attempted repos. NOT for
+        // "rate_limited": those already got explicitly stopped once;
+        // silently re-running them on every page load could just re-hit
+        // the same limit again with no user say in it. See
+        // continueProcessing() for the explicit, user-initiated retry.
+        // Either way this does NOT block the page: it opens an SSE
+        // connection and updates a status line as events arrive, same as
+        // sync's own progress UI; the rest of the page is usable
+        // immediately regardless of how long extraction takes.
+        const hasPending = this.projects.some((p) => p.skill_extraction_status === 'pending');
+        if (hasPending) this.watchProcessing();
+      },
+
+      get rateLimitedCount() {
+        return this.projects.filter((p) => p.skill_extraction_status === 'rate_limited').length;
+      },
+
+      get totalPages() {
+        return Math.max(1, Math.ceil(this.projects.length / this.pageSize));
+      },
+
+      get pagedProjects() {
+        const start = (this.page - 1) * this.pageSize;
+        return this.projects.slice(start, start + this.pageSize);
+      },
+
+      async continueProcessing() {
+        this.watchProcessing();
+      },
+
+      // Starts (or just reattaches to) the background extraction job and
+      // streams its progress. Never awaited by init(): the page is fully
+      // interactive immediately regardless of how long extraction takes.
+      watchProcessing() {
+        if (this.extractionSource) return; // already watching
+        this.processing = true;
+        const source = new EventSource(
+          `/api/projects/process-pending/stream?account_id=${this.accountId}`
+        );
+        this.extractionSource = source;
+        source.onmessage = (e) => {
+          const state = JSON.parse(e.data);
+          if (state.stage === 'repo_progress') {
+            this.processedIndex = state.index;
+            this.processedTotal = state.total;
+            // Refresh the list on every repo so a project's status flips
+            // from "not yet processed" to "extracted" live, not just once
+            // the whole batch finishes: this page (or the dashboard) can
+            // be sitting open the whole time and show progress as it happens.
+            this.load();
+          } else if (state.stage === 'rate_limited' || state.stage === 'done' || state.stage === 'error') {
+            this.processing = false;
+            source.close();
+            this.extractionSource = null;
+            this.load();
+          }
+          if (!state.running) {
+            this.processing = false;
+            source.close();
+            this.extractionSource = null;
+            this.load();
+          }
+        };
+        source.onerror = () => {
+          this.processing = false;
+          source.close();
+          this.extractionSource = null;
+        };
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const res = await fetch(`/api/projects?account_id=${this.accountId}`);
+          this.projects = await res.json();
+          if (this.page > this.totalPages) this.page = this.totalPages;
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      statusLabel(project) {
+        switch (project.skill_extraction_status) {
+          case 'extracted': return '✓ Skills extracted';
+          case 'failed': return '✗ Extraction failed';
+          case 'rate_limited': return '○ Rate limited, retry later';
+          case 'no_signal': return '· Nothing to extract';
+          default: return '⋯ Not yet processed';
+        }
+      },
+
+      goToDetail(project) {
+        window.location.href = `/portfolio/projects/${project.id}`;
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+
+      cancelAdd() {
+        this.addingOpen = false;
+        this.addError = '';
+        this.draft = { name: '', full_name: '', url: '', description: '', primary_language: '', readme: '', is_fork: false };
+      },
+
+      async submitAdd() {
+        if (!this.draft.name.trim()) return;
+        this.adding = true;
+        this.addError = '';
+        try {
+          const res = await fetch('/api/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), ...this.draft }),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            this.addError = body.detail || 'Could not add project, try again.';
+            return;
+          }
+          const created = await res.json();
+          window.location.href = `/portfolio/projects/${created.id}`;
+        } finally {
+          this.adding = false;
+        }
+      },
+
+      async reprocess(project) {
+        this.reprocessing[project.id] = true;
+        try {
+          const res = await fetch(`/api/projects/${project.id}/reprocess`, { method: 'POST' });
+          const updated = await res.json();
+          const idx = this.projects.findIndex((p) => p.id === project.id);
+          if (idx !== -1) this.projects[idx] = updated;
+        } finally {
+          this.reprocessing[project.id] = false;
+        }
+      },
+
+      async patchProject(project, body) {
+        const res = await fetch(`/api/projects/${project.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          this.starError = { ...this.starError, [project.id]: err.detail || 'Could not save.' };
+          return null;
+        }
+        this.starError = { ...this.starError, [project.id]: '' };
+        const updated = await res.json();
+        const idx = this.projects.findIndex((p) => p.id === project.id);
+        if (idx !== -1) this.projects[idx] = updated;
+        return updated;
+      },
+
+      // Reordering to reflect the new star happens on next full
+      // load() (page revisit, or after extraction progress refreshes it),
+      // same in-place-update-without-resort pattern reprocess() above uses.
+      async toggleStar(project) {
+        this.starBusy[project.id] = true;
+        try {
+          await this.patchProject(project, { starred: !project.starred });
+        } finally {
+          this.starBusy[project.id] = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,185 @@
+{% extends "_base.html" %}
+{% block title %}Skills · Open to Work{% endblock %}
+{% block content %}
+<div x-data="skillsApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+    {% set data_active = 'skills' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <div class="flex items-start justify-between gap-4 flex-wrap mt-8">
+      <div>
+        <h1 class="font-display text-4xl">Skills</h1>
+        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+          Every skill across your projects and experience, in one place,
+          plus anything you'd rather just add by hand, not tied to either.
+        </p>
+      </div>
+      <button @click="addingOpen = !addingOpen" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">
+        <span x-show="!addingOpen">+ Add a skill</span>
+        <span x-show="addingOpen">Close</span>
+      </button>
+    </div>
+
+    <div x-show="addingOpen" x-cloak class="otw-tile p-6 mt-6">
+      <div class="flex items-center gap-3">
+        <input x-model="newSkillName" placeholder="Skill name" class="otw-input flex-1" @keydown.enter="submitAdd" />
+        <button @click="submitAdd" :disabled="!newSkillName.trim() || adding" class="otw-btn text-sm px-4 py-2 shrink-0">
+          <span x-show="!adding">Add</span>
+          <span x-show="adding" class="otw-working">Adding…</span>
+        </button>
+      </div>
+      <p x-show="addError" class="otw-error text-xs mt-3" x-text="addError"></p>
+    </div>
+
+    <div x-cloak x-show="!loading && groups.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No skills yet, add one, or link one from a project or experience entry.</p>
+    </div>
+
+    <div x-cloak class="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 items-start">
+      <template x-for="group in pagedGroups" :key="group.name">
+        <div class="otw-tile p-5">
+          <div class="flex items-start justify-between gap-4">
+            <div class="flex items-center gap-2 min-w-0">
+              <button
+                @click="toggleStar(group)"
+                :disabled="Boolean(starBusy[group.name])"
+                :title="group.starred ? 'Unstar' : 'Star'"
+                class="text-lg leading-none shrink-0"
+                :class="group.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+              ><span x-text="group.starred ? '★' : '☆'"></span></button>
+              <p class="font-display text-lg" x-text="group.name"></p>
+            </div>
+            <button
+              x-show="group.manual_skill_id"
+              @click="removeManual(group)"
+              class="text-xs otw-btn-danger-text shrink-0"
+            >Remove</button>
+          </div>
+          <p x-show="group.sources.length === 0" class="text-xs text-[color:var(--muted)] mt-2 italic">
+            Added manually, not linked to anything yet.
+          </p>
+          <div x-show="group.sources.length > 0" class="mt-3 flex flex-wrap gap-2">
+            <template x-for="source in group.sources" :key="source.type + '-' + source.evidence_id">
+              <a
+                :href="source.type === 'project' ? '/portfolio/projects/' + source.ref_id : '/portfolio/experience/' + source.ref_id"
+                class="text-xs border border-[color:var(--line)] px-2 py-1 hover:text-[color:var(--ink)] text-[color:var(--muted)]"
+                x-text="(source.type === 'project' ? 'Project: ' : 'Experience: ') + source.name"
+              ></a>
+            </template>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <div x-cloak x-show="!loading && groups.length > pageSize" class="otw-pagination">
+      <button @click="page = Math.max(1, page - 1)" :disabled="page <= 1">← Prev</button>
+      <span>Page <span x-text="page"></span> of <span x-text="totalPages"></span></span>
+      <button @click="page = Math.min(totalPages, page + 1)" :disabled="page >= totalPages">Next →</button>
+    </div>
+  </main>
+</div>
+
+<script>
+  function skillsApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      groups: [],
+      loading: true,
+      addingOpen: false,
+      adding: false,
+      addError: '',
+      newSkillName: '',
+      starBusy: {},
+      page: 1,
+      pageSize: 20,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.load();
+      },
+
+      get totalPages() {
+        return Math.max(1, Math.ceil(this.groups.length / this.pageSize));
+      },
+
+      get pagedGroups() {
+        const start = (this.page - 1) * this.pageSize;
+        return this.groups.slice(start, start + this.pageSize);
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const res = await fetch(`/api/skills?account_id=${this.accountId}`);
+          this.groups = await res.json();
+          if (this.page > this.totalPages) this.page = this.totalPages;
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+
+      async submitAdd() {
+        if (!this.newSkillName.trim()) return;
+        this.adding = true;
+        this.addError = '';
+        try {
+          const res = await fetch('/api/skills', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), name: this.newSkillName }),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            this.addError = body.detail || 'Could not add, try again.';
+            return;
+          }
+          this.newSkillName = '';
+          this.addingOpen = false;
+          await this.load();
+        } finally {
+          this.adding = false;
+        }
+      },
+
+      // Flips in place; starred-first reordering happens on the next
+      // load(), same as the projects list, so the card doesn't jump away
+      // from under the cursor.
+      async toggleStar(group) {
+        this.starBusy[group.name] = true;
+        try {
+          const res = await fetch('/api/skills/star', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), name: group.name, starred: !group.starred }),
+          });
+          if (res.ok) group.starred = !group.starred;
+        } finally {
+          this.starBusy[group.name] = false;
+        }
+      },
+
+      async removeManual(group) {
+        if (!group.manual_skill_id) return;
+        await fetch(`/api/skills/${group.manual_skill_id}`, { method: 'DELETE' });
+        await this.load();
+      },
+    };
+  }
+</script>
+{% endblock %}

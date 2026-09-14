@@ -1,0 +1,181 @@
+{% extends "_base.html" %}
+{% block title %}Skill analytics · Open to Work{% endblock %}
+{% block content %}
+<div x-data="jobsAnalyticsApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'jobs' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-5xl mx-auto w-full">
+    <div class="mt-8 flex items-start justify-between gap-4 flex-wrap">
+      <div>
+        <h1 class="font-display text-4xl">Skill analytics</h1>
+        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+          Across every job posting you've collected: what's asked for most, what you already
+          have, and what's worth picking up next. Computed directly from the postings on
+          <a href="/jobs" class="underline hover:text-[color:var(--ink)]">Jobs</a>, not a guess.
+        </p>
+      </div>
+      <a href="/jobs" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">← Jobs</a>
+    </div>
+
+    <div x-show="loading" class="mt-16 text-center text-[color:var(--muted)]">Loading…</div>
+
+    <div x-cloak x-show="!loading && demand.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No extracted job postings yet. Add some on
+        <a href="/jobs" class="underline">Jobs</a> first.</p>
+    </div>
+
+    <div x-cloak x-show="!loading && demand.length > 0">
+
+      <!-- Role family filter -->
+      <section class="mt-8">
+        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By role</h2>
+        <div class="flex flex-wrap gap-2 mt-3">
+          <button type="button" class="otw-chip" :class="roleFamilyId === null ? 'otw-chip-active' : ''" @click="selectRole(null)">
+            All roles · <span x-text="demand.length"></span> skills
+          </button>
+          <template x-for="rf in roleFamilies" :key="rf.id">
+            <button type="button" class="otw-chip" :class="roleFamilyId === rf.id ? 'otw-chip-active' : ''" @click="selectRole(rf.id)">
+              <span x-text="rf.canonical_name"></span> · <span x-text="rf.posting_count"></span>
+            </button>
+          </template>
+        </div>
+      </section>
+
+      <!-- Skill demand bars -->
+      <section class="otw-tile p-6 mt-8">
+        <h2 class="font-display text-xl">Most in-demand skills</h2>
+        <p class="text-xs text-[color:var(--muted)] mt-1">Ranked by how many postings ask for them. Bars in your accent color are skills you already have; the rest are gaps.</p>
+        <div class="mt-5 space-y-2.5">
+          <template x-for="d in demand" :key="d.skill">
+            <div>
+              <div class="flex items-center justify-between text-sm">
+                <span class="flex items-center gap-2">
+                  <span x-text="d.skill"></span>
+                  <span x-show="d.dominant_level" class="text-xs text-[color:var(--muted)]" x-text="'(' + d.dominant_level + ')'"></span>
+                </span>
+                <span class="text-xs text-[color:var(--muted)]" x-text="d.posting_count + (d.posting_count === 1 ? ' posting' : ' postings')"></span>
+              </div>
+              <div class="mt-1 h-2 w-full" style="background: rgba(242,242,240,0.08);">
+                <div
+                  class="h-2"
+                  :style="'width:' + Math.round((d.posting_count / maxCount) * 100) + '%; background:' + (d.have_it ? 'var(--ink)' : 'var(--danger)') + ';'"
+                ></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </section>
+
+      <!-- Have vs missing summary -->
+      <section class="mt-8 grid gap-5" style="grid-template-columns: 1fr 1fr;">
+        <div class="otw-tile p-5">
+          <h3 class="font-display text-lg">You already have</h3>
+          <div class="flex flex-wrap gap-1.5 mt-3">
+            <template x-for="d in demand.filter((d) => d.have_it)" :key="d.skill">
+              <span class="otw-chip" style="border-color: var(--ink);" x-text="d.skill"></span>
+            </template>
+            <span x-show="demand.filter((d) => d.have_it).length === 0" class="text-xs text-[color:var(--muted)]">None of the requested skills are in your portfolio yet.</span>
+          </div>
+        </div>
+        <div class="otw-tile p-5">
+          <h3 class="font-display text-lg">Worth picking up</h3>
+          <p class="text-xs text-[color:var(--muted)] mt-1">Missing skills, most-requested first.</p>
+          <div class="flex flex-wrap gap-1.5 mt-3">
+            <template x-for="d in demand.filter((d) => !d.have_it).slice(0, 15)" :key="d.skill">
+              <span class="otw-chip otw-error" x-text="d.skill + ' (' + d.posting_count + ')'"></span>
+            </template>
+            <span x-show="demand.filter((d) => !d.have_it).length === 0" class="text-xs text-[color:var(--muted)]">You already cover everything requested.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Per-role-family top skills -->
+      <section class="mt-8" x-show="roleFamilyId === null && roleFamilies.length > 0">
+        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Per role</h2>
+        <div class="mt-3 grid gap-5" style="grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));">
+          <template x-for="rf in roleFamilies" :key="rf.id">
+            <div class="otw-tile p-5">
+              <div class="flex items-center justify-between">
+                <h3 class="font-display text-base" x-text="rf.canonical_name"></h3>
+                <span class="text-xs text-[color:var(--muted)]" x-text="rf.posting_count + (rf.posting_count === 1 ? ' posting' : ' postings')"></span>
+              </div>
+              <div class="flex flex-wrap gap-1.5 mt-3">
+                <template x-for="s in rf.top_skills" :key="s">
+                  <span class="otw-chip" x-text="s"></span>
+                </template>
+              </div>
+              <button type="button" class="text-xs underline mt-3" @click="selectRole(rf.id)">Focus on this role →</button>
+            </div>
+          </template>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<style>
+  .otw-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    color: var(--ink);
+    background: rgba(242, 242, 240, 0.06);
+    border: 1px solid var(--line);
+    cursor: pointer;
+  }
+  .otw-chip-active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+</style>
+
+<script>
+  function jobsAnalyticsApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      loading: true,
+      demand: [],
+      roleFamilies: [],
+      roleFamilyId: null,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.loadRoleFamilies();
+        await this.loadDemand();
+        this.loading = false;
+      },
+
+      get maxCount() {
+        return Math.max(1, ...this.demand.map((d) => d.posting_count));
+      },
+
+      async loadRoleFamilies() {
+        const res = await fetch(`/api/job-analytics/role-families?account_id=${this.accountId}`);
+        this.roleFamilies = res.ok ? await res.json() : [];
+      },
+
+      async loadDemand() {
+        const url = this.roleFamilyId
+          ? `/api/job-analytics/skills-demand?account_id=${this.accountId}&role_family_id=${this.roleFamilyId}`
+          : `/api/job-analytics/skills-demand?account_id=${this.accountId}`;
+        const res = await fetch(url);
+        this.demand = res.ok ? await res.json() : [];
+      },
+
+      async selectRole(id) {
+        this.roleFamilyId = id;
+        await this.loadDemand();
+      },
+    };
+  }
+</script>
+{% endblock %}

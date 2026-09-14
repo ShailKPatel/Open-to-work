@@ -1,0 +1,518 @@
+{% extends "_base.html" %}
+{% block title %}Project · Open to Work{% endblock %}
+{% block content %}
+<div x-data="projectDetailApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-32 max-w-3xl mx-auto w-full">
+    {% set data_active = 'projects' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <a href="/portfolio/projects" class="mt-8 inline-block text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">← all projects</a>
+
+    <div x-show="!loading && !project" x-cloak class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">Project not found.</p>
+    </div>
+
+    <template x-if="project">
+      <div class="mt-6">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div class="flex-1 min-w-[16rem]">
+            <input
+              x-model="draft.name"
+              placeholder="Project title"
+              class="otw-input font-display text-4xl px-0"
+            />
+            <div class="flex items-center gap-2 mt-2">
+              <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">Full name</span>
+              <input x-model="draft.full_name" placeholder="owner/repo" class="otw-input text-sm" />
+            </div>
+          </div>
+          <div class="flex flex-col items-end gap-2 shrink-0">
+            <button
+              @click="draft.starred = !draft.starred"
+              :title="draft.starred ? 'Unstar' : 'Star (max 3)'"
+              class="text-2xl leading-none"
+              :class="draft.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+            ><span x-text="draft.starred ? '★' : '☆'"></span></button>
+            <a
+              x-show="draft.url"
+              :href="draft.url"
+              target="_blank"
+              rel="noopener"
+              class="otw-btn-ghost text-sm px-4 py-2"
+            >View link ↗</a>
+            <span x-show="project.is_manual" class="text-xs text-[color:var(--muted)] border border-[color:var(--line)] px-2 py-0.5">added manually</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 mt-3">
+          <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">URL</span>
+          <input x-model="draft.url" placeholder="https://…" class="otw-input text-sm" />
+        </div>
+
+        <label class="flex items-center gap-2 mt-4 text-sm text-[color:var(--muted)]">
+          <input type="checkbox" x-model="draft.is_fork" class="otw-checkbox" />
+          Fork
+        </label>
+
+        <div class="mt-6">
+          <p class="text-xs uppercase tracking-wide text-[color:var(--muted)] mb-1">Description</p>
+          <textarea
+            x-model="draft.description"
+            rows="2"
+            placeholder="No description."
+            class="otw-input text-sm"
+          ></textarea>
+        </div>
+
+        <div class="mt-6 flex flex-wrap gap-x-8 gap-y-3 text-sm text-[color:var(--muted)] items-end">
+          <div>
+            <p class="text-xs uppercase tracking-wide">Primary language</p>
+            <input x-model="draft.primary_language" placeholder="–" class="otw-input mt-1 w-40" />
+          </div>
+          <span><span x-text="project.stars"></span> star<span x-show="project.stars !== 1">s</span></span>
+          <span><span x-text="project.commits_authored"></span> commit<span x-show="project.commits_authored !== 1">s</span> by you</span>
+          <span x-show="project.last_commit_at">last commit <span x-text="formatDate(project.last_commit_at)"></span></span>
+        </div>
+
+        <!-- Save / cancel bar, always present, just inert until something changes.
+             No separate edit mode: every field above is live-editable, this is
+             the one place that turns those edits into a request. -->
+        <div class="otw-tile p-4 mt-6 flex items-center justify-between gap-4">
+          <p class="text-xs text-[color:var(--muted)]">
+            <span x-show="isDirty">Unsaved changes.</span>
+            <span x-show="!isDirty">No changes.</span>
+            <span x-show="saveError" class="otw-error block mt-1" x-text="saveError"></span>
+          </p>
+          <div class="flex items-center gap-2 shrink-0">
+            <button
+              @click="cancel"
+              :disabled="!isDirty || saving"
+              class="otw-btn-ghost text-sm px-4 py-2"
+            >Cancel</button>
+            <button
+              @click="save"
+              :disabled="!isDirty || saving"
+              class="otw-btn text-sm px-4 py-2"
+            >
+              <span x-show="!saving">Save</span>
+              <span x-show="saving" class="otw-working">Saving…</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="otw-tile p-6 mt-8">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Skill extraction</p>
+              <p class="mt-1" x-text="statusLabel()"></p>
+            </div>
+            <button
+              @click="reprocess"
+              :disabled="Boolean(reprocessing)"
+              class="otw-btn-accent text-xs px-3 py-1.5"
+            >
+              <span x-show="!reprocessing">Reprocess</span>
+              <span x-show="reprocessing" class="otw-working">Working…</span>
+            </button>
+          </div>
+          <p
+            x-show="project.skill_extraction_status === 'failed' || project.skill_extraction_status === 'rate_limited'"
+            class="text-xs text-[color:var(--muted)] mt-3 border-t border-[color:var(--line)] pt-3"
+            x-text="project.skill_extraction_error"
+          ></p>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="font-display text-xl">Skills detected</h2>
+          <p x-show="skillDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet.</p>
+          <div x-show="skillDrafts.length > 0" class="mt-3 space-y-3">
+            <template x-for="s in skillDrafts" :key="s.id">
+              <div class="border-b border-[color:var(--line)] pb-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <input x-model="s.skill" class="otw-input text-sm flex-1 min-w-[8rem]" placeholder="Skill" />
+                  <select x-model="s.evidence_type" class="hidden otw-input text-xs w-40">
+                    <option value="manual">added manually</option>
+                    <option value="declared_dependency">from dependencies</option>
+                    <option value="readme_described">from README</option>
+                    <option value="description_described">from description</option>
+                  </select>
+                  <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
+                    weight
+                    <input x-model.number="s.weight" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+                  </label>
+                  <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
+                    confidence
+                    <input x-model.number="s.confidence" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+                  </label>
+                  <button
+                    x-show="!skillDirty(s)"
+                    @click="deleteSkill(s.id)"
+                    :disabled="Boolean(skillBusy[s.id])"
+                    class="otw-btn-danger-text text-xs"
+                  >Delete</button>
+                  <button
+                    x-show="skillDirty(s)"
+                    @click="saveSkill(s.id)"
+                    :disabled="Boolean(skillBusy[s.id])"
+                    class="otw-btn-accent text-xs px-3 py-1"
+                  >Save</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- Add-skill row, same editable-inline pattern, its "save" is Add. -->
+          <div class="flex items-center gap-2 flex-wrap mt-4">
+            <input x-model="newSkill.skill" class="otw-input text-sm flex-1 min-w-[8rem]" placeholder="Add a skill…" />
+            <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
+              weight
+              <input x-model.number="newSkill.weight" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+            </label>
+            <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
+              confidence
+              <input x-model.number="newSkill.confidence" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+            </label>
+            <button
+              @click="addSkill"
+              :disabled="!newSkill.skill.trim() || addingSkill"
+              class="otw-btn-accent text-xs px-3 py-1.5"
+            >
+              <span x-show="!addingSkill">Add</span>
+              <span x-show="addingSkill" class="otw-working">Adding…</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-8" x-show="Object.keys(project.manifests).length > 0">
+          <h2 class="font-display text-xl">Declared dependencies</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">Parsed from manifest files at sync time, not editable here.</p>
+          <div class="mt-3 space-y-4">
+            <template x-for="(manifest, filename) in project.manifests" :key="filename">
+              <div>
+                <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                  <span x-text="filename"></span> · <span x-text="manifest.ecosystem"></span>
+                </p>
+                <p class="text-sm mt-1" x-text="manifest.dependencies.join(', ') || 'none parsed'"></p>
+              </div>
+            </template>
+          </div>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="font-display text-xl">Links</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">
+            GitHub, a demo video, a live deployment, docs: as many as you want.
+            Ones found automatically in the README are labeled "from README";
+            edit one and it becomes yours to keep.
+          </p>
+          <p x-show="linkDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet.</p>
+          <div x-show="linkDrafts.length > 0" class="mt-3 space-y-3">
+            <template x-for="l in linkDrafts" :key="l.id">
+              <div class="border-b border-[color:var(--line)] pb-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <input x-model="l.label" class="otw-input text-sm w-40" placeholder="Label, e.g. GitHub" />
+                  <input x-model="l.url" class="otw-input text-sm flex-1 min-w-[10rem]" placeholder="https://…" />
+                  <span x-show="l.source === 'readme_extracted'" class="text-xs text-[color:var(--muted)] shrink-0">from README</span>
+                </div>
+                <div class="flex items-center justify-end gap-3 mt-2">
+                  <button
+                    @click="deleteLink(l.id)"
+                    :disabled="Boolean(linkBusy[l.id])"
+                    class="otw-btn-danger-text text-xs"
+                  >Delete</button>
+                  <button
+                    @click="cancelLink(l.id)"
+                    :disabled="!linkDirty(l) || Boolean(linkBusy[l.id])"
+                    class="otw-btn-ghost text-xs px-3 py-1"
+                  >Cancel</button>
+                  <button
+                    @click="saveLink(l.id)"
+                    :disabled="!linkDirty(l) || Boolean(linkBusy[l.id])"
+                    class="otw-btn-accent text-xs px-3 py-1"
+                  >Save</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <div class="flex items-center gap-2 flex-wrap mt-4">
+            <input x-model="newLink.label" class="otw-input text-sm w-40" placeholder="Label, e.g. Live Demo" />
+            <input x-model="newLink.url" class="otw-input text-sm flex-1 min-w-[10rem]" placeholder="https://…" />
+            <button
+              @click="addLink"
+              :disabled="!newLink.label.trim() || !newLink.url.trim() || addingLink"
+              class="otw-btn-accent text-xs px-3 py-1.5"
+            >
+              <span x-show="!addingLink">Add</span>
+              <span x-show="addingLink" class="otw-working">Adding…</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="font-display text-xl">README</h2>
+          <textarea
+            x-model="draft.readme"
+            rows="10"
+            placeholder="No README yet, write one, or leave blank."
+            class="otw-input text-xs font-mono whitespace-pre-wrap"
+          ></textarea>
+        </div>
+      </div>
+    </template>
+  </main>
+</div>
+
+<script>
+  function projectDetailApp() {
+    const editableFields = ['name', 'full_name', 'url', 'description', 'primary_language', 'is_fork', 'starred'];
+
+    return {
+      accountId: null,
+      accountName: '',
+      repoId: null,
+      project: null,
+      draft: {},
+      skillDrafts: [],
+      newSkill: { skill: '', weight: 1, confidence: 1 },
+      linkDrafts: [],
+      newLink: { label: '', url: '' },
+      loading: true,
+      saving: false,
+      saveError: '',
+      reprocessing: false,
+      addingSkill: false,
+      skillBusy: {},
+      addingLink: false,
+      linkBusy: {},
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        const parts = window.location.pathname.split('/').filter(Boolean);
+        this.repoId = parts[parts.length - 1];
+        await this.load();
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}`);
+          this.project = res.ok ? await res.json() : null;
+          this.syncFromProject();
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      syncFromProject() {
+        if (!this.project) return;
+        this.draft = {};
+        for (const key of editableFields) this.draft[key] = this.project[key];
+        this.draft.readme = this.project.readme_preview;
+        this.skillDrafts = this.project.skills.map((s) => ({ ...s }));
+        this.linkDrafts = this.project.links.map((l) => ({ ...l }));
+      },
+
+      get isDirty() {
+        if (!this.project) return false;
+        return (
+          editableFields.some((key) => this.draft[key] !== this.project[key]) ||
+          this.draft.readme !== this.project.readme_preview
+        );
+      },
+
+      skillDirty(row) {
+        const original = this.project.skills.find((s) => s.id === row.id);
+        if (!original) return false;
+        return (
+          row.skill !== original.skill ||
+          row.evidence_type !== original.evidence_type ||
+          row.weight !== original.weight ||
+          row.confidence !== original.confidence
+        );
+      },
+
+      linkDirty(row) {
+        const original = this.project.links.find((l) => l.id === row.id);
+        if (!original) return false;
+        return row.label !== original.label || row.url !== original.url;
+      },
+
+      formatDate(iso) {
+        if (!iso) return '';
+        return new Date(iso).toLocaleDateString();
+      },
+
+      statusLabel() {
+        switch (this.project?.skill_extraction_status) {
+          case 'extracted': return '✓ Skills extracted';
+          case 'failed': return '✗ Extraction failed';
+          case 'rate_limited': return '○ Rate limited, retry later';
+          case 'no_signal': return '· Nothing to extract';
+          default: return '⋯ Not yet processed';
+        }
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+
+      async reprocess() {
+        this.reprocessing = true;
+        try {
+          await fetch(`/api/projects/${this.repoId}/reprocess`, { method: 'POST' });
+          await this.load();
+        } finally {
+          this.reprocessing = false;
+        }
+      },
+
+      cancel() {
+        this.syncFromProject();
+        this.saveError = '';
+      },
+
+      async save() {
+        this.saving = true;
+        this.saveError = '';
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.draft),
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            this.saveError = body.detail || 'Could not save, try again.';
+            return;
+          }
+          this.project = await res.json();
+          this.syncFromProject();
+        } finally {
+          this.saving = false;
+        }
+      },
+
+      async saveSkill(id) {
+        const row = this.skillDrafts.find((s) => s.id === id);
+        if (!row) return;
+        this.skillBusy[id] = true;
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}/skills/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              skill: row.skill,
+              evidence_type: row.evidence_type,
+              weight: row.weight,
+              confidence: row.confidence,
+            }),
+          });
+          if (res.ok) {
+            this.project = await res.json();
+            this.syncFromProject();
+          }
+        } finally {
+          this.skillBusy[id] = false;
+        }
+      },
+
+      async deleteSkill(id) {
+        this.skillBusy[id] = true;
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}/skills/${id}`, { method: 'DELETE' });
+          if (res.ok) {
+            this.project = await res.json();
+            this.syncFromProject();
+          }
+        } finally {
+          this.skillBusy[id] = false;
+        }
+      },
+
+      async addSkill() {
+        if (!this.newSkill.skill.trim()) return;
+        this.addingSkill = true;
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}/skills`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.newSkill),
+          });
+          if (res.ok) {
+            this.project = await res.json();
+            this.syncFromProject();
+            this.newSkill = { skill: '', weight: 1, confidence: 1 };
+          }
+        } finally {
+          this.addingSkill = false;
+        }
+      },
+
+      cancelLink(id) {
+        const original = this.project.links.find((l) => l.id === id);
+        const idx = this.linkDrafts.findIndex((l) => l.id === id);
+        if (original && idx !== -1) this.linkDrafts[idx] = { ...original };
+      },
+
+      async saveLink(id) {
+        const row = this.linkDrafts.find((l) => l.id === id);
+        if (!row) return;
+        this.linkBusy[id] = true;
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}/links/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ label: row.label, url: row.url }),
+          });
+          if (res.ok) {
+            this.project = await res.json();
+            this.syncFromProject();
+          }
+        } finally {
+          this.linkBusy[id] = false;
+        }
+      },
+
+      async deleteLink(id) {
+        this.linkBusy[id] = true;
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}/links/${id}`, { method: 'DELETE' });
+          if (res.ok) {
+            this.project = await res.json();
+            this.syncFromProject();
+          }
+        } finally {
+          this.linkBusy[id] = false;
+        }
+      },
+
+      async addLink() {
+        if (!this.newLink.label.trim() || !this.newLink.url.trim()) return;
+        this.addingLink = true;
+        try {
+          const res = await fetch(`/api/projects/${this.repoId}/links`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.newLink),
+          });
+          if (res.ok) {
+            this.project = await res.json();
+            this.syncFromProject();
+            this.newLink = { label: '', url: '' };
+          }
+        } finally {
+          this.addingLink = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

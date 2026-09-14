@@ -1,0 +1,215 @@
+{% extends "_base.html" %}
+{% block title %}Portfolio · Open to Work{% endblock %}
+{% block content %}
+<div x-data="portfolioOverviewApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
+    {% set data_active = 'overview' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <h1 class="font-display text-4xl mt-8">Portfolio</h1>
+    <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+      Everything collected about you so far. Open any card for the full list.
+    </p>
+
+    <div x-cloak x-show="!loading" class="mt-10 grid gap-4 grid-cols-2 sm:grid-cols-4">
+      <a href="/portfolio/projects" class="otw-kpi block">
+        <p class="otw-kpi-label">Projects</p>
+        <p class="otw-kpi-value" x-text="counts.projects"></p>
+        <p class="otw-kpi-sub">synced or added by hand</p>
+      </a>
+
+      <div class="otw-kpi otw-kpi-clickable" @click="showUnprocessedModal = true">
+        <p class="otw-kpi-label">Not processed</p>
+        <p class="otw-kpi-value" :class="unprocessed.length ? '' : 'otw-good'" x-text="unprocessed.length"></p>
+        <p class="otw-kpi-sub" :class="unprocessed.length ? '' : 'otw-good'" x-text="unprocessed.length ? 'click to review →' : '✓ all caught up'"></p>
+      </div>
+
+      <a href="/portfolio/skills" class="otw-kpi block">
+        <p class="otw-kpi-label">Skills</p>
+        <p class="otw-kpi-value" x-text="counts.skills"></p>
+        <p class="otw-kpi-sub">projects, experience, manual</p>
+      </a>
+
+      <a href="/portfolio/experience" class="otw-kpi block">
+        <p class="otw-kpi-label">Experience</p>
+        <p class="otw-kpi-value" x-text="counts.experience"></p>
+        <p class="otw-kpi-sub">role<span x-show="counts.experience !== 1">s</span> entered</p>
+      </a>
+
+      <a href="/portfolio/education" class="otw-kpi block">
+        <p class="otw-kpi-label">Education</p>
+        <p class="otw-kpi-value" x-text="counts.education"></p>
+        <p class="otw-kpi-sub">entr<span x-text="counts.education === 1 ? 'y' : 'ies'"></span></p>
+      </a>
+
+      <a href="/portfolio/contact" class="otw-kpi block">
+        <p class="otw-kpi-label">Links</p>
+        <p class="otw-kpi-value" x-text="counts.links"></p>
+        <p class="otw-kpi-sub" x-text="contactSummary"></p>
+      </a>
+    </div>
+  </main>
+
+  <!-- Not-processed popup: only the missing ones, reprocess right here,
+       never a navigation away from this page. -->
+  <div x-show="showUnprocessedModal" x-cloak class="otw-modal-backdrop" @keydown.escape.window="showUnprocessedModal = false" @click.self="showUnprocessedModal = false">
+    <div class="otw-modal">
+      <div class="flex items-start justify-between gap-4">
+        <h3 class="font-display text-2xl">Not processed</h3>
+        <button @click="showUnprocessedModal = false" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] text-xl leading-none">×</button>
+      </div>
+      <div class="flex items-center justify-between gap-4 mt-3">
+        <p class="text-sm text-[color:var(--muted)]">
+          <span x-text="unprocessed.length"></span> project<span x-show="unprocessed.length !== 1">s</span> left.
+        </p>
+        <button @click="reprocessAll" :disabled="processing" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
+          <span x-show="!processing">Reprocess all</span>
+          <span x-show="processing" class="otw-working">Working…</span>
+        </button>
+      </div>
+      <div class="mt-5 space-y-3">
+        <template x-for="project in unprocessed" :key="project.id">
+          <div class="otw-tile p-4 flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <a :href="'/portfolio/projects/' + project.id" class="text-sm hover:underline" x-text="project.name"></a>
+              <p class="text-xs text-[color:var(--muted)] mt-0.5" x-text="statusLabel(project)"></p>
+            </div>
+            <button
+              @click="reprocessOne(project)"
+              :disabled="Boolean(reprocessingRepo[project.id])"
+              class="otw-btn-accent text-xs px-3 py-1.5 shrink-0"
+            >
+              <span x-show="!reprocessingRepo[project.id]">Process</span>
+              <span x-show="reprocessingRepo[project.id]" class="otw-working">Working…</span>
+            </button>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function portfolioOverviewApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      loading: true,
+      projects: [],
+      counts: { projects: 0, skills: 0, experience: 0, education: 0, links: 0 },
+      contact: { contact_email: '', contact_phone: '' },
+      links: [],
+      showUnprocessedModal: false,
+      processing: false,
+      extractionSource: null,
+      reprocessingRepo: {},
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.load();
+      },
+
+      get unprocessed() {
+        return this.projects.filter(
+          (p) => p.skill_extraction_status !== 'extracted' && p.skill_extraction_status !== 'no_signal'
+        );
+      },
+
+      get contactSummary() {
+        const has = this.contact.contact_email || this.contact.contact_phone;
+        const linkCount = this.links.length;
+        if (!has && !linkCount) return 'nothing added yet';
+        const parts = [];
+        if (has) parts.push('direct contact on file');
+        if (linkCount) parts.push(`${linkCount} social link${linkCount !== 1 ? 's' : ''}`);
+        return parts.join(', ');
+      },
+
+      statusLabel(project) {
+        switch (project.skill_extraction_status) {
+          case 'failed': return '✗ Extraction failed: ' + (project.skill_extraction_error || '');
+          case 'rate_limited': return '○ Rate limited, retry later';
+          default: return '⋯ Not yet processed';
+        }
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const [projectsRes, skillsRes, experienceRes, educationRes, contactRes, linksRes] = await Promise.all([
+            fetch(`/api/projects?account_id=${this.accountId}`),
+            fetch(`/api/skills?account_id=${this.accountId}`),
+            fetch(`/api/experience?account_id=${this.accountId}`),
+            fetch(`/api/education?account_id=${this.accountId}`),
+            fetch(`/api/accounts/${this.accountId}/contact`),
+            fetch(`/api/accounts/${this.accountId}/social-links`),
+          ]);
+          this.projects = await projectsRes.json();
+          this.counts.projects = this.projects.length;
+          this.counts.skills = (await skillsRes.json()).length;
+          this.counts.experience = (await experienceRes.json()).length;
+          this.counts.education = (await educationRes.json()).length;
+          this.contact = await contactRes.json();
+          this.links = await linksRes.json();
+          this.counts.links = this.links.length;
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      // Same background-job pattern as home/projects: starts (or
+      // reattaches to) the extraction worker and streams its progress.
+      reprocessAll() {
+        if (this.extractionSource) return;
+        this.processing = true;
+        const source = new EventSource(
+          `/api/projects/process-pending/stream?account_id=${this.accountId}`
+        );
+        this.extractionSource = source;
+        source.onmessage = (e) => {
+          const state = JSON.parse(e.data);
+          if (state.stage === 'repo_progress') this.load();
+          if (!state.running) {
+            this.processing = false;
+            source.close();
+            this.extractionSource = null;
+            this.load();
+          }
+        };
+        source.onerror = () => {
+          this.processing = false;
+          source.close();
+          this.extractionSource = null;
+        };
+      },
+
+      async reprocessOne(project) {
+        this.reprocessingRepo[project.id] = true;
+        try {
+          const res = await fetch(`/api/projects/${project.id}/reprocess`, { method: 'POST' });
+          const updated = await res.json();
+          const idx = this.projects.findIndex((p) => p.id === project.id);
+          if (idx !== -1) this.projects[idx] = updated;
+        } finally {
+          this.reprocessingRepo[project.id] = false;
+        }
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+    };
+  }
+</script>
+{% endblock %}

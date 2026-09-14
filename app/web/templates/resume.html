@@ -1,0 +1,478 @@
+{% extends "_base.html" %}
+{% block title %}Resume · Open to Work{% endblock %}
+{% block content %}
+<div x-data="resumeApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+    {% set data_active = 'resume' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <div class="flex items-start justify-between gap-4 flex-wrap mt-8">
+      <div>
+        <h1 class="font-display text-4xl">Resume</h1>
+        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+          Upload any resume you already have. We read it and tag what it's
+          strong at and which roles it reads as written for, so a later job
+          application can pick the right one automatically, or use it as a
+          starting point for one an LLM builds for you. Only PDF and image
+          files get read automatically today; anything else still uploads,
+          it just won't have tags until you add them by hand.
+        </p>
+      </div>
+      <a href="/portfolio/resume/build" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">Build a resume →</a>
+    </div>
+
+    <div class="otw-tile p-6 mt-8">
+      <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Name this version (optional)</label>
+      <input x-model="uploadName" class="otw-input mt-1" placeholder="e.g. Backend, 2026 batch" />
+      <label class="text-xs uppercase tracking-wide text-[color:var(--muted)] mt-4 block">Notes for this upload (optional)</label>
+      <textarea x-model="uploadNotes" rows="2" class="otw-input mt-1" placeholder="e.g. tailored for backend roles, last updated for the Acme application"></textarea>
+      <div class="flex items-center gap-3 mt-4">
+        <label class="otw-btn-ghost text-sm px-4 py-2 cursor-pointer" :class="{ 'opacity-40 pointer-events-none': uploading }">
+          <span x-show="!uploading">Choose a file to upload</span>
+          <span x-show="uploading" class="otw-working">Uploading…</span>
+          <input type="file" class="hidden" @change="upload($event)" :disabled="uploading" />
+        </label>
+      </div>
+      <p x-show="uploadError" x-text="uploadError" class="mt-3 text-sm otw-error"></p>
+    </div>
+
+    <div x-cloak x-show="!loading && resumes.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No resumes yet, upload one above to get started.</p>
+    </div>
+
+    <div x-cloak class="mt-8 space-y-5">
+      <template x-for="resume in resumes" :key="resume.id">
+        <div class="otw-tile p-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div class="min-w-0 flex-1">
+              <input
+                x-model="editName[resume.id]"
+                @blur="saveName(resume)"
+                @keydown.enter.prevent="$event.target.blur()"
+                class="font-display text-lg bg-transparent border-none outline-none p-0 w-full focus:outline-none"
+                :placeholder="resume.filename"
+                title="Click to name this version"
+              />
+              <p class="text-xs text-[color:var(--muted)] mt-1">
+                <a :href="'/api/resume/' + resume.id + '/file'" target="_blank" class="hover:underline break-all" x-text="resume.filename"></a>
+                · <span x-text="new Date(resume.uploaded_at).toLocaleString()"></span>
+                · <span x-text="formatSize(resume.file_size)"></span>
+              </p>
+            </div>
+            <div class="flex items-center gap-3 shrink-0">
+              <span class="text-xs" :class="statusClass(resume)" x-text="statusLabel(resume)"></span>
+              <button
+                @click="openViewer(resume)"
+                title="View or download this file"
+                class="otw-btn-ghost text-xs px-3 py-1.5"
+              >View</button>
+              <button
+                @click="reprocess(resume)"
+                :disabled="Boolean(reprocessing[resume.id])"
+                title="Re-run analysis on this file"
+                class="otw-btn-accent text-xs px-3 py-1.5"
+              >
+                <span x-show="!reprocessing[resume.id]">Reprocess</span>
+                <span x-show="reprocessing[resume.id]" class="otw-working">Working…</span>
+              </button>
+              <button @click="remove(resume)" :disabled="Boolean(deleting[resume.id])" class="text-xs otw-btn-danger-text">Delete</button>
+            </div>
+          </div>
+          <p x-show="resume.extraction_error" x-text="resume.extraction_error" class="mt-2 text-xs otw-error"></p>
+
+          <div class="mt-5">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Summary</label>
+            <textarea x-model="editSummary[resume.id]" rows="3" class="otw-input mt-1" placeholder="What is this resume good for? Fill in by hand, or Reprocess to have it read automatically."></textarea>
+            <div class="flex justify-end mt-1">
+              <button
+                @click="saveSummary(resume)"
+                :disabled="Boolean(savingSummary[resume.id]) || editSummary[resume.id] === (resume.summary || '')"
+                class="otw-btn-ghost text-xs px-3 py-1"
+              >
+                <span x-show="!savingSummary[resume.id]">Save</span>
+                <span x-show="savingSummary[resume.id]" class="otw-working">Saving…</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Tags</label>
+            <div class="flex flex-wrap gap-2 mt-2">
+              <template x-for="tag in resume.tags" :key="tag">
+                <span class="otw-chip">
+                  <span x-text="tag"></span>
+                  <button type="button" @click="removeTag(resume, tag)" class="otw-chip-x" aria-label="Remove tag">×</button>
+                </span>
+              </template>
+            </div>
+            <div class="flex items-center gap-2 mt-2">
+              <input x-model="newTagText[resume.id]" @keydown.enter.prevent="addTag(resume)" class="otw-input flex-1 text-sm" placeholder="Add a tag, press Enter" />
+              <button @click="addTag(resume)" :disabled="!(newTagText[resume.id] || '').trim()" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">Add</button>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Good for these roles</label>
+            <div class="flex flex-wrap gap-2 mt-2">
+              <template x-for="role in resume.target_roles" :key="role">
+                <span class="otw-chip">
+                  <span x-text="role"></span>
+                  <button type="button" @click="removeRole(resume, role)" class="otw-chip-x" aria-label="Remove role">×</button>
+                </span>
+              </template>
+            </div>
+            <div class="flex items-center gap-2 mt-2">
+              <input x-model="newRoleText[resume.id]" @keydown.enter.prevent="addRole(resume)" class="otw-input flex-1 text-sm" placeholder="Add a role type, press Enter" />
+              <button @click="addRole(resume)" :disabled="!(newRoleText[resume.id] || '').trim()" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">Add</button>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Edit with AI</label>
+            <p class="text-xs text-[color:var(--muted)] mt-1">
+              Write a message describing what to change. Only the summary, which
+              projects/skills are included, and their wording can change; your work
+              history and the layout never do.
+            </p>
+            <textarea x-model="editMessage[resume.id]" rows="2" class="otw-input mt-2" placeholder="e.g. Emphasize backend and Python work, drop the design projects"></textarea>
+            <div class="flex justify-end mt-1">
+              <button
+                @click="editWithAi(resume)"
+                :disabled="Boolean(editingWithAi[resume.id]) || !(editMessage[resume.id] || '').trim()"
+                class="otw-btn-accent text-xs px-3 py-1.5"
+              >
+                <span x-show="!editingWithAi[resume.id]">Update</span>
+                <span x-show="editingWithAi[resume.id]" class="otw-working">Working… this can take a minute</span>
+              </button>
+            </div>
+            <p x-show="editError[resume.id]" x-text="editError[resume.id]" class="text-xs otw-error mt-1"></p>
+          </div>
+
+          <div class="mt-5">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Notes</label>
+            <textarea x-model="editNotes[resume.id]" rows="2" class="otw-input mt-1" placeholder="Anything you want to remember about this version"></textarea>
+            <div class="flex justify-end mt-1">
+              <button
+                @click="saveNotes(resume)"
+                :disabled="Boolean(savingNotes[resume.id]) || editNotes[resume.id] === (resume.notes || '')"
+                class="otw-btn-ghost text-xs px-3 py-1"
+              >
+                <span x-show="!savingNotes[resume.id]">Save</span>
+                <span x-show="savingNotes[resume.id]" class="otw-working">Saving…</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+  </main>
+
+  <!-- View popup: preview a resume inline (PDF/image) or fall back to a
+       plain Download link for anything else, without leaving this page. -->
+  <div x-show="viewing" x-cloak class="otw-modal-backdrop" @keydown.escape.window="viewing = null" @click.self="viewing = null">
+    <div class="otw-modal" style="max-width: 50rem;">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <h3 class="font-display text-2xl break-all" x-text="viewing ? (viewing.name || viewing.filename) : ''"></h3>
+          <p x-show="viewing && viewing.name" class="text-xs text-[color:var(--muted)] mt-1 break-all" x-text="viewing ? viewing.filename : ''"></p>
+        </div>
+        <button @click="viewing = null" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] text-xl leading-none shrink-0">×</button>
+      </div>
+
+      <!-- Two tabs when both exist: the original upload untouched, and
+           the AI-edited/generated version compiled from content_json.
+           Only one tab shown when a resume only has one or the other. -->
+      <div x-show="viewing && viewing.has_original_file && viewing.has_ai_edited_version" class="flex gap-2 mt-4">
+        <button type="button" @click="viewTab = 'original'" class="otw-btn-ghost text-xs px-3 py-1.5" :class="{ 'border-[color:var(--accent)]': viewTab === 'original' }">Original</button>
+        <button type="button" @click="viewTab = 'ai'" class="otw-btn-ghost text-xs px-3 py-1.5" :class="{ 'border-[color:var(--accent)]': viewTab === 'ai' }">AI-edited</button>
+      </div>
+
+      <div class="mt-5" x-show="viewing && viewTab === 'original' && previewKind(viewing) === 'pdf'">
+        <iframe :src="viewing ? '/api/resume/' + viewing.id + '/file?disposition=inline' : ''" class="w-full" style="height: 65vh; border: 1px solid var(--line); background: white;"></iframe>
+      </div>
+      <div class="mt-5 flex justify-center" x-show="viewing && viewTab === 'original' && previewKind(viewing) === 'image'">
+        <img :src="viewing ? '/api/resume/' + viewing.id + '/file?disposition=inline' : ''" class="max-w-full" style="max-height: 65vh;" />
+      </div>
+      <p class="mt-5 text-sm text-[color:var(--muted)]" x-show="viewing && viewTab === 'original' && previewKind(viewing) === 'none'">
+        No inline preview for this file type. Download it to view it.
+      </p>
+
+      <div class="mt-5" x-show="viewing && viewTab === 'ai' && viewing.has_ai_edited_version">
+        <iframe :src="viewing ? '/api/resume/' + viewing.id + '/compiled-file?disposition=inline' : ''" class="w-full" style="height: 65vh; border: 1px solid var(--line); background: white;"></iframe>
+      </div>
+
+      <div class="flex justify-end gap-3 mt-6">
+        <a :href="viewing ? (viewTab === 'ai' ? '/api/resume/' + viewing.id + '/compiled-file' : '/api/resume/' + viewing.id + '/file') : '#'" class="otw-btn-ghost text-sm px-4 py-2">Download</a>
+        <button @click="viewing = null" class="otw-btn text-sm px-4 py-2">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .otw-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.4rem 0.3rem 0.7rem;
+    font-size: 0.78rem;
+    color: var(--ink);
+    background: rgba(242, 242, 240, 0.06);
+    border: 1px solid var(--line);
+  }
+  .otw-chip-x {
+    color: var(--muted);
+    line-height: 1;
+    padding: 0 0.15rem;
+    transition: color 0.15s ease;
+  }
+  .otw-chip-x:hover { color: var(--danger); }
+</style>
+
+<script>
+  function resumeApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      resumes: [],
+      loading: true,
+      uploading: false,
+      uploadError: '',
+      uploadName: '',
+      uploadNotes: '',
+      newTagText: {},
+      newRoleText: {},
+      editName: {},
+      editSummary: {},
+      editNotes: {},
+      savingSummary: {},
+      savingNotes: {},
+      reprocessing: {},
+      deleting: {},
+      viewing: null,
+      viewTab: 'original',
+      editMessage: {},
+      editingWithAi: {},
+      editError: {},
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.load();
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const res = await fetch(`/api/resume?account_id=${this.accountId}`);
+          this.resumes = await res.json();
+          for (const r of this.resumes) {
+            this.editName[r.id] = r.name || '';
+            this.editSummary[r.id] = r.summary || '';
+            this.editNotes[r.id] = r.notes || '';
+          }
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      statusLabel(resume) {
+        switch (resume.extraction_status) {
+          case 'extracted': return '✓ Analyzed';
+          case 'failed': return '✗ Analysis failed';
+          case 'unsupported_type': return 'Not auto-analyzable';
+          default: return '⋯ Not analyzed yet';
+        }
+      },
+
+      statusClass(resume) {
+        if (resume.extraction_status === 'extracted') return 'otw-good';
+        if (resume.extraction_status === 'failed') return 'otw-error';
+        return 'text-[color:var(--muted)]';
+      },
+
+      previewKind(resume) {
+        const mime = resume.mime_type || '';
+        if (mime === 'application/pdf') return 'pdf';
+        if (mime.startsWith('image/')) return 'image';
+        return 'none';
+      },
+
+      formatSize(bytes) {
+        if (!bytes) return '0 B';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+      },
+
+      async upload(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        this.uploading = true;
+        this.uploadError = '';
+        try {
+          const body = new FormData();
+          body.append('account_id', this.accountId);
+          body.append('name', this.uploadName);
+          body.append('notes', this.uploadNotes);
+          body.append('file', file);
+          const res = await fetch('/api/resume', { method: 'POST', body });
+          const data = await res.json();
+          if (!res.ok) {
+            this.uploadError = data.detail || 'Could not upload that.';
+            return;
+          }
+          this.uploadName = '';
+          this.uploadNotes = '';
+          event.target.value = '';
+          await this.load();
+        } catch (e) {
+          this.uploadError = String(e);
+        } finally {
+          this.uploading = false;
+        }
+      },
+
+      async patchResume(resume, fields) {
+        const res = await fetch(`/api/resume/${resume.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(fields),
+        });
+        const updated = await res.json();
+        if (res.ok) {
+          const idx = this.resumes.findIndex((r) => r.id === resume.id);
+          if (idx !== -1) this.resumes[idx] = updated;
+          this.editName[resume.id] = updated.name || '';
+          this.editSummary[resume.id] = updated.summary || '';
+          this.editNotes[resume.id] = updated.notes || '';
+        }
+        return updated;
+      },
+
+      async saveName(resume) {
+        const name = (this.editName[resume.id] || '').trim();
+        if (name === (resume.name || '')) return;  // unchanged, no round-trip
+        await this.patchResume(resume, { name });
+      },
+
+      async addTag(resume) {
+        const text = (this.newTagText[resume.id] || '').trim();
+        if (!text) return;
+        this.newTagText[resume.id] = '';
+        await this.patchResume(resume, { tags: [...resume.tags, text] });
+      },
+
+      async removeTag(resume, tag) {
+        await this.patchResume(resume, { tags: resume.tags.filter((t) => t !== tag) });
+      },
+
+      async addRole(resume) {
+        const text = (this.newRoleText[resume.id] || '').trim();
+        if (!text) return;
+        this.newRoleText[resume.id] = '';
+        await this.patchResume(resume, { target_roles: [...resume.target_roles, text] });
+      },
+
+      async removeRole(resume, role) {
+        await this.patchResume(resume, { target_roles: resume.target_roles.filter((r) => r !== role) });
+      },
+
+      async saveSummary(resume) {
+        this.savingSummary[resume.id] = true;
+        try {
+          await this.patchResume(resume, { summary: this.editSummary[resume.id] });
+        } finally {
+          this.savingSummary[resume.id] = false;
+        }
+      },
+
+      async saveNotes(resume) {
+        this.savingNotes[resume.id] = true;
+        try {
+          await this.patchResume(resume, { notes: this.editNotes[resume.id] });
+        } finally {
+          this.savingNotes[resume.id] = false;
+        }
+      },
+
+      async reprocess(resume) {
+        this.reprocessing[resume.id] = true;
+        try {
+          const res = await fetch(`/api/resume/${resume.id}/reprocess`, { method: 'POST' });
+          const updated = await res.json();
+          if (res.ok) {
+            const idx = this.resumes.findIndex((r) => r.id === resume.id);
+            if (idx !== -1) this.resumes[idx] = updated;
+            this.editSummary[resume.id] = updated.summary || '';
+          } else {
+            alert(updated.detail || 'Reprocess failed.');
+          }
+        } finally {
+          this.reprocessing[resume.id] = false;
+        }
+      },
+
+      openViewer(resume) {
+        this.viewTab = resume.has_ai_edited_version ? 'ai' : 'original';
+        this.viewing = resume;
+      },
+
+      async editWithAi(resume) {
+        const message = (this.editMessage[resume.id] || '').trim();
+        if (!message) return;
+        this.editingWithAi[resume.id] = true;
+        this.editError[resume.id] = '';
+        try {
+          const res = await fetch(`/api/resume/${resume.id}/edit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message }),
+          });
+          const updated = await res.json();
+          if (!res.ok) {
+            this.editError[resume.id] = updated.detail || 'Could not apply that edit.';
+            return;
+          }
+          const idx = this.resumes.findIndex((r) => r.id === resume.id);
+          if (idx !== -1) this.resumes[idx] = updated;
+          this.editSummary[resume.id] = updated.summary || '';
+          this.editMessage[resume.id] = '';
+          if (this.viewing && this.viewing.id === resume.id) this.openViewer(updated);
+        } catch (e) {
+          this.editError[resume.id] = 'Could not reach the server.';
+        } finally {
+          this.editingWithAi[resume.id] = false;
+        }
+      },
+
+      async remove(resume) {
+        const ok = confirm(`Delete "${resume.filename}"? This cannot be undone.`);
+        if (!ok) return;
+        this.deleting[resume.id] = true;
+        try {
+          await fetch(`/api/resume/${resume.id}`, { method: 'DELETE' });
+          this.resumes = this.resumes.filter((r) => r.id !== resume.id);
+          if (this.viewing && this.viewing.id === resume.id) this.viewing = null;
+        } finally {
+          this.deleting[resume.id] = false;
+        }
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+    };
+  }
+</script>
+{% endblock %}

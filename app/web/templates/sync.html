@@ -1,0 +1,247 @@
+{% extends "_base.html" %}
+{% block title %}Sync · Open to Work{% endblock %}
+{% block content %}
+<div x-data="githubSync()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 flex items-center justify-center px-8 pb-24">
+    <div class="w-full max-w-md">
+      <h1 class="font-display text-4xl" x-text="accountName ? ('Welcome, ' + accountName) : 'Sync a GitHub account'"></h1>
+      <p class="mt-3 text-[color:var(--muted)]">
+        Builds an evidence-backed skill profile from public repos: READMEs,
+        dependency manifests, and commit history. Not tied to any one
+        account; enter any GitHub username.
+      </p>
+
+      <form @submit.prevent="sync" class="mt-10 space-y-6">
+        <div>
+          <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">GitHub username</label>
+          <input
+            :value="username"
+            @input="$event.target.value = username = sanitizeUsername($event.target.value)"
+            required
+            class="otw-input mt-1"
+            placeholder="octocat"
+          />
+          <p x-show="usernameFormatError(username)" x-text="usernameFormatError(username)" class="text-xs otw-error mt-1"></p>
+        </div>
+        <button type="submit" class="otw-btn w-full" :disabled="loading">
+          <span x-show="!loading">Sync</span>
+          <span x-show="loading">Syncing…</span>
+        </button>
+        <button
+          type="button"
+          x-show="loading"
+          x-cloak
+          @click="stop"
+          class="otw-btn-ghost otw-btn-danger-text w-full"
+        >Stop</button>
+      </form>
+
+      <p class="mt-4 text-center text-sm">
+        <a href="/portfolio/projects" class="text-[color:var(--muted)] underline hover:text-[color:var(--ink)]">
+          Skip for now, see what's already there →
+        </a>
+      </p>
+
+      <div x-show="loading" x-cloak class="mt-8 space-y-3">
+        <p class="text-sm" x-text="stageLabel"></p>
+        <div class="h-[2px] w-full bg-[color:var(--line)] overflow-hidden">
+          <div
+            class="h-full bg-[color:var(--ink)] transition-all duration-300 ease-out"
+            :style="`width: ${progressPct}%`"
+          ></div>
+        </div>
+        <p x-show="currentRepo" class="text-xs text-[color:var(--muted)] truncate">
+          <span x-text="repoIndex"></span> / <span x-text="totalHint || '?'"></span>
+          · <span x-text="currentRepo"></span>
+          <span x-show="currentCacheHit"> (cached)</span>
+        </p>
+        <p class="text-xs text-[color:var(--muted)]">
+          Fetching and skill extraction both run in the background, feel
+          free to
+          <a href="/portfolio/projects" class="underline hover:text-[color:var(--ink)]">go to your projects</a>
+          now, this keeps going either way.
+        </p>
+      </div>
+
+      <div x-show="result" class="mt-6">
+        <p x-text="result" class="text-sm"></p>
+        <template x-if="accountId">
+          <a href="/portfolio/projects" class="inline-block mt-3 text-sm underline hover:text-[color:var(--ink)]">
+            View detected projects →
+          </a>
+        </template>
+      </div>
+      <p x-show="error" x-text="error" class="mt-6 text-sm otw-error"></p>
+    </div>
+  </main>
+</div>
+
+<script>
+  function githubSync() {
+    return {
+      username: '',
+      accountId: null,
+      accountName: '',
+      loading: false,
+      result: '',
+      error: '',
+      stageLabel: '',
+      totalHint: 0,
+      repoIndex: 0,
+      currentRepo: '',
+      currentCacheHit: false,
+      runId: null,
+      eventSource: null,
+
+      get progressPct() {
+        if (!this.totalHint) return this.currentRepo ? 100 : 0;
+        return Math.min(100, Math.round((this.repoIndex / this.totalHint) * 100));
+      },
+
+      // Same rule as accounts.html's create-profile form, see
+      // app/ingest/github/source_parser.py for the server-side twin.
+      sanitizeUsername(value) {
+        return value.replace(/[^A-Za-z0-9-]/g, '').slice(0, 39);
+      },
+
+      usernameFormatError(value) {
+        if (!value) return '';
+        if (/^-|-$/.test(value)) return "Can't start or end with a hyphen.";
+        if (/--/.test(value)) return 'No consecutive hyphens.';
+        return '';
+      },
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+
+        // Fresh signup lands here with ?new=1: the Continue button on
+        // the create-profile form was already the confirmation to link
+        // GitHub, so don't make them confirm again with a second click.
+        // Strip the param right away so a later refresh of this same
+        // page doesn't re-trigger a run.
+        const params = new URLSearchParams(window.location.search);
+        const autostart = params.get('new') === '1';
+        if (autostart) {
+          window.history.replaceState({}, '', '/sync');
+        }
+
+        if (!this.accountId) return;
+        try {
+          const res = await fetch('/accounts');
+          const accounts = await res.json();
+          const account = accounts.find((a) => String(a.id) === String(this.accountId));
+          if (account) this.username = account.github_username;
+        } catch (e) {
+          // no account context available, plain sync form still works
+        }
+
+        if (autostart && this.username) this.sync();
+      },
+
+      sync() {
+        this.loading = true;
+        this.result = '';
+        this.error = '';
+        this.stageLabel = 'Checking your profile…';
+        this.totalHint = 0;
+        this.repoIndex = 0;
+        this.currentRepo = '';
+        this.currentCacheHit = false;
+        // Fresh id per attempt, not the username, lets the Stop button
+        // target exactly this run without touching some earlier/later one.
+        this.runId = crypto.randomUUID();
+
+        const params = new URLSearchParams({ username: this.username, run_id: this.runId });
+        if (this.accountId) params.set('account_id', this.accountId);
+        const source = new EventSource(`/sync/github/stream?${params.toString()}`);
+        this.eventSource = source;
+
+        // Kick off skill extraction in parallel, right away: its
+        // own background thread server-side, not chained after the GitHub
+        // fetch finishes. It'll just find nothing pending yet on the very
+        // first tick and keep checking, picking up each repo as this sync
+        // commits it. Fire-and-forget: this page doesn't wait on it, and
+        // navigating away right now doesn't stop it either.
+        if (this.accountId) {
+          fetch(`/api/projects/process-pending/start?account_id=${this.accountId}`, {
+            method: 'POST',
+          }).catch(() => {});
+        }
+
+        source.onmessage = (e) => {
+          const event = JSON.parse(e.data);
+          if (event.stage === 'checking_profile') {
+            this.stageLabel = 'Checking your profile…';
+          } else if (event.stage === 'listing_repos') {
+            this.stageLabel = 'Getting the list of repositories…';
+            this.totalHint = event.total_hint;
+          } else if (event.stage === 'repo_progress') {
+            this.repoIndex = event.index;
+            this.totalHint = event.total_hint;
+            this.currentRepo = event.name;
+            this.currentCacheHit = event.cache_hit;
+            this.stageLabel = `Repository ${event.index} of ${event.total_hint || '?'}`;
+          } else if (event.stage === 'done') {
+            this.result =
+              `${event.total_repos} repos · ${event.fetched} fetched · ${event.cache_hits} cached`;
+            this.loading = false;
+            source.close();
+          } else if (event.stage === 'rate_limited') {
+            // Partial batch: some repos already saved before GitHub
+            // started blocking us. Say exactly how many, not just "failed".
+            this.result = `${event.completed} of ${event.total_hint || '?'} repos saved so far.`;
+            this.error = event.detail;
+            this.loading = false;
+            source.close();
+          } else if (event.stage === 'cancelled') {
+            this.result = `Stopped, ${event.completed} of ${event.total_hint || '?'} repos saved.`;
+            this.loading = false;
+            source.close();
+          } else if (event.stage === 'error') {
+            this.error = event.detail || 'sync failed';
+            this.loading = false;
+            source.close();
+          }
+        };
+
+        source.onerror = () => {
+          if (this.loading) {
+            this.error = this.error || 'Connection to server lost during sync.';
+            this.loading = false;
+          }
+          source.close();
+        };
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+
+      stop() {
+        // Close our own connection immediately, no more UI updates,
+        // feels instant, and separately tell the server to stop actually
+        // doing the work (it won't start the next repo; whatever's
+        // already in flight still finishes and stays saved, see
+        // app/ingest/github/sync.py). The server-side "cancelled" event,
+        // if it arrives, would land on a connection we've already closed,
+        // so we don't wait for it here.
+        if (this.runId) {
+          fetch(`/sync/github/cancel?run_id=${encodeURIComponent(this.runId)}`, {
+            method: 'POST',
+          }).catch(() => {});
+        }
+        if (this.eventSource) this.eventSource.close();
+        this.result = `Stopped, ${this.repoIndex} of ${this.totalHint || '?'} repos saved.`;
+        this.loading = false;
+      },
+    };
+  }
+</script>
+{% endblock %}

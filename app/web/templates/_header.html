@@ -1,0 +1,29 @@
+<!-- Shared top-level header: logo, section links, profile link. Included on
+     every logged-in page. Assumes the enclosing Alpine scope defines
+     `accountName` (every page here already does, for the account-picker
+     redirect check in init()). Pass `top_active`
+     ('home' | 'portfolio' | 'jobs' | 'monitor' | '') before including
+     this to highlight the current section; defaults to none highlighted.
+     Resume is a tab under Portfolio
+     (app/web/templates/_portfolio_subnav.html) rather than its own
+     top-level link, since a resume is drawn from the same
+     projects/skills/experience/education the rest of that section holds.
+     Profile goes straight to /settings, Log out lives on that page now,
+     not in a dropdown here. -->
+<header class="px-10 py-8 flex items-center justify-between">
+  {% include "_logo.html" %}
+  <div x-show="accountName" x-cloak class="otw-topnav">
+    <nav class="otw-topnav-links">
+      <a href="/home" class="otw-topnav-link {{ 'active' if top_active == 'home' }}">Home</a>
+      <a href="/portfolio" class="otw-topnav-link {{ 'active' if top_active == 'portfolio' }}">Portfolio</a>
+      <a href="/jobs" class="otw-topnav-link {{ 'active' if top_active == 'jobs' }}">Jobs</a>
+      <a href="/monitor" class="otw-topnav-link {{ 'active' if top_active == 'monitor' }}">Monitor</a>
+    </nav>
+    <div class="otw-profile">
+      <a href="/settings" class="otw-profile-btn">
+        <span class="otw-profile-avatar" x-text="(accountName[0] || '?').toUpperCase()"></span>
+        <span>Profile</span>
+      </a>
+    </div>
+  </div>
+</header>

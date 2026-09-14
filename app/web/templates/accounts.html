@@ -1,0 +1,392 @@
+{% extends "_base.html" %}
+{% block title %}Open to Work{% endblock %}
+{% block content %}
+<div x-data="accountsApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  <header class="px-10 py-8 flex items-center justify-between">
+    {% include "_logo.html" %}
+    <a href="/apis" class="otw-btn-ghost px-3 py-2 text-sm">Manage APIs</a>
+  </header>
+
+  <main class="flex-1 flex items-center justify-center px-8 pb-24">
+    <div x-cloak x-show="!loading" class="w-full max-w-3xl">
+
+      <!-- welcome: first-run intro, shown only when this device has no
+           profiles yet and no default-provider key configured -->
+      <template x-if="view === 'welcome'">
+        <div class="max-w-xl mx-auto flex flex-col" style="min-height: 60vh;">
+          <div class="flex-1">
+            <h1 class="font-display text-5xl">Open to Work</h1>
+            <p class="mt-4 text-[color:var(--muted)]">
+              This is a free, open-source project. Read more on the
+              <!-- TODO: real repo URL -->
+              <a href="#" class="underline hover:text-[color:var(--ink)]">GitHub repo</a>.
+            </p>
+
+            <h2 class="mt-12 text-xs uppercase tracking-wide text-[color:var(--muted)]">What we do</h2>
+            <ul class="mt-4 space-y-3">
+              <li class="flex gap-3">
+                <span class="text-[color:var(--accent)]">1.</span>
+                <span>We collect all your data in one place.</span>
+              </li>
+              <li class="flex gap-3">
+                <span class="text-[color:var(--accent)]">2.</span>
+                <span>We let you fetch job roles across different websites.</span>
+              </li>
+              <li class="flex gap-3">
+                <span class="text-[color:var(--accent)]">3.</span>
+                <span>Using the two above, we build a custom resume for each application.</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="flex justify-end mt-12">
+            <button @click="view = 'apikey'" class="otw-btn px-8">Next</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- apikey: default-provider key entry + verification, gates
+           onboarding. Which provider is "the" one here follows
+           Settings.llm_bulk_model (GET /api/api-keys/default-provider),
+           not a hardcoded provider: /apis is where every provider,
+           including this one afterward, lives. -->
+      <template x-if="view === 'apikey'">
+        <div class="max-w-md mx-auto flex flex-col" style="min-height: 60vh;">
+          <button @click="view = 'welcome'" class="text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)] mb-8 text-left">
+            ← previous
+          </button>
+
+          <div class="flex-1">
+            <h1 class="font-display text-4xl">Connect <span x-text="defaultProviderLabel"></span></h1>
+            <p class="mt-3 text-[color:var(--muted)]">
+              This is what builds your profile and tailors resumes. Every
+              provider's key setup, and swapping which one is active,
+              lives on <a href="/apis" class="underline hover:text-[color:var(--ink)]">Manage APIs</a> too.
+            </p>
+
+            <div class="mt-10" x-show="!keyAdded">
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]" x-text="defaultProviderLabel + ' API key'"></label>
+              <div class="mt-1 flex items-center gap-2">
+                <input
+                  type="password"
+                  x-model="keyInput"
+                  autocomplete="off"
+                  class="otw-input flex-1"
+                  placeholder="Paste your API key"
+                  @keydown.enter.prevent="verifyKey"
+                />
+                <button
+                  type="button"
+                  @click="verifyKey"
+                  :disabled="verifyingKey || !keyInput"
+                  title="Check this key"
+                  class="otw-btn-ghost px-3 py-2 text-sm shrink-0"
+                >
+                  <span x-show="!verifyingKey">✓</span>
+                  <span x-show="verifyingKey">…</span>
+                </button>
+              </div>
+              <p x-show="keyError" x-text="keyError" class="text-sm otw-error mt-2"></p>
+            </div>
+
+            <div x-show="keyAdded" x-cloak class="mt-10 otw-tick">
+              <span>✓</span> API key added
+            </div>
+          </div>
+
+          <div class="flex justify-end mt-12">
+            <button @click="view = 'create'" :disabled="!keyAdded" class="otw-btn px-8">Next</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- picker: existing accounts on this device -->
+      <template x-if="view === 'picker'">
+        <div class="text-center">
+          <h1 class="font-display text-5xl">Who's working?</h1>
+          <p class="mt-3 text-[color:var(--muted)]">
+            Pick a profile to continue, or set up a new one on this device.
+          </p>
+
+          <div class="mt-14 flex flex-wrap justify-center gap-6">
+            <template x-for="account in accounts" :key="account.id">
+              <div class="otw-tile relative w-44 px-6 py-8">
+                <button
+                  @click="deleteAccount(account)"
+                  title="Delete this profile"
+                  class="absolute top-2 right-2 text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] w-5 h-5 leading-none"
+                >×</button>
+                <button
+                  @click="selectAccount(account)"
+                  class="w-full flex flex-col items-center gap-4 text-left"
+                >
+                  <span class="otw-avatar" x-text="initials(account)"></span>
+                  <span class="text-center">
+                    <span class="block font-display text-lg" x-text="account.first_name + ' ' + account.last_name"></span>
+                    <span
+                      x-show="account.github_username"
+                      class="block text-xs text-[color:var(--muted)] mt-1"
+                      x-text="'@' + account.github_username"
+                    ></span>
+                  </span>
+                </button>
+              </div>
+            </template>
+
+            <button
+              @click="view = 'create'"
+              class="otw-tile w-44 flex flex-col items-center justify-center gap-3 px-6 py-8 border-dashed"
+            >
+              <span class="text-3xl leading-none">+</span>
+              <span class="text-sm text-[color:var(--muted)]">New profile</span>
+            </button>
+          </div>
+        </div>
+      </template>
+
+      <!-- create: new profile, or first run with nobody set up yet -->
+      <template x-if="view === 'create'">
+        <div class="max-w-md mx-auto">
+          <template x-if="accounts.length > 0">
+            <button @click="view = 'picker'" class="text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)] mb-8">
+              ← back
+            </button>
+          </template>
+          <template x-if="accounts.length === 0">
+            <button @click="view = 'apikey'" class="text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)] mb-8">
+              ← previous
+            </button>
+          </template>
+
+          <h1 class="font-display text-4xl">Set up your profile</h1>
+          <p class="mt-3 text-[color:var(--muted)]">
+            Add a GitHub username and we'll build an evidence-backed skill
+            profile from your public repos. No GitHub? Leave it blank,
+            you can add everything by hand instead.
+          </p>
+
+          <form @submit.prevent="submitCreate" class="mt-10 space-y-6">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">First name</label>
+                <input x-model="form.first_name" required class="otw-input mt-1" placeholder="Ada" />
+              </div>
+              <div>
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Last name</label>
+                <input x-model="form.last_name" required class="otw-input mt-1" placeholder="Lovelace" />
+              </div>
+            </div>
+
+            <div>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                GitHub username <span class="normal-case text-[color:var(--muted)]">(optional)</span>
+              </label>
+              <input
+                :value="form.github_username"
+                @input="$event.target.value = form.github_username = sanitizeUsername($event.target.value)"
+                class="otw-input mt-1"
+                placeholder="octocat (leave blank if you don't have one)"
+              />
+              <p x-show="usernameFormatError(form.github_username)" x-text="usernameFormatError(form.github_username)" class="text-xs otw-error mt-1"></p>
+            </div>
+
+            <div>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                Current resume <span class="normal-case text-[color:var(--muted)]">(optional)</span>
+              </label>
+              <p class="text-xs text-[color:var(--muted)] mt-1">
+                Have one on hand? Upload it now, we'll read it and use it
+                later when applying to jobs. You can add more, or skip this
+                and add one anytime, from the Resume page.
+              </p>
+              <label class="otw-btn-ghost text-sm px-4 py-2 mt-2 inline-block cursor-pointer">
+                <span x-text="resumeFile ? resumeFile.name : 'Choose a file'"></span>
+                <input type="file" class="hidden" @change="resumeFile = $event.target.files[0] || null" />
+              </label>
+            </div>
+
+            <button type="submit" class="otw-btn w-full mt-4" :disabled="submitting">
+              <span x-show="!submitting">Create profile</span>
+              <span x-show="submitting">Creating profile…</span>
+            </button>
+
+            <p x-show="createError" x-text="createError" class="text-sm otw-error"></p>
+          </form>
+        </div>
+      </template>
+
+    </div>
+  </main>
+</div>
+
+<script>
+  function accountsApp() {
+    return {
+      loading: true,
+      accounts: [],
+      view: 'picker',
+      submitting: false,
+      createError: '',
+      form: { first_name: '', last_name: '', github_username: '' },
+      resumeFile: null,
+
+      // Default-provider key step, 'apikey' view. keyAdded flips true once
+      // a key verifies and stays true for the rest of this page load
+      // (going back via Previous shows the tick again instead of an empty
+      // input), same idea as accounts staying loaded across view
+      // switches. Which provider "the" onboarding key is for follows
+      // Settings.llm_bulk_model (GET /api/api-keys/default-provider):
+      // OpenAI by default now, but whatever it's configured as.
+      defaultProvider: 'openai',
+      defaultProviderLabel: 'OpenAI',
+      keyInput: '',
+      keyAdded: false,
+      verifyingKey: false,
+      keyError: '',
+
+      async init() {
+        // Already signed in on this device: this page is the logged-out
+        // entry point (onboarding/picker/create), not the home page.
+        // Bounce straight to projects; the only way back here is an
+        // explicit Log out.
+        if (localStorage.getItem('otw_account_id')) {
+          window.location.href = '/home';
+          return;
+        }
+        try {
+          const [accountsRes, defaultProviderRes, keysRes] = await Promise.all([
+            fetch('/accounts'),
+            fetch('/api/api-keys/default-provider'),
+            fetch('/api/api-keys'),
+          ]);
+          this.accounts = await accountsRes.json();
+          const defaultProvider = await defaultProviderRes.json();
+          this.defaultProvider = defaultProvider.bulk;
+          this.defaultProviderLabel = defaultProvider.bulk_label;
+          const keys = await keysRes.json();
+          this.keyAdded = keys.some((k) => k.provider === this.defaultProvider && k.is_active);
+
+          if (this.accounts.length > 0) {
+            this.view = 'picker';
+          } else if (!this.keyAdded) {
+            this.view = 'welcome'; // full first-run wizard
+          } else {
+            this.view = 'create'; // key already set up, just need a profile
+          }
+        } catch (e) {
+          this.view = this.accounts.length > 0 ? 'picker' : 'welcome';
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async verifyKey() {
+        this.verifyingKey = true;
+        this.keyError = '';
+        try {
+          const res = await fetch('/api/api-keys', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              provider: this.defaultProvider,
+              label: this.defaultProviderLabel,
+              credentials: { api_key: this.keyInput },
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            this.keyError = data.detail || 'This key is invalid. Please check it and try again.';
+            return;
+          }
+          this.keyAdded = true;
+          this.keyInput = ''; // never keep the raw value around client-side either
+        } catch (e) {
+          this.keyError = 'Could not reach the server, try again.';
+        } finally {
+          this.verifyingKey = false;
+        }
+      },
+
+      // GitHub usernames: letters, digits, single hyphens only, max 39,
+      // strip anything else as it's typed (space included) rather than
+      // let it in and reject on submit. See app/ingest/github/
+      // source_parser.py for the same rule enforced server-side.
+      sanitizeUsername(value) {
+        return value.replace(/[^A-Za-z0-9-]/g, '').slice(0, 39);
+      },
+
+      usernameFormatError(value) {
+        if (!value) return '';
+        if (/^-|-$/.test(value)) return "Can't start or end with a hyphen.";
+        if (/--/.test(value)) return 'No consecutive hyphens.';
+        return '';
+      },
+
+      initials(account) {
+        return ((account.first_name[0] || '') + (account.last_name[0] || '')).toUpperCase();
+      },
+
+      // Picking an EXISTING account from the picker goes straight to
+      // /home, the KPI dashboard for "your account and what data you've
+      // fetched". The one-time /sync onboarding walkthrough is only for a
+      // just-created account (see submitCreate below), not shown again
+      // on every return visit.
+      selectAccount(account, { isNew = false } = {}) {
+        localStorage.setItem('otw_account_id', account.id);
+        localStorage.setItem('otw_account_name', account.first_name);
+        // ?new=1 tells /sync to kick GitHub linking off immediately on
+        // load instead of waiting for a second, redundant button press:
+        // Continue on this form already was that confirmation. No GitHub
+        // username was given (non-technical signup), nothing to sync,
+        // so skip straight to the profile they'll fill in by hand.
+        if (isNew && account.github_username) {
+          window.location.href = '/sync?new=1';
+        } else {
+          window.location.href = '/home';
+        }
+      },
+
+      async deleteAccount(account) {
+        const ok = confirm(
+          `Delete ${account.first_name} ${account.last_name}'s profile? ` +
+          `This erases every synced repo and extracted skill for this profile. Cannot be undone.`
+        );
+        if (!ok) return;
+
+        await fetch(`/accounts/${account.id}`, { method: 'DELETE' });
+        this.accounts = this.accounts.filter((a) => a.id !== account.id);
+        if (String(localStorage.getItem('otw_account_id')) === String(account.id)) {
+          localStorage.removeItem('otw_account_id');
+          localStorage.removeItem('otw_account_name');
+        }
+        if (this.accounts.length === 0) this.view = 'create';
+      },
+
+      async submitCreate() {
+        this.submitting = true;
+        this.createError = '';
+        try {
+          const body = new FormData();
+          body.append('first_name', this.form.first_name);
+          body.append('last_name', this.form.last_name);
+          body.append('github_username', this.form.github_username);
+          if (this.resumeFile) body.append('resume', this.resumeFile);
+
+          const res = await fetch('/accounts', { method: 'POST', body });
+          const data = await res.json();
+          if (!res.ok) {
+            this.createError = data.detail || 'Could not create profile.';
+            return;
+          }
+          this.selectAccount(data, { isNew: true });
+        } catch (e) {
+          this.createError = String(e);
+        } finally {
+          this.submitting = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

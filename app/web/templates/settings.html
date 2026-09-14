@@ -1,0 +1,136 @@
+{% extends "_base.html" %}
+{% block title %}Settings · Open to Work{% endblock %}
+{% block content %}
+<div x-data="settingsApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = '' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-2xl mx-auto w-full">
+    <div class="flex items-center justify-between gap-4">
+      <h1 class="font-display text-3xl">Settings</h1>
+      <button type="button" @click="logout()" class="otw-btn-ghost px-3 py-2 text-sm">
+        Log out
+      </button>
+    </div>
+
+    <!-- API keys: managed on /apis, shared with the pre-login account
+         picker, rather than a second copy of the widget here. -->
+    <section class="mt-12">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">API keys</h2>
+      <p class="mt-3 text-sm text-[color:var(--muted)]">
+        LLM provider keys live on
+        their own page, since they're shared across every profile on this
+        device.
+      </p>
+      <a href="/apis" class="otw-btn-ghost inline-block mt-4 px-4 py-2 text-sm">
+        Manage APIs →
+      </a>
+    </section>
+
+    <!-- Fetch data: which GitHub accounts/repos
+         this profile pulls evidence from is profile setup, not portfolio
+         content, same shelf as API keys above. -->
+    <section class="mt-12">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Fetch data</h2>
+      <p class="mt-3 text-sm text-[color:var(--muted)]">
+        Manage the GitHub accounts and individual repos this profile pulls
+        evidence from.
+      </p>
+      <a href="/settings/sources" class="otw-btn-ghost inline-block mt-4 px-4 py-2 text-sm">
+        Manage sources →
+      </a>
+    </section>
+
+    <!-- Authenticated job sources: login profiles for fetching a job
+         posting from a site that requires being signed in. -->
+    <section class="mt-12">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Authenticated job sources</h2>
+      <p class="mt-3 text-sm text-[color:var(--muted)]">
+        Stored login profiles for fetching a job posting from a site you have to be signed into.
+        Uses a real automated browser login; read the risk warning before adding one.
+      </p>
+      <a href="/settings/auth-sources" class="otw-btn-ghost inline-block mt-4 px-4 py-2 text-sm">
+        Manage authenticated sources →
+      </a>
+    </section>
+
+    <!-- Danger zone -->
+    <section class="mt-16 pt-8" style="border-top: 1px solid var(--line);">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--danger)]">Danger zone</h2>
+      <p class="mt-3 text-sm text-[color:var(--muted)]">
+        Deleting your profile erases every synced repo, extracted skill,
+        experience entry, and contact detail for this profile. This cannot
+        be undone.
+      </p>
+      <button type="button" @click="showDeleteModal = true" class="otw-btn-ghost otw-btn-danger-text mt-4 px-4 py-2 text-sm">
+        Delete account
+      </button>
+    </section>
+  </main>
+
+  <!-- Themed confirm modal, not window.confirm -->
+  <div
+    x-show="showDeleteModal"
+    x-cloak
+    class="otw-modal-backdrop"
+    @keydown.escape.window="showDeleteModal = false"
+    @click.self="showDeleteModal = false"
+  >
+    <div class="otw-modal" style="max-width: 26rem;">
+      <h3 class="font-display text-2xl">Delete this account?</h3>
+      <p class="mt-3 text-sm text-[color:var(--muted)]">
+        This erases every synced repo, extracted skill, experience entry,
+        and contact detail for this profile. This cannot be undone.
+      </p>
+      <div class="mt-8 flex gap-3 justify-end">
+        <button type="button" @click="showDeleteModal = false" class="otw-btn-ghost px-4 py-2 text-sm">
+          Cancel
+        </button>
+        <button type="button" @click="deleteAccount" :disabled="deleting" class="otw-btn px-4 py-2 text-sm" style="background: var(--danger); border-color: var(--danger);">
+          <span x-show="!deleting">Delete account</span>
+          <span x-show="deleting">Deleting…</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function settingsApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      showDeleteModal: false,
+      deleting: false,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+
+      async deleteAccount() {
+        if (!this.accountId) {
+          this.showDeleteModal = false;
+          return;
+        }
+        this.deleting = true;
+        try {
+          await fetch(`/accounts/${this.accountId}`, { method: 'DELETE' });
+          localStorage.removeItem('otw_account_id');
+          localStorage.removeItem('otw_account_name');
+          window.location.href = '/';
+        } finally {
+          this.deleting = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

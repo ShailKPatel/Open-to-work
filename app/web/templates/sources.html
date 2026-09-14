@@ -1,0 +1,297 @@
+{% extends "_base.html" %}
+{% block title %}Fetch data · Open to Work{% endblock %}
+{% block content %}
+<div x-data="sourcesApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = '' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-2xl mx-auto w-full">
+    <a href="/settings" class="mt-8 inline-block text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">← Settings</a>
+
+    <h1 class="font-display text-4xl mt-4">Fetch data</h1>
+    <p class="mt-3 text-[color:var(--muted)]">
+      Where we pull evidence from, separate from your profile name. Add
+      another GitHub account, or a single project you contributed to but
+      don't own. A username or profile link pulls that account's whole
+      repo list; a project link pulls just that one repo.
+    </p>
+
+    <form @submit.prevent="addSource" class="mt-8 flex gap-3">
+      <input
+        x-model="newInput"
+        required
+        class="otw-input flex-1"
+        placeholder="octocat, github.com/octocat, or github.com/octocat/Hello-World"
+      />
+      <button type="submit" class="otw-btn shrink-0" :disabled="adding">
+        <span x-show="!adding">Add</span>
+        <span x-show="adding">Adding…</span>
+      </button>
+    </form>
+    <p x-show="addError" x-text="addError" class="mt-2 text-sm otw-error"></p>
+
+    <div x-show="sources.length > 1" class="mt-8">
+      <button @click="syncAll" class="otw-btn-accent text-sm px-4 py-2" :disabled="syncingAll">
+        <span x-show="!syncingAll">Sync all sources</span>
+        <span x-show="syncingAll" class="otw-working">Syncing…</span>
+      </button>
+    </div>
+
+    <p x-show="Object.values(syncing).some(Boolean)" x-cloak class="mt-4 text-xs text-[color:var(--muted)]">
+      Fetching and skill extraction both run in the background, feel free to
+      <a href="/portfolio/projects" class="underline hover:text-[color:var(--ink)]">check your projects</a>
+      now, this keeps going either way.
+    </p>
+
+    <div x-cloak class="mt-8 space-y-3">
+      <template x-for="source in sources" :key="source.id">
+        <div class="otw-tile p-5">
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <span class="text-xs uppercase tracking-wide text-[color:var(--muted)]" x-text="source.kind === 'repo' ? 'project' : 'github account'"></span>
+              </div>
+              <p class="font-display text-lg mt-1 truncate" x-text="source.kind === 'repo' ? source.repo_full_name : source.github_username"></p>
+              <p class="text-xs text-[color:var(--muted)] mt-1" x-text="source.raw_input"></p>
+              <p class="text-xs text-[color:var(--muted)] mt-2" x-text="syncStatusLine(source)"></p>
+            </div>
+            <div class="flex flex-col items-end gap-2 shrink-0">
+              <button
+                @click="syncOne(source)"
+                :disabled="Boolean(syncing[source.id])"
+                class="otw-btn-accent text-xs px-3 py-1.5"
+              >
+                <span x-show="!syncing[source.id]">Sync</span>
+                <span x-show="syncing[source.id]" class="otw-working">Syncing…</span>
+              </button>
+              <button
+                @click="removeSource(source)"
+                class="text-xs otw-btn-danger-text"
+              >Remove</button>
+            </div>
+          </div>
+
+          <div x-show="syncing[source.id]" x-cloak class="mt-4 pt-4 border-t border-[color:var(--line)] space-y-2">
+            <div class="flex items-center justify-between gap-4">
+              <p class="text-xs" x-text="progress[source.id]?.label || 'Starting…'"></p>
+              <button
+                @click="stopOne(source)"
+                class="text-xs otw-btn-danger-text underline shrink-0"
+              >Stop</button>
+            </div>
+            <div class="h-[2px] w-full bg-[color:var(--line)] overflow-hidden">
+              <div
+                class="h-full bg-[color:var(--ink)] transition-all duration-300 ease-out"
+                :style="`width: ${progress[source.id]?.pct || 0}%`"
+              ></div>
+            </div>
+          </div>
+          <p x-show="errors[source.id]" x-text="errors[source.id]" class="mt-3 text-xs otw-error"></p>
+        </div>
+      </template>
+    </div>
+  </main>
+</div>
+
+<script>
+  function sourcesApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      sources: [],
+      newInput: '',
+      adding: false,
+      addError: '',
+      syncing: {},
+      syncingAll: false,
+      progress: {},
+      errors: {},
+      runIds: {},
+      eventSources: {},
+      resolvers: {},
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.load();
+      },
+
+      async load() {
+        const res = await fetch(`/api/sources?account_id=${this.accountId}`);
+        this.sources = await res.json();
+      },
+
+      syncStatusLine(source) {
+        return source.last_synced_at
+          ? `Last synced ${new Date(source.last_synced_at).toLocaleString()}`
+          : 'Not synced yet';
+      },
+
+      async addSource() {
+        this.adding = true;
+        this.addError = '';
+        try {
+          const res = await fetch('/api/sources', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), raw_input: this.newInput }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            this.addError = data.detail || 'Could not add that.';
+            return;
+          }
+          this.sources.push(data);
+          this.newInput = '';
+        } catch (e) {
+          this.addError = String(e);
+        } finally {
+          this.adding = false;
+        }
+      },
+
+      async removeSource(source) {
+        await fetch(`/api/sources/${source.id}`, { method: 'DELETE' });
+        this.sources = this.sources.filter((s) => s.id !== source.id);
+      },
+
+      syncOne(source) {
+        return new Promise((resolve) => {
+          // stopOne() needs to be able to settle THIS promise too: a
+          // syncAll() run awaits syncOne() one source at a time, and if
+          // Stop only closed the connection without resolving, syncAll's
+          // loop would hang on this source forever, never moving to the
+          // next one and never clearing syncingAll.
+          this.resolvers[source.id] = resolve;
+          this.syncing[source.id] = true;
+          this.errors[source.id] = '';
+          this.progress[source.id] = { label: 'Checking…', pct: 0 };
+          // Fresh id per attempt, lets Stop target exactly this run
+          // without a stale flag from a previous cancelled attempt of
+          // the same source leaking into this one. See
+          // app/ingest/github/sync.py's sync_account_progress docstring.
+          const runId = crypto.randomUUID();
+          this.runIds[source.id] = runId;
+
+          const es = new EventSource(`/api/sources/${source.id}/sync/stream?run_id=${runId}`);
+          this.eventSources[source.id] = es;
+          // Same parallel-kickoff as sync.html: skill extraction runs in
+          // its own background thread from the moment fetching starts, not
+          // chained after it. See that file for the full rationale.
+          if (this.accountId) {
+            fetch(`/api/projects/process-pending/start?account_id=${this.accountId}`, {
+              method: 'POST',
+            }).catch(() => {});
+          }
+          es.onmessage = (e) => {
+            const event = JSON.parse(e.data);
+            if (event.stage === 'checking_profile') {
+              this.progress[source.id] = { label: 'Checking…', pct: 0 };
+            } else if (event.stage === 'listing_repos') {
+              this.progress[source.id] = { label: 'Getting repo list…', pct: 0 };
+            } else if (event.stage === 'repo_progress') {
+              const pct = event.total_hint ? Math.min(100, Math.round((event.index / event.total_hint) * 100)) : 100;
+              this.progress[source.id] = {
+                label: `${event.index} / ${event.total_hint || '?'} · ${event.name}`,
+                pct,
+              };
+            } else if (event.stage === 'done') {
+              this.progress[source.id] = { label: `Done, ${event.total_repos} repos`, pct: 100 };
+              this.syncing[source.id] = false;
+              es.close();
+              this.load();
+              resolve();
+            } else if (event.stage === 'rate_limited') {
+              // Partial batch: some repos already saved before GitHub
+              // started blocking us. Say exactly how many, not just "failed".
+              this.progress[source.id] = {
+                label: `${event.completed} of ${event.total_hint || '?'} saved`,
+                pct: event.total_hint ? Math.round((event.completed / event.total_hint) * 100) : 0,
+              };
+              this.errors[source.id] = event.detail;
+              this.syncing[source.id] = false;
+              es.close();
+              this.load();
+              resolve();
+            } else if (event.stage === 'cancelled') {
+              // NOT written into progress[source.id]: that block is only
+              // shown while syncing[source.id] is true, and we're about
+              // to flip that false, which would hide it instantly. This
+              // message needs a slot that stays visible afterward.
+              this.errors[source.id] =
+                `Stopped, ${event.completed} of ${event.total_hint || '?'} saved.`;
+              this.syncing[source.id] = false;
+              es.close();
+              this.load();
+              resolve();
+            } else if (event.stage === 'error') {
+              this.errors[source.id] = event.detail || 'Sync failed.';
+              this.syncing[source.id] = false;
+              es.close();
+              resolve();
+            }
+          };
+          es.onerror = () => {
+            if (this.syncing[source.id]) {
+              this.errors[source.id] = this.errors[source.id] || 'Connection lost during sync.';
+              this.syncing[source.id] = false;
+            }
+            es.close();
+            resolve();
+          };
+        });
+      },
+
+      stopOne(source) {
+        // Close our side immediately (feels instant) and separately tell
+        // the server to stop starting new repos, whatever's already in
+        // flight still finishes and stays saved. Not waiting for the
+        // server's own "cancelled" event, since we're closing the
+        // connection it would arrive on anyway.
+        const runId = this.runIds[source.id];
+        if (runId) {
+          fetch(`/api/sources/${source.id}/sync/cancel?run_id=${runId}`, {
+            method: 'POST',
+          }).catch(() => {});
+        }
+        const es = this.eventSources[source.id];
+        if (es) es.close();
+        // Same reasoning as the "cancelled" branch above: progress[]'s
+        // display block hides the instant syncing[] flips false, so the
+        // message goes in errors[] instead, which stays visible.
+        this.errors[source.id] = `Stopped, ${this.progress[source.id]?.label || '0 saved'}`;
+        this.syncing[source.id] = false;
+        // settle syncOne()'s promise: without this, syncAll()'s
+        // sequential loop would hang forever on this source
+        const resolve = this.resolvers[source.id];
+        if (resolve) {
+          delete this.resolvers[source.id];
+          resolve();
+        }
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+
+      async syncAll() {
+        this.syncingAll = true;
+        try {
+          for (const source of this.sources) {
+            await this.syncOne(source);
+          }
+        } finally {
+          this.syncingAll = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

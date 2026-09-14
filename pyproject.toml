@@ -1,0 +1,60 @@
+[project]
+name = "open-to-work"
+version = "0.1.0"
+description = "Evidence-backed skill profile from GitHub history, matched against real job postings."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-settings>=2.4",
+    "sqlalchemy>=2.0",
+    "pygithub>=2.3",
+    "tenacity>=8.5",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "jinja2>=3.1",
+    "litellm>=1.50",
+    "sentence-transformers>=3.1",
+    "qdrant-client>=1.11",
+    "python-multipart>=0.0.12",  # FastAPI file upload (resume) form parsing
+    "cryptography>=42",  # encrypts stored API keys at rest, app/core/crypto.py
+    "pypdf>=5.0",  # page-count / page-fit check on a compiled resume PDF, app/resume_build/pagefit.py
+    "beautifulsoup4>=4.12",  # HTML -> visible text for public job-URL fetch, app/ingest/jobs/url_fetch.py
+    "playwright>=1.40",  # real browser login for job sites that require it, app/ingest/jobs/auth_fetch.py
+    "rank-bm25>=0.2",  # keyword-only baseline retrieval, app/evals/bm25.py (pure Python)
+    "pyyaml>=6.0",  # golden-set file format, app/evals/golden.py (imported directly)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "requests>=2.31",  # tests/live only (imported directly)
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Form()/File()/Depends() as parameter defaults is the framework's
+# actual API, not the mutable-default-argument footgun B008 exists to catch.
+extend-immutable-calls = ["fastapi.Form", "fastapi.File", "fastapi.Depends"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# tests/live/ is excluded: real, billed LLM calls, opt-in only via
+# `make test-live`.
+testpaths = ["tests/unit"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

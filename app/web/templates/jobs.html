@@ -1,0 +1,561 @@
+{% extends "_base.html" %}
+{% block title %}Jobs · Open to Work{% endblock %}
+{% block content %}
+<div x-data="jobsApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'jobs' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-5xl mx-auto w-full">
+    <div class="mt-8 flex items-start justify-between gap-4 flex-wrap">
+      <div>
+        <h1 class="font-display text-4xl">Jobs</h1>
+        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
+          Keep a record of jobs you're considering: paste the text, fetch a public link, upload a
+          screenshot, or pull one from a site you're signed into. Role, company, salary,
+          experience and skills required are pulled out automatically. Pick any of them from
+          <a href="/portfolio/resume/build" class="underline hover:text-[color:var(--ink)]">Build a resume</a>
+          when you're ready to apply.
+        </p>
+      </div>
+      <a href="/jobs/analytics" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">Skill analytics →</a>
+    </div>
+
+    <section class="otw-tile p-6 mt-8">
+      <div class="flex items-center justify-between">
+        <h2 class="font-display text-xl">Add a job posting</h2>
+        <button type="button" class="otw-btn-ghost text-sm px-4 py-2" @click="showAddForm = !showAddForm">
+          <span x-text="showAddForm ? 'Cancel' : '+ New'"></span>
+        </button>
+      </div>
+
+      <div x-cloak x-show="showAddForm" class="mt-4">
+        <div class="flex gap-2 flex-wrap text-xs">
+          <button type="button" class="otw-chip" :class="addMode === 'paste' ? 'otw-chip-active' : ''" @click="addMode = 'paste'">Paste text</button>
+          <button type="button" class="otw-chip" :class="addMode === 'url' ? 'otw-chip-active' : ''" @click="addMode = 'url'">From URL</button>
+          <button type="button" class="otw-chip" :class="addMode === 'screenshot' ? 'otw-chip-active' : ''" @click="addMode = 'screenshot'">From screenshot</button>
+          <button type="button" class="otw-chip" :class="addMode === 'auth' ? 'otw-chip-active' : ''" @click="addMode = 'auth'; loadAuthSources()">From a site you're signed into</button>
+        </div>
+
+        <!-- Paste text -->
+        <div x-show="addMode === 'paste'" class="mt-4 space-y-3">
+          <div class="flex gap-3 flex-wrap">
+            <input x-model="pasteCompany" class="otw-input flex-1" placeholder="Company (optional, we'll try to read it from the text)" />
+            <input x-model="pasteTitle" class="otw-input flex-1" placeholder="Job title (optional)" />
+          </div>
+          <textarea x-model="pasteText" rows="8" class="otw-input" placeholder="Paste the full job posting text here."></textarea>
+          <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(pasting) || !pasteText.trim()" @click="pasteJob()">
+            <span x-show="!pasting">Save job posting</span>
+            <span x-show="pasting" class="otw-working">Saving…</span>
+          </button>
+        </div>
+
+        <!-- From URL -->
+        <div x-show="addMode === 'url'" class="mt-4 space-y-3">
+          <p class="text-xs text-[color:var(--muted)]">Works for most public career pages and job-board listings. If the page needs you to be signed in, use "From a site you're signed into" instead.</p>
+          <input x-model="urlValue" class="otw-input" placeholder="https://company.com/careers/some-role" />
+          <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(fetching) || !urlValue.trim()" @click="fetchFromUrl()">
+            <span x-show="!fetching">Fetch and save</span>
+            <span x-show="fetching" class="otw-working">Fetching…</span>
+          </button>
+        </div>
+
+        <!-- From screenshot -->
+        <div x-show="addMode === 'screenshot'" class="mt-4 space-y-3">
+          <p class="text-xs text-[color:var(--muted)]">Upload a screenshot of the posting; the text is read out of the image automatically.</p>
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="screenshotFile = $event.target.files[0]" class="otw-input" />
+          <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(fetching) || !screenshotFile" @click="uploadScreenshot()">
+            <span x-show="!fetching">Read and save</span>
+            <span x-show="fetching" class="otw-working">Reading…</span>
+          </button>
+        </div>
+
+        <!-- From an authenticated source -->
+        <div x-show="addMode === 'auth'" class="mt-4 space-y-3">
+          <p class="text-xs otw-error" style="opacity:0.85;">
+            This logs into a site on your behalf using a stored login profile. Automated login can get an account
+            flagged or banned if overused. Use an alternate account, never your primary one.
+            <a href="/settings/auth-sources" class="underline">Manage authenticated sources →</a>
+          </p>
+          <div x-show="authSources.length === 0" class="text-sm text-[color:var(--muted)]">
+            No authenticated sources configured yet. <a href="/settings/auth-sources" class="underline">Add one in Settings</a> first.
+          </div>
+          <div x-show="authSources.length > 0" class="space-y-3">
+            <select x-model="authSourceId" class="otw-input">
+              <option value="">Choose a signed-in source…</option>
+              <template x-for="s in authSources" :key="s.id">
+                <option :value="s.id" x-text="s.label + ' (' + s.site_domain + ')'"></option>
+              </template>
+            </select>
+            <input x-model="urlValue" class="otw-input" placeholder="Full link to the posting on that site" />
+            <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(fetching) || !urlValue.trim() || !authSourceId" @click="fetchFromAuthSource()">
+              <span x-show="!fetching">Log in, fetch, and save</span>
+              <span x-show="fetching" class="otw-working">Logging in…</span>
+            </button>
+          </div>
+        </div>
+
+        <p x-show="pasteError" x-text="pasteError" class="text-sm otw-error mt-3"></p>
+      </div>
+    </section>
+
+    <div x-cloak x-show="!loading && postings.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No job postings yet, add one above to get started.</p>
+    </div>
+
+    <div x-cloak class="mt-8 grid gap-5" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
+      <template x-for="p in postings" :key="p.id">
+        <div class="otw-tile p-5 flex flex-col gap-3">
+          <button type="button" @click="openPosting(p)" class="text-left flex flex-col gap-3">
+            <div>
+              <h3 class="font-display text-lg" x-text="p.title"></h3>
+              <p class="text-sm text-[color:var(--muted)]" x-text="p.company"></p>
+              <p x-show="p.location" class="text-xs text-[color:var(--muted)] mt-0.5" x-text="p.location"></p>
+            </div>
+            <div class="flex flex-wrap gap-1.5 text-xs">
+              <span x-show="p.role_family" class="otw-chip" x-text="p.role_family ? p.role_family.canonical_name : ''"></span>
+              <span x-show="p.salary_range" class="otw-chip" x-text="p.salary_range"></span>
+              <span x-show="p.employment_type" class="otw-chip" x-text="p.employment_type"></span>
+              <span x-show="p.seniority" class="otw-chip" x-text="p.seniority"></span>
+              <span x-show="p.experience_required" class="otw-chip" x-text="p.experience_required"></span>
+            </div>
+            <div x-show="p.skills_required && p.skills_required.length" class="flex flex-wrap gap-1.5 text-xs">
+              <template x-for="s in (p.skills_required || []).slice(0, 6)" :key="s.skill">
+                <span class="otw-chip" x-text="s.skill"></span>
+              </template>
+              <span x-show="(p.skills_required || []).length > 6" class="text-[color:var(--muted)]" x-text="'+' + (p.skills_required.length - 6) + ' more'"></span>
+            </div>
+          </button>
+          <div class="flex items-center justify-between mt-auto pt-2 text-xs text-[color:var(--muted)]">
+            <span x-text="new Date(p.fetched_at).toLocaleDateString()"></span>
+            <span :class="statusClass(p)" x-text="statusLabel(p)"></span>
+          </div>
+          <label class="flex items-center gap-2 text-xs pt-1" style="border-top: 1px solid var(--line);" @click.stop>
+            <input type="checkbox" :checked="p.applied" @change="toggleApplied(p, $event.target.checked)" />
+            <span x-show="!p.applied">Mark as applied</span>
+            <span x-show="p.applied">Applied<span x-show="p.applied_at" x-text="' · ' + p.applied_at"></span></span>
+          </label>
+        </div>
+      </template>
+    </div>
+  </main>
+
+  <!-- Detail popup: full text + every extracted field, manual edit,
+       reprocess/delete, applied tracker, skill gap, jump to resume-build. -->
+  <div x-show="viewing" x-cloak class="otw-modal-backdrop" @keydown.escape.window="viewing = null" @click.self="viewing = null">
+    <div class="otw-modal" style="max-width: 42rem;">
+      <template x-if="viewing">
+        <div>
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0 flex-1">
+              <input
+                x-model="editTitle"
+                @blur="saveField(viewing, 'title', editTitle)"
+                @keydown.enter.prevent="$event.target.blur()"
+                class="font-display text-2xl bg-transparent border-none outline-none p-0 w-full focus:outline-none"
+                placeholder="Job title"
+              />
+              <input
+                x-model="editCompany"
+                @blur="saveField(viewing, 'company', editCompany)"
+                @keydown.enter.prevent="$event.target.blur()"
+                class="text-[color:var(--muted)] bg-transparent border-none outline-none p-0 w-full focus:outline-none mt-1"
+                placeholder="Company"
+              />
+            </div>
+            <button @click="viewing = null" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] text-xl leading-none shrink-0">×</button>
+          </div>
+
+          <div class="mt-3">
+            <input
+              x-model="editLocation"
+              @blur="saveField(viewing, 'location', editLocation)"
+              @keydown.enter.prevent="$event.target.blur()"
+              class="otw-input text-sm"
+              placeholder="Location (optional)"
+            />
+          </div>
+
+          <div class="flex flex-wrap gap-1.5 text-xs mt-4">
+            <span x-show="viewing.role_family" class="otw-chip" x-text="viewing.role_family ? viewing.role_family.canonical_name : ''"></span>
+            <span x-show="viewing.salary_range" class="otw-chip" x-text="viewing.salary_range"></span>
+            <span x-show="viewing.employment_type" class="otw-chip" x-text="viewing.employment_type"></span>
+            <span x-show="viewing.seniority" class="otw-chip" x-text="viewing.seniority"></span>
+            <span x-show="viewing.experience_required" class="otw-chip" x-text="'Experience: ' + viewing.experience_required"></span>
+          </div>
+
+          <div x-show="viewing.skills_required && viewing.skills_required.length" class="mt-4">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Skills required</label>
+            <div class="flex flex-wrap gap-1.5 mt-2">
+              <template x-for="s in viewing.skills_required" :key="s.skill">
+                <span class="otw-chip" x-text="s.level ? (s.skill + ' · ' + s.level) : s.skill"></span>
+              </template>
+            </div>
+          </div>
+
+          <!-- Skill gap: what you already have vs what's missing, for this posting -->
+          <div x-show="gap" class="mt-4">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Where you stand</label>
+            <div class="mt-2 grid gap-3" style="grid-template-columns: 1fr 1fr;">
+              <div>
+                <p class="text-xs text-[color:var(--muted)]">You already have</p>
+                <div class="flex flex-wrap gap-1.5 mt-1.5">
+                  <template x-for="s in (gap ? gap.matched : [])" :key="s">
+                    <span class="otw-chip" style="border-color: var(--ink);" x-text="s"></span>
+                  </template>
+                  <span x-show="gap && gap.matched.length === 0" class="text-xs text-[color:var(--muted)]">None yet</span>
+                </div>
+              </div>
+              <div>
+                <p class="text-xs text-[color:var(--muted)]">Missing from your portfolio</p>
+                <div class="flex flex-wrap gap-1.5 mt-1.5">
+                  <template x-for="s in (gap ? gap.missing : [])" :key="s">
+                    <span class="otw-chip otw-error" x-text="s"></span>
+                  </template>
+                  <span x-show="gap && gap.missing.length === 0" class="text-xs text-[color:var(--muted)]">None. You cover everything listed</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div x-show="viewing.other_requirements && viewing.other_requirements.length" class="mt-4">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Other requirements</label>
+            <ul class="mt-2 text-sm list-disc list-inside">
+              <template x-for="r in viewing.other_requirements" :key="r">
+                <li x-text="r"></li>
+              </template>
+            </ul>
+          </div>
+
+          <div x-show="viewing.role_summary" class="mt-4">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Summary</label>
+            <p class="text-sm mt-1" x-text="viewing.role_summary"></p>
+          </div>
+
+          <p x-show="viewing.extraction_status === 'failed'" class="mt-4 text-sm otw-error" x-text="viewing.extraction_error || 'Could not read salary/skills/experience from this posting.'"></p>
+
+          <div class="mt-4">
+            <input
+              x-model="editApplyUrl"
+              @blur="saveField(viewing, 'apply_url', editApplyUrl)"
+              @keydown.enter.prevent="$event.target.blur()"
+              class="otw-input text-sm"
+              placeholder="Link to apply (optional)"
+            />
+          </div>
+
+          <!-- Applied tracker -->
+          <div class="mt-5 otw-tile p-4">
+            <label class="flex items-center gap-2 text-sm">
+              <input type="checkbox" :checked="viewing.applied" @change="toggleApplied(viewing, $event.target.checked)" />
+              Applied to this job
+            </label>
+            <div x-show="viewing.applied" class="mt-3 space-y-2">
+              <label class="text-xs text-[color:var(--muted)]">Applied on</label>
+              <input
+                type="date"
+                x-model="editAppliedAt"
+                @change="saveField(viewing, 'applied_at', editAppliedAt)"
+                class="otw-input text-sm"
+              />
+              <label class="text-xs text-[color:var(--muted)]">Notes (referral, contact, follow-up date…)</label>
+              <textarea
+                x-model="editAppliedNotes"
+                @blur="saveField(viewing, 'applied_notes', editAppliedNotes)"
+                rows="2"
+                class="otw-input text-sm"
+                placeholder="Optional notes"
+              ></textarea>
+            </div>
+          </div>
+
+          <div class="mt-5">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Full posting text</label>
+            <div class="otw-tile p-3 mt-2 text-sm whitespace-pre-wrap" style="max-height: 14rem; overflow-y: auto;" x-text="viewing.raw_text || ''"></div>
+          </div>
+
+          <div class="flex items-center justify-between gap-3 mt-6 flex-wrap">
+            <div class="flex items-center gap-3">
+              <button @click="reprocess(viewing)" :disabled="Boolean(reprocessing)" class="otw-btn-accent text-xs px-3 py-1.5">
+                <span x-show="!reprocessing">Reprocess</span>
+                <span x-show="reprocessing" class="otw-working">Working…</span>
+              </button>
+              <button @click="remove(viewing)" :disabled="Boolean(deleting)" class="text-xs otw-btn-danger-text">Delete</button>
+            </div>
+            <a :href="'/portfolio/resume/build?job_posting_id=' + viewing.id" class="otw-btn text-sm px-4 py-2">Build resume for this job →</a>
+          </div>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+
+<style>
+  .otw-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    color: var(--ink);
+    background: rgba(242, 242, 240, 0.06);
+    border: 1px solid var(--line);
+  }
+  .otw-chip-active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+</style>
+
+<script>
+  function jobsApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      postings: [],
+      loading: true,
+      showAddForm: false,
+      addMode: 'paste',
+      pasteText: '',
+      pasteCompany: '',
+      pasteTitle: '',
+      urlValue: '',
+      screenshotFile: null,
+      authSources: [],
+      authSourceId: '',
+      pasting: false,
+      fetching: false,
+      pasteError: '',
+      viewing: null,
+      gap: null,
+      editTitle: '', editCompany: '', editLocation: '', editApplyUrl: '',
+      editAppliedAt: '', editAppliedNotes: '',
+      reprocessing: false,
+      deleting: false,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.loadPostings();
+      },
+
+      async loadPostings() {
+        this.loading = true;
+        try {
+          const res = await fetch(`/api/job-postings?account_id=${this.accountId}`);
+          this.postings = await res.json();
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async loadAuthSources() {
+        try {
+          const res = await fetch(`/api/auth-sources?account_id=${this.accountId}`);
+          this.authSources = (await res.json()).filter((s) => s.enabled);
+        } catch {
+          this.authSources = [];
+        }
+      },
+
+      resetAddForm() {
+        this.pasteText = '';
+        this.pasteCompany = '';
+        this.pasteTitle = '';
+        this.urlValue = '';
+        this.screenshotFile = null;
+        this.authSourceId = '';
+        this.showAddForm = false;
+      },
+
+      async pasteJob() {
+        this.pasting = true;
+        this.pasteError = '';
+        try {
+          const res = await fetch('/api/job-postings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              account_id: Number(this.accountId),
+              raw_text: this.pasteText,
+              company: this.pasteCompany || null,
+              title: this.pasteTitle || null,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.pasteError = err.detail || 'Could not save this job posting.';
+            return;
+          }
+          await this.loadPostings();
+          this.resetAddForm();
+        } finally {
+          this.pasting = false;
+        }
+      },
+
+      async fetchFromUrl() {
+        this.fetching = true;
+        this.pasteError = '';
+        try {
+          const res = await fetch('/api/job-postings/from-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), url: this.urlValue }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.pasteError = err.detail || 'Could not fetch that URL.';
+            return;
+          }
+          await this.loadPostings();
+          this.resetAddForm();
+        } finally {
+          this.fetching = false;
+        }
+      },
+
+      async uploadScreenshot() {
+        if (!this.screenshotFile) return;
+        this.fetching = true;
+        this.pasteError = '';
+        try {
+          const form = new FormData();
+          form.append('account_id', this.accountId);
+          form.append('file', this.screenshotFile);
+          const res = await fetch('/api/job-postings/from-screenshot', { method: 'POST', body: form });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.pasteError = err.detail || 'Could not read that screenshot.';
+            return;
+          }
+          await this.loadPostings();
+          this.resetAddForm();
+        } finally {
+          this.fetching = false;
+        }
+      },
+
+      async fetchFromAuthSource() {
+        if (!this.authSourceId) return;
+        this.fetching = true;
+        this.pasteError = '';
+        try {
+          const res = await fetch('/api/job-postings/from-authenticated-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              account_id: Number(this.accountId),
+              url: this.urlValue,
+              auth_source_id: Number(this.authSourceId),
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.pasteError = err.detail || 'Could not log in and fetch that URL.';
+            return;
+          }
+          await this.loadPostings();
+          this.resetAddForm();
+        } finally {
+          this.fetching = false;
+        }
+      },
+
+      statusLabel(p) {
+        if (p.extraction_status === 'extracted') return 'Read';
+        if (p.extraction_status === 'failed') return 'Could not read details';
+        return 'Reading…';
+      },
+      statusClass(p) {
+        if (p.extraction_status === 'failed') return 'otw-error';
+        return '';
+      },
+
+      async openPosting(summary) {
+        const res = await fetch(`/api/job-postings/${summary.id}`);
+        if (!res.ok) return;
+        const detail = await res.json();
+        this.viewing = detail;
+        this.editTitle = detail.title;
+        this.editCompany = detail.company;
+        this.editLocation = detail.location || '';
+        this.editApplyUrl = detail.apply_url || '';
+        this.editAppliedAt = detail.applied_at || '';
+        this.editAppliedNotes = detail.applied_notes || '';
+        this.gap = null;
+        try {
+          const gapRes = await fetch(`/api/job-analytics/gap/${detail.id}?account_id=${this.accountId}`);
+          if (gapRes.ok) this.gap = await gapRes.json();
+        } catch {
+          this.gap = null;
+        }
+      },
+
+      async saveField(posting, field, value) {
+        const res = await fetch(`/api/job-postings/${posting.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [field]: value || null }),
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          Object.assign(posting, updated);
+          const idx = this.postings.findIndex((p) => p.id === posting.id);
+          if (idx !== -1) this.postings[idx] = updated;
+        }
+      },
+
+      async toggleApplied(posting, applied) {
+        const res = await fetch(`/api/job-postings/${posting.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ applied }),
+        });
+        if (res.ok) {
+          const updated = await res.json();
+          Object.assign(posting, updated);
+          const idx = this.postings.findIndex((p) => p.id === posting.id);
+          if (idx !== -1) this.postings[idx] = updated;
+          if (this.viewing && this.viewing.id === posting.id) {
+            this.editAppliedAt = updated.applied_at || '';
+            this.editAppliedNotes = updated.applied_notes || '';
+          }
+        }
+      },
+
+      async reprocess(posting) {
+        this.reprocessing = true;
+        try {
+          const res = await fetch(`/api/job-postings/${posting.id}/reprocess`, { method: 'POST' });
+          if (res.ok) {
+            const updated = await res.json();
+            Object.assign(posting, updated);
+            const idx = this.postings.findIndex((p) => p.id === posting.id);
+            if (idx !== -1) this.postings[idx] = updated;
+          }
+        } finally {
+          this.reprocessing = false;
+        }
+      },
+
+      async remove(posting) {
+        if (!confirm('Delete this job posting?')) return;
+        this.deleting = true;
+        try {
+          const res = await fetch(`/api/job-postings/${posting.id}`, { method: 'DELETE' });
+          if (res.ok) {
+            this.postings = this.postings.filter((p) => p.id !== posting.id);
+            this.viewing = null;
+          }
+        } finally {
+          this.deleting = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

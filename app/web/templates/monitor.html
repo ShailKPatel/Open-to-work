@@ -1,0 +1,451 @@
+{% extends "_base.html" %}
+{% block title %}Monitor · Open to Work{% endblock %}
+{% block content %}
+<div x-data="monitorApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'monitor' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-5xl mx-auto w-full">
+    <div class="flex items-center justify-between gap-4">
+      <div>
+        <h1 class="font-display text-3xl">Monitor</h1>
+        <p class="mt-2 text-sm text-[color:var(--muted)]">
+          Live headroom on GitHub and every LLM provider, spend and call
+          volume broken down by API key, profile, provider and tier, and
+          every time any of it got rate-limited or hit a budget cap.
+          Add or edit keys on <a href="/apis" class="underline hover:text-[color:var(--ink)]">Manage APIs</a>.
+        </p>
+      </div>
+      <button type="button" @click="refresh" :disabled="loading" class="otw-btn-ghost px-3 py-2 text-sm shrink-0">
+        <span x-show="!loading">Refresh</span>
+        <span x-show="loading" class="otw-working">Loading…</span>
+      </button>
+    </div>
+
+    <!-- Live status -->
+    <div class="mt-8 grid gap-4 sm:grid-cols-2">
+      <div class="otw-kpi">
+        <p class="otw-kpi-label">GitHub API</p>
+        <template x-if="status.github && status.github.ok">
+          <div>
+            <p class="otw-kpi-value" x-text="status.github.remaining + ' / ' + status.github.limit"></p>
+            <p class="otw-kpi-sub" x-text="'resets ' + formatTime(status.github.reset_at)"></p>
+          </div>
+        </template>
+        <template x-if="status.github && !status.github.ok">
+          <div>
+            <p class="otw-kpi-value text-2xl otw-error">Unreachable</p>
+            <p class="otw-kpi-sub" x-text="status.github.error"></p>
+          </div>
+        </template>
+      </div>
+
+      <div class="otw-kpi">
+        <p class="otw-kpi-label">LLM monthly budget (all keys)</p>
+        <template x-if="status.llm">
+          <div>
+            <p class="otw-kpi-value">
+              $<span x-text="status.llm.spent_usd.toFixed(2)"></span>
+              <span class="text-[color:var(--muted)] text-xl">/ $<span x-text="status.llm.monthly_budget_usd.toFixed(2)"></span></span>
+            </p>
+            <p class="otw-kpi-sub" x-text="status.llm.bulk_model + ' · ' + status.llm.quality_model"></p>
+          </div>
+        </template>
+      </div>
+
+      <div class="otw-kpi">
+        <p class="otw-kpi-label">Rate-limit hits, 24h</p>
+        <p class="otw-kpi-value" x-text="(status.counts_24h.github || 0) + (status.counts_24h.llm || 0)"></p>
+        <p class="otw-kpi-sub">
+          <span x-text="status.counts_24h.github || 0"></span> GitHub ·
+          <span x-text="status.counts_24h.llm || 0"></span> LLM
+        </p>
+      </div>
+
+      <div class="otw-kpi">
+        <p class="otw-kpi-label">Rate-limit hits, 7d</p>
+        <p class="otw-kpi-value" x-text="(status.counts_7d.github || 0) + (status.counts_7d.llm || 0)"></p>
+        <p class="otw-kpi-sub">
+          <span x-text="status.counts_7d.github || 0"></span> GitHub ·
+          <span x-text="status.counts_7d.llm || 0"></span> LLM
+        </p>
+      </div>
+    </div>
+
+    <!-- Usage by API key -->
+    <section class="mt-12">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Usage by API key, this month</h2>
+      <div class="mt-4 overflow-x-auto" x-show="status.keys && status.keys.length">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs uppercase tracking-wide text-[color:var(--muted)] border-b border-[color:var(--line)]">
+              <th class="py-2 pr-4">Key</th>
+              <th class="py-2 pr-4">Provider</th>
+              <th class="py-2 pr-4">Status</th>
+              <th class="py-2 pr-4 text-right">Calls</th>
+              <th class="py-2 pr-4 text-right">Spent</th>
+              <th class="py-2 pr-4 text-right">Cap</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="k in status.keys" :key="k.id">
+              <tr class="border-b border-[color:var(--line)]">
+                <td class="py-2 pr-4">
+                  <span x-text="k.label"></span>
+                  <span class="text-xs text-[color:var(--muted)]" x-show="k.is_active"> · active</span>
+                  <span class="text-xs otw-error" x-show="!k.enabled"> · disabled</span>
+                </td>
+                <td class="py-2 pr-4" x-text="k.provider_label"></td>
+                <td class="py-2 pr-4">
+                  <span :class="k.status === 'invalid' ? 'otw-error' : ''" x-text="k.status"></span>
+                </td>
+                <td class="py-2 pr-4 text-right" x-text="k.calls_month"></td>
+                <td class="py-2 pr-4 text-right">$<span x-text="k.spent_usd_month.toFixed(2)"></span></td>
+                <td class="py-2 pr-4 text-right" x-text="k.budget_cap_usd != null ? ('$' + k.budget_cap_usd.toFixed(2)) : '—'"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <p class="mt-4 text-sm text-[color:var(--muted)]" x-show="!loading && (!status.keys || !status.keys.length)">
+        No API keys configured yet. Add one on <a href="/apis" class="underline hover:text-[color:var(--ink)]">Manage APIs</a>.
+      </p>
+    </section>
+
+    <!-- Usage breakdown, filterable -->
+    <section class="mt-12">
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Usage breakdown</h2>
+      </div>
+
+      <div class="mt-4 flex flex-wrap items-end gap-3">
+        <label class="text-sm">
+          <span class="block text-xs text-[color:var(--muted)] mb-1">Profile</span>
+          <select x-model="filters.accountId" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
+            <option value="">All profiles</option>
+            <template x-for="a in accounts" :key="a.id">
+              <option :value="a.id" x-text="a.first_name + ' ' + a.last_name"></option>
+            </template>
+          </select>
+        </label>
+        <label class="text-sm">
+          <span class="block text-xs text-[color:var(--muted)] mb-1">Provider</span>
+          <select x-model="filters.provider" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
+            <option value="">All providers</option>
+            <template x-for="p in providerOptions" :key="p">
+              <option :value="p" x-text="p"></option>
+            </template>
+          </select>
+        </label>
+        <label class="text-sm">
+          <span class="block text-xs text-[color:var(--muted)] mb-1">API key</span>
+          <select x-model="filters.keyId" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
+            <option value="">All keys</option>
+            <template x-for="k in status.keys || []" :key="k.id">
+              <option :value="k.id" x-text="k.label"></option>
+            </template>
+          </select>
+        </label>
+        <label class="text-sm">
+          <span class="block text-xs text-[color:var(--muted)] mb-1">Tier</span>
+          <select x-model="filters.tier" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
+            <option value="">All tiers</option>
+            <option value="bulk">Bulk</option>
+            <option value="quality">Quality</option>
+          </select>
+        </label>
+        <label class="text-sm">
+          <span class="block text-xs text-[color:var(--muted)] mb-1">Window</span>
+          <select x-model.number="filters.days" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
+            <option :value="7">7 days</option>
+            <option :value="30">30 days</option>
+            <option :value="90">90 days</option>
+            <option :value="365">1 year</option>
+          </select>
+        </label>
+      </div>
+
+      <template x-if="usage">
+        <div class="mt-6">
+          <div class="grid gap-4 sm:grid-cols-4">
+            <div class="otw-kpi">
+              <p class="otw-kpi-label">Calls</p>
+              <p class="otw-kpi-value" x-text="usage.totals.calls"></p>
+              <p class="otw-kpi-sub"><span x-text="usage.totals.cached_calls"></span> cached</p>
+            </div>
+            <div class="otw-kpi">
+              <p class="otw-kpi-label">Cost</p>
+              <p class="otw-kpi-value">$<span x-text="usage.totals.cost_usd.toFixed(2)"></span></p>
+            </div>
+            <div class="otw-kpi">
+              <p class="otw-kpi-label">Tokens in</p>
+              <p class="otw-kpi-value" x-text="usage.totals.tokens_in.toLocaleString()"></p>
+            </div>
+            <div class="otw-kpi">
+              <p class="otw-kpi-label">Tokens out</p>
+              <p class="otw-kpi-value" x-text="usage.totals.tokens_out.toLocaleString()"></p>
+            </div>
+          </div>
+
+          <div class="mt-6 grid gap-6 sm:grid-cols-2">
+            <div>
+              <h3 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By API key</h3>
+              <ul class="mt-2 space-y-1 text-sm">
+                <template x-for="b in usage.by_key" :key="b.key">
+                  <li class="flex justify-between gap-3 py-1 border-b border-[color:var(--line)]">
+                    <span x-text="b.label"></span>
+                    <span class="text-[color:var(--muted)]"><span x-text="b.calls"></span> calls · $<span x-text="b.cost_usd.toFixed(2)"></span></span>
+                  </li>
+                </template>
+                <li class="text-[color:var(--muted)] py-1" x-show="!usage.by_key.length">No calls in this window.</li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By profile</h3>
+              <ul class="mt-2 space-y-1 text-sm">
+                <template x-for="b in usage.by_account" :key="b.key">
+                  <li class="flex justify-between gap-3 py-1 border-b border-[color:var(--line)]">
+                    <span x-text="b.label"></span>
+                    <span class="text-[color:var(--muted)]"><span x-text="b.calls"></span> calls · $<span x-text="b.cost_usd.toFixed(2)"></span></span>
+                  </li>
+                </template>
+                <li class="text-[color:var(--muted)] py-1" x-show="!usage.by_account.length">No calls in this window.</li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By provider</h3>
+              <ul class="mt-2 space-y-1 text-sm">
+                <template x-for="b in usage.by_provider" :key="b.key">
+                  <li class="flex justify-between gap-3 py-1 border-b border-[color:var(--line)]">
+                    <span x-text="b.label"></span>
+                    <span class="text-[color:var(--muted)]"><span x-text="b.calls"></span> calls · $<span x-text="b.cost_usd.toFixed(2)"></span></span>
+                  </li>
+                </template>
+                <li class="text-[color:var(--muted)] py-1" x-show="!usage.by_provider.length">No calls in this window.</li>
+              </ul>
+            </div>
+            <div>
+              <h3 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By tier / model</h3>
+              <ul class="mt-2 space-y-1 text-sm">
+                <template x-for="b in usage.by_model" :key="b.key">
+                  <li class="flex justify-between gap-3 py-1 border-b border-[color:var(--line)]">
+                    <span x-text="b.label"></span>
+                    <span class="text-[color:var(--muted)]"><span x-text="b.calls"></span> calls · $<span x-text="b.cost_usd.toFixed(2)"></span></span>
+                  </li>
+                </template>
+                <li class="text-[color:var(--muted)] py-1" x-show="!usage.by_model.length">No calls in this window.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </template>
+    </section>
+
+    <!-- Recent LLM calls -->
+    <section class="mt-12">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Recent LLM calls</h2>
+      <div class="mt-4 overflow-x-auto" x-show="calls.length">
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs uppercase tracking-wide text-[color:var(--muted)] border-b border-[color:var(--line)]">
+              <th class="py-2 pr-4">When</th>
+              <th class="py-2 pr-4">Tier</th>
+              <th class="py-2 pr-4">Model</th>
+              <th class="py-2 pr-4">Key</th>
+              <th class="py-2 pr-4">Profile</th>
+              <th class="py-2 pr-4 text-right">Tokens</th>
+              <th class="py-2 pr-4 text-right">Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="c in calls" :key="c.id">
+              <tr class="border-b border-[color:var(--line)]">
+                <td class="py-2 pr-4 text-xs text-[color:var(--muted)]" x-text="formatTime(c.created_at)"></td>
+                <td class="py-2 pr-4" x-text="c.tier"></td>
+                <td class="py-2 pr-4" x-text="c.model"></td>
+                <td class="py-2 pr-4" x-text="c.key_label || '—'"></td>
+                <td class="py-2 pr-4" x-text="c.account_name || '—'"></td>
+                <td class="py-2 pr-4 text-right" x-text="(c.tokens_in + c.tokens_out).toLocaleString()"></td>
+                <td class="py-2 pr-4 text-right">
+                  <span x-show="c.cached" class="text-xs text-[color:var(--muted)]">cached</span>
+                  <span x-show="!c.cached">$<span x-text="c.cost_usd.toFixed(4)"></span></span>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <p class="mt-4 text-sm text-[color:var(--muted)]" x-show="!loading && !calls.length">
+        No LLM calls in this window.
+      </p>
+    </section>
+
+    <!-- Event log -->
+    <section class="mt-12">
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Event log</h2>
+        <div class="otw-subnav" style="margin-top: 0; border-bottom: none;">
+          <button
+            type="button"
+            @click="sourceFilter = null; loadEvents()"
+            class="otw-subnav-tab"
+            :class="{ active: sourceFilter === null }"
+          >All</button>
+          <button
+            type="button"
+            @click="sourceFilter = 'github'; loadEvents()"
+            class="otw-subnav-tab"
+            :class="{ active: sourceFilter === 'github' }"
+          >GitHub</button>
+          <button
+            type="button"
+            @click="sourceFilter = 'llm'; loadEvents()"
+            class="otw-subnav-tab"
+            :class="{ active: sourceFilter === 'llm' }"
+          >LLM</button>
+        </div>
+      </div>
+
+      <div class="mt-4 space-y-2" x-show="events.length">
+        <template x-for="event in events" :key="event.id">
+          <div class="otw-tile p-4">
+            <div class="flex items-center justify-between gap-3 flex-wrap">
+              <div class="flex items-center gap-2 text-sm">
+                <span class="uppercase text-xs tracking-wide text-[color:var(--muted)] border border-[color:var(--line)] px-1.5 py-0.5" x-text="event.source"></span>
+                <span x-text="kindLabel(event.kind)" :class="event.kind === 'budget_exceeded' ? 'otw-error' : ''"></span>
+              </div>
+              <span class="text-xs text-[color:var(--muted)]" x-text="formatTime(event.created_at)"></span>
+            </div>
+            <p class="mt-2 text-sm text-[color:var(--muted)]" x-text="event.detail"></p>
+            <p class="mt-1 text-xs text-[color:var(--muted)]" x-show="event.context" x-text="event.context"></p>
+          </div>
+        </template>
+      </div>
+
+      <p class="mt-6 text-sm text-[color:var(--muted)]" x-show="!loading && !events.length">
+        No rate-limit or budget events recorded yet.
+      </p>
+    </section>
+  </main>
+</div>
+
+<script>
+  function monitorApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      status: { github: null, llm: null, counts_24h: {}, counts_7d: {}, keys: [] },
+      accounts: [],
+      usage: null,
+      calls: [],
+      events: [],
+      sourceFilter: null,
+      filters: { accountId: '', provider: '', keyId: '', tier: '', days: 30 },
+      loading: true,
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        await this.refresh();
+      },
+
+      get providerOptions() {
+        const fromKeys = (this.status.keys || []).map(k => k.provider);
+        const fromUsage = this.usage ? this.usage.by_provider.map(b => b.key) : [];
+        return [...new Set([...fromKeys, ...fromUsage])].sort();
+      },
+
+      async refresh() {
+        this.loading = true;
+        try {
+          await Promise.all([this.loadStatus(), this.loadAccounts(), this.loadEvents()]);
+          await this.applyFilters();
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      async applyFilters() {
+        await Promise.all([this.loadUsage(), this.loadCalls()]);
+      },
+
+      _filterParams() {
+        const p = new URLSearchParams();
+        p.set('days', this.filters.days);
+        if (this.filters.accountId) p.set('account_id', this.filters.accountId);
+        if (this.filters.provider) p.set('provider', this.filters.provider);
+        if (this.filters.keyId) p.set('key_id', this.filters.keyId);
+        return p;
+      },
+
+      async loadStatus() {
+        try {
+          const res = await fetch('/api/monitor/status');
+          this.status = await res.json();
+        } catch (e) {
+          // leave last-known status showing rather than blanking the page
+        }
+      },
+
+      async loadAccounts() {
+        try {
+          const res = await fetch('/accounts');
+          this.accounts = await res.json();
+        } catch (e) {
+          // filter dropdown just stays empty
+        }
+      },
+
+      async loadUsage() {
+        try {
+          const res = await fetch(`/api/monitor/llm/usage?${this._filterParams()}`);
+          this.usage = await res.json();
+        } catch (e) {
+          // leave last-known breakdown showing
+        }
+      },
+
+      async loadCalls() {
+        try {
+          const params = this._filterParams();
+          if (this.filters.tier) params.set('tier', this.filters.tier);
+          params.set('limit', 50);
+          const res = await fetch(`/api/monitor/llm/calls?${params}`);
+          this.calls = await res.json();
+        } catch (e) {
+          // leave last-known list showing
+        }
+      },
+
+      async loadEvents() {
+        try {
+          const params = new URLSearchParams();
+          if (this.sourceFilter) params.set('source', this.sourceFilter);
+          const res = await fetch(`/api/monitor/events?${params}`);
+          this.events = await res.json();
+        } catch (e) {
+          // leave last-known list showing
+        }
+      },
+
+      kindLabel(kind) {
+        return kind === 'budget_exceeded' ? 'Budget cap hit' : 'Rate limited';
+      },
+
+      formatTime(iso) {
+        if (!iso) return '';
+        try {
+          return new Date(iso).toLocaleString();
+        } catch (e) {
+          return iso;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

@@ -1,0 +1,400 @@
+{% extends "_base.html" %}
+{% block title %}Manage APIs · Open to Work{% endblock %}
+{% block content %}
+<div x-data="apisApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = '' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+    <div class="flex items-center justify-between gap-4">
+      <h1 class="font-display text-3xl">Manage APIs</h1>
+      <a :href="accountName ? '/settings' : '/'" class="otw-btn-ghost px-3 py-2 text-sm">
+        ← back
+      </a>
+    </div>
+    <p class="mt-2 text-sm text-[color:var(--muted)]">
+      Keys here are device-wide, shared by every profile on this device.
+      Any number of keys per provider is fine; the one marked "active" is
+      preferred, but a disabled or off-limits key is skipped in favor of
+      another that covers the profile making the call.
+    </p>
+
+    <!-- Stored keys -->
+    <section class="mt-10" x-cloak x-show="!loading">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Stored keys</h2>
+
+      <p class="mt-4 text-sm text-[color:var(--muted)]" x-show="keys.length === 0">
+        No keys stored yet. Add one below.
+      </p>
+
+      <div class="mt-4 space-y-3">
+        <template x-for="key in keys" :key="key.id">
+          <div class="otw-tile px-5 py-4" :style="key.enabled ? '' : 'opacity: 0.55;'">
+            <div class="flex items-start justify-between gap-4">
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-display text-lg" x-text="key.label"></span>
+                  <span class="text-xs px-2 py-0.5 rounded-full border" style="border-color: var(--line); color: var(--muted);" x-text="providerLabel(key.provider)"></span>
+                  <span x-show="key.is_active" class="text-xs px-2 py-0.5 rounded-full" style="background: var(--accent); color: var(--accent-ink);">active</span>
+                  <span x-show="!key.enabled" class="text-xs px-2 py-0.5 rounded-full border" style="border-color: var(--danger); color: var(--danger);">off</span>
+                </div>
+                <div class="mt-2 text-sm space-y-0.5">
+                  <template x-for="(value, field) in key.masked" :key="field">
+                    <p class="text-[color:var(--muted)]">
+                      <span x-text="fieldLabel(key.provider, field) + ': '"></span><span x-text="value" style="font-family: monospace;"></span>
+                    </p>
+                  </template>
+                </div>
+
+                <p class="mt-2 text-xs">
+                  <span x-show="key.status === 'valid'" class="otw-tick"><span>✓</span> Working</span>
+                  <span x-show="key.status === 'invalid'" class="otw-error">✕ Invalid</span>
+                  <span x-show="key.status === 'rate_limited'" style="color: var(--accent);">○ Rate-limited / exhausted</span>
+                  <span x-show="key.status === 'unknown'" class="text-[color:var(--muted)]">Unchecked</span>
+                  <span x-show="key.budget_cap_usd" class="text-[color:var(--muted)]" x-text="' · budget cap $' + key.budget_cap_usd"></span>
+                </p>
+                <p class="mt-1 text-xs text-[color:var(--muted)]" x-show="key.last_checked_at">
+                  Last checked <span x-text="formatTime(key.last_checked_at)"></span><span x-show="key.last_check_detail" x-text="': ' + key.last_check_detail"></span>
+                </p>
+                <p class="mt-1 text-xs text-[color:var(--muted)]">
+                  <span x-show="key.allowed_account_ids.length === 0">Usable by every profile on this device</span>
+                  <span x-show="key.allowed_account_ids.length > 0" x-text="'Restricted to: ' + accountNames(key.allowed_account_ids)"></span>
+                </p>
+              </div>
+              <div class="flex flex-col items-end gap-2 shrink-0">
+                <div class="flex gap-2 flex-wrap justify-end">
+                  <button type="button" @click="checkKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost px-3 py-1.5 text-xs">Check</button>
+                  <button type="button" x-show="!key.is_active" @click="activateKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost px-3 py-1.5 text-xs">Set active</button>
+                  <button type="button" @click="key.enabled ? disableKey(key) : enableKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost px-3 py-1.5 text-xs" x-text="key.enabled ? 'Turn off' : 'Turn on'"></button>
+                  <button type="button" @click="openEdit(key)" class="otw-btn-ghost px-3 py-1.5 text-xs">Edit access</button>
+                  <button type="button" @click="deleteKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost otw-btn-danger-text px-3 py-1.5 text-xs">Delete</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Inline edit: budget cap + which profiles may use this key -->
+            <div x-show="editing === key.id" x-cloak class="mt-4 pt-4 space-y-3" style="border-top: 1px solid var(--line);">
+              <div>
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                  Monthly budget cap <span class="normal-case">(optional, USD)</span>
+                </label>
+                <input type="number" min="0" step="0.01" x-model="editForm.budget_cap_usd" class="otw-input mt-1 max-w-xs" placeholder="no cap" />
+              </div>
+              <div>
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                  Restrict to specific profiles <span class="normal-case">(optional, none checked = every profile)</span>
+                </label>
+                <div class="mt-2 flex flex-wrap gap-3">
+                  <template x-for="account in accounts" :key="account.id">
+                    <label class="flex items-center gap-2 text-sm">
+                      <input type="checkbox" class="otw-checkbox" :value="account.id" :checked="editForm.allowed_account_ids.includes(account.id)" @change="toggleEditAccount(account.id)" />
+                      <span x-text="account.first_name + ' ' + account.last_name"></span>
+                    </label>
+                  </template>
+                  <p x-show="accounts.length === 0" class="text-sm text-[color:var(--muted)]">No profiles on this device yet.</p>
+                </div>
+              </div>
+              <div class="flex gap-2">
+                <button type="button" @click="saveEdit(key)" :disabled="busy[key.id]" class="otw-btn px-4 py-1.5 text-xs">Save</button>
+                <button type="button" @click="editing = null" class="otw-btn-ghost px-4 py-1.5 text-xs">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </section>
+
+    <!-- Add a key -->
+    <section class="mt-12 pt-8" style="border-top: 1px solid var(--line);">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Add a key</h2>
+
+      <form @submit.prevent="submitAdd" class="mt-4 space-y-4 max-w-md">
+        <div>
+          <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Provider</label>
+          <div class="otw-dd mt-1" :data-open="providerMenuOpen" @click.outside="providerMenuOpen = false">
+            <button type="button" class="otw-dd-btn" @click="providerMenuOpen = !providerMenuOpen">
+              <span x-text="form.provider ? providerLabel(form.provider) : 'Choose a provider'"></span>
+              <span class="otw-dd-caret">▾</span>
+            </button>
+            <div class="otw-dd-panel" x-show="providerMenuOpen" x-cloak>
+              <template x-for="p in providers" :key="p.provider">
+                <button type="button" class="otw-dd-option" :class="{ selected: form.provider === p.provider }" @click="selectProvider(p.provider); providerMenuOpen = false" x-text="p.label"></button>
+              </template>
+            </div>
+          </div>
+        </div>
+
+        <template x-if="form.provider">
+          <div class="space-y-4">
+            <div>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                Label <span class="normal-case text-[color:var(--muted)]">(so you can tell keys apart)</span>
+              </label>
+              <input x-model="form.label" class="otw-input mt-1" placeholder="e.g. personal, work" />
+            </div>
+
+            <template x-for="field in currentFields" :key="field.name">
+              <div>
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]" x-text="field.label"></label>
+                <input
+                  :type="field.secret ? 'password' : 'text'"
+                  x-model="form.credentials[field.name]"
+                  autocomplete="off"
+                  class="otw-input mt-1"
+                  :placeholder="field.placeholder"
+                />
+              </div>
+            </template>
+
+            <div>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                Monthly budget cap <span class="normal-case text-[color:var(--muted)]">(optional, USD)</span>
+              </label>
+              <input type="number" min="0" step="0.01" x-model="form.budget_cap_usd" class="otw-input mt-1" placeholder="no cap" />
+            </div>
+
+            <div>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                Restrict to specific profiles <span class="normal-case text-[color:var(--muted)]">(optional, leave all unchecked for every profile)</span>
+              </label>
+              <div class="mt-2 flex flex-wrap gap-3">
+                <template x-for="account in accounts" :key="account.id">
+                  <label class="flex items-center gap-2 text-sm">
+                    <input type="checkbox" class="otw-checkbox" :value="account.id" @change="toggleFormAccount(account.id)" />
+                    <span x-text="account.first_name + ' ' + account.last_name"></span>
+                  </label>
+                </template>
+                <p x-show="accounts.length === 0" class="text-sm text-[color:var(--muted)]">No profiles on this device yet.</p>
+              </div>
+            </div>
+
+            <button type="submit" class="otw-btn px-6" :disabled="submitting">
+              <span x-show="!submitting">Add key</span>
+              <span x-show="submitting">Checking…</span>
+            </button>
+            <p x-show="addError" x-text="addError" class="text-sm otw-error"></p>
+          </div>
+        </template>
+      </form>
+    </section>
+  </main>
+</div>
+
+<script>
+  // Single source of truth for API-key management. Reached from two
+  // entry points (accounts.html's top-of-page link, settings.html's
+  // "Manage APIs" link) that both just navigate here rather than
+  // embedding their own copy of this widget/logic. Provider field shapes
+  // come from the backend (app/core/llm_providers.py) via
+  // GET /api/api-keys/providers, not hardcoded here; a new provider
+  // needs no frontend change.
+  function apisApp() {
+    return {
+      accountName: '',
+      loading: true,
+      keys: [],
+      providers: [],
+      accounts: [],
+      providerMenuOpen: false,
+      form: { provider: '', label: '', credentials: {}, budget_cap_usd: '', allowed_account_ids: [] },
+      submitting: false,
+      addError: '',
+      busy: {},
+      editing: null,
+      editForm: { budget_cap_usd: '', allowed_account_ids: [] },
+
+      async init() {
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        try {
+          const [keysRes, providersRes, accountsRes] = await Promise.all([
+            fetch('/api/api-keys'),
+            fetch('/api/api-keys/providers'),
+            fetch('/accounts'),
+          ]);
+          this.keys = await keysRes.json();
+          this.providers = await providersRes.json();
+          this.accounts = await accountsRes.json();
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      providerLabel(provider) {
+        const p = this.providers.find((p) => p.provider === provider);
+        return p ? p.label : provider;
+      },
+
+      fieldLabel(provider, fieldName) {
+        const p = this.providers.find((p) => p.provider === provider);
+        const field = p && p.fields.find((f) => f.name === fieldName);
+        return field ? field.label : fieldName;
+      },
+
+      accountNames(ids) {
+        return ids
+          .map((id) => this.accounts.find((a) => a.id === id))
+          .filter(Boolean)
+          .map((a) => a.first_name)
+          .join(', ') || 'no one currently on this device';
+      },
+
+      formatTime(iso) {
+        try {
+          return new Date(iso).toLocaleString();
+        } catch (e) {
+          return iso;
+        }
+      },
+
+      get currentFields() {
+        const p = this.providers.find((p) => p.provider === this.form.provider);
+        return p ? p.fields : [];
+      },
+
+      selectProvider(provider) {
+        this.form.provider = provider;
+        this.form.credentials = {};
+        this.addError = '';
+      },
+
+      toggleFormAccount(id) {
+        const i = this.form.allowed_account_ids.indexOf(id);
+        if (i === -1) this.form.allowed_account_ids.push(id);
+        else this.form.allowed_account_ids.splice(i, 1);
+      },
+
+      toggleEditAccount(id) {
+        const i = this.editForm.allowed_account_ids.indexOf(id);
+        if (i === -1) this.editForm.allowed_account_ids.push(id);
+        else this.editForm.allowed_account_ids.splice(i, 1);
+      },
+
+      async submitAdd() {
+        this.submitting = true;
+        this.addError = '';
+        try {
+          const res = await fetch('/api/api-keys', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              provider: this.form.provider,
+              label: this.form.label,
+              credentials: this.form.credentials,
+              budget_cap_usd: this.form.budget_cap_usd === '' ? null : Number(this.form.budget_cap_usd),
+              allowed_account_ids: this.form.allowed_account_ids,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            this.addError = data.detail || 'Could not add this key.';
+            return;
+          }
+          this.keys.push(data);
+          this.form = { provider: '', label: '', credentials: {}, budget_cap_usd: '', allowed_account_ids: [] };
+        } catch (e) {
+          this.addError = 'Could not reach the server, try again.';
+        } finally {
+          this.submitting = false;
+        }
+      },
+
+      openEdit(key) {
+        this.editing = this.editing === key.id ? null : key.id;
+        this.editForm = {
+          budget_cap_usd: key.budget_cap_usd ?? '',
+          allowed_account_ids: [...key.allowed_account_ids],
+        };
+      },
+
+      async saveEdit(key) {
+        this.busy[key.id] = true;
+        try {
+          const res = await fetch(`/api/api-keys/${key.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              has_budget_cap: this.editForm.budget_cap_usd !== '',
+              budget_cap_usd: this.editForm.budget_cap_usd === '' ? null : Number(this.editForm.budget_cap_usd),
+              allowed_account_ids: this.editForm.allowed_account_ids,
+            }),
+          });
+          if (res.ok) {
+            const updated = await res.json();
+            this.keys = this.keys.map((k) => (k.id === updated.id ? updated : k));
+            this.editing = null;
+          }
+        } finally {
+          this.busy[key.id] = false;
+        }
+      },
+
+      async checkKey(key) {
+        this.busy[key.id] = true;
+        try {
+          const res = await fetch(`/api/api-keys/${key.id}/check`, { method: 'POST' });
+          if (res.ok) {
+            const updated = await res.json();
+            this.keys = this.keys.map((k) => (k.id === updated.id ? updated : k));
+          }
+        } finally {
+          this.busy[key.id] = false;
+        }
+      },
+
+      async activateKey(key) {
+        this.busy[key.id] = true;
+        try {
+          const res = await fetch(`/api/api-keys/${key.id}/activate`, { method: 'POST' });
+          if (res.ok) {
+            const updated = await res.json();
+            this.keys = this.keys.map((k) =>
+              k.provider === updated.provider ? { ...k, is_active: k.id === updated.id } : k
+            );
+          }
+        } finally {
+          this.busy[key.id] = false;
+        }
+      },
+
+      async enableKey(key) {
+        this.busy[key.id] = true;
+        try {
+          const res = await fetch(`/api/api-keys/${key.id}/enable`, { method: 'POST' });
+          if (res.ok) {
+            const updated = await res.json();
+            this.keys = this.keys.map((k) => (k.id === updated.id ? updated : k));
+          }
+        } finally {
+          this.busy[key.id] = false;
+        }
+      },
+
+      async disableKey(key) {
+        this.busy[key.id] = true;
+        try {
+          const res = await fetch(`/api/api-keys/${key.id}/disable`, { method: 'POST' });
+          if (res.ok) {
+            const updated = await res.json();
+            this.keys = this.keys.map((k) => (k.id === updated.id ? updated : k));
+          }
+        } finally {
+          this.busy[key.id] = false;
+        }
+      },
+
+      async deleteKey(key) {
+        const ok = confirm(`Delete the "${key.label}" ${this.providerLabel(key.provider)} key? This cannot be undone.`);
+        if (!ok) return;
+        this.busy[key.id] = true;
+        try {
+          await fetch(`/api/api-keys/${key.id}`, { method: 'DELETE' });
+          this.keys = this.keys.filter((k) => k.id !== key.id);
+        } finally {
+          this.busy[key.id] = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

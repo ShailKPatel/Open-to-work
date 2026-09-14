@@ -1,0 +1,369 @@
+{% extends "_base.html" %}
+{% block title %}Experience · Open to Work{% endblock %}
+{% block content %}
+<div x-data="experienceDetailApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-32 max-w-3xl mx-auto w-full">
+    {% set data_active = 'experience' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <a href="/portfolio/experience" class="mt-8 inline-block text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">← all experience</a>
+
+    <div x-show="!loading && !row" x-cloak class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">Not found.</p>
+    </div>
+
+    <template x-if="row">
+      <div class="mt-6">
+        <div class="flex items-start justify-between gap-4 flex-wrap">
+          <div class="flex-1 min-w-[16rem]">
+            <input x-model="draft.title" placeholder="Title / role" class="otw-input font-display text-4xl px-0" />
+            <div class="flex items-center gap-2 mt-2">
+              <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">Company</span>
+              <input x-model="draft.company" placeholder="Company" class="otw-input text-sm" />
+            </div>
+          </div>
+          <button @click="removeExperience" class="otw-btn-danger-text text-xs shrink-0">Delete</button>
+        </div>
+
+        <div class="flex items-center gap-2 mt-3">
+          <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">Location</span>
+          <input x-model="draft.location" placeholder="–" class="otw-input text-sm" />
+        </div>
+
+        <div class="mt-4 flex flex-wrap gap-4">
+          <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+            Start date
+            <input x-model="draft.start_date" type="date" class="otw-input" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+            End date (blank = current)
+            <input x-model="draft.end_date" type="date" class="otw-input" />
+          </label>
+        </div>
+
+        <div class="otw-tile p-4 mt-6 flex items-center justify-between gap-4">
+          <p class="text-xs text-[color:var(--muted)]">
+            <span x-show="isDirty">Unsaved changes.</span>
+            <span x-show="!isDirty">No changes.</span>
+            <span x-show="saveError" class="otw-error block mt-1" x-text="saveError"></span>
+          </p>
+          <div class="flex items-center gap-2 shrink-0">
+            <button @click="cancel" :disabled="!isDirty || saving" class="otw-btn-ghost text-sm px-4 py-2">Cancel</button>
+            <button @click="save" :disabled="!isDirty || saving" class="otw-btn text-sm px-4 py-2">
+              <span x-show="!saving">Save</span>
+              <span x-show="saving" class="otw-working">Saving…</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="font-display text-xl">Points</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">
+            This is the whole role, broken into as many points as it deserves, not one paragraph.
+            Each point is searched on its own when a resume gets built for a specific job, so cover every
+            angle you've got: a shipped feature, a leadership moment, a metric-backed win. A web-heavy job
+            posting pulls in your web points, a leadership posting pulls in the "led team of 5" one; the
+            wider your spread, the more of it actually gets used. Numbers beat vague lines, e.g.
+            "led team of 5, shipped 3 releases" over "led a team."
+          </p>
+          <p x-show="pointDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet. Add your first point below.</p>
+          <p x-show="pointDrafts.length > 0 && pointDrafts.length < 3" class="text-xs text-[color:var(--muted)] mt-2">
+            A few more would help, keep going.
+          </p>
+          <div x-show="pointDrafts.length > 0" class="mt-3 space-y-3">
+            <template x-for="p in pointDrafts" :key="p.id">
+              <div class="border-b border-[color:var(--line)] pb-3">
+                <textarea x-model="p.text" rows="2" class="otw-input text-sm w-full" placeholder="Point"></textarea>
+                <div class="flex items-center justify-end gap-3 mt-2">
+                  <button @click="deletePoint(p.id)" :disabled="Boolean(pointBusy[p.id])" class="otw-btn-danger-text text-xs">Delete</button>
+                  <button @click="cancelPoint(p.id)" :disabled="!pointDirty(p) || Boolean(pointBusy[p.id])" class="otw-btn-ghost text-xs px-3 py-1">Cancel</button>
+                  <button @click="savePoint(p.id)" :disabled="!pointDirty(p) || Boolean(pointBusy[p.id])" class="otw-btn-accent text-xs px-3 py-1">Save</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <div class="flex items-start gap-2 mt-4">
+            <textarea x-model="newPoint" rows="2" class="otw-input text-sm flex-1" placeholder="Add a point…"></textarea>
+            <button @click="addPoint" :disabled="!newPoint.trim() || addingPoint" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
+              <span x-show="!addingPoint">Add</span>
+              <span x-show="addingPoint" class="otw-working">Adding…</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="mt-8">
+          <h2 class="font-display text-xl">Skills</h2>
+          <p x-show="skillDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet.</p>
+          <div x-show="skillDrafts.length > 0" class="mt-3 space-y-3">
+            <template x-for="s in skillDrafts" :key="s.id">
+              <div class="border-b border-[color:var(--line)] pb-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <input x-model="s.skill" class="otw-input text-sm flex-1 min-w-[8rem]" placeholder="Skill" />
+                  <label class="text-xs text-[color:var(--muted)] flex items-center gap-1">
+                    weight
+                    <input x-model.number="s.weight" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+                  </label>
+                  <label class="text-xs text-[color:var(--muted)] flex items-center gap-1">
+                    confidence
+                    <input x-model.number="s.confidence" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+                  </label>
+                </div>
+                <div class="flex items-center justify-end gap-3 mt-2">
+                  <button @click="deleteSkill(s.id)" :disabled="Boolean(skillBusy[s.id])" class="otw-btn-danger-text text-xs">Delete</button>
+                  <button @click="cancelSkill(s.id)" :disabled="!skillDirty(s) || Boolean(skillBusy[s.id])" class="otw-btn-ghost text-xs px-3 py-1">Cancel</button>
+                  <button @click="saveSkill(s.id)" :disabled="!skillDirty(s) || Boolean(skillBusy[s.id])" class="otw-btn-accent text-xs px-3 py-1">Save</button>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <div class="flex items-center gap-2 flex-wrap mt-4">
+            <input x-model="newSkill.skill" class="otw-input text-sm flex-1 min-w-[8rem]" placeholder="Add a skill…" />
+            <label class="text-xs text-[color:var(--muted)] flex items-center gap-1">
+              weight
+              <input x-model.number="newSkill.weight" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+            </label>
+            <label class="text-xs text-[color:var(--muted)] flex items-center gap-1">
+              confidence
+              <input x-model.number="newSkill.confidence" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
+            </label>
+            <button @click="addSkill" :disabled="!newSkill.skill.trim() || addingSkill" class="otw-btn-accent text-xs px-3 py-1.5">
+              <span x-show="!addingSkill">Add</span>
+              <span x-show="addingSkill" class="otw-working">Adding…</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </template>
+  </main>
+</div>
+
+<script>
+  function experienceDetailApp() {
+    const editableFields = ['title', 'company', 'location', 'start_date', 'end_date'];
+
+    return {
+      accountId: null,
+      accountName: '',
+      experienceId: null,
+      row: null,
+      draft: {},
+      skillDrafts: [],
+      newSkill: { skill: '', weight: 1, confidence: 1 },
+      pointDrafts: [],
+      newPoint: '',
+      loading: true,
+      saving: false,
+      saveError: '',
+      addingSkill: false,
+      skillBusy: {},
+      addingPoint: false,
+      pointBusy: {},
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        const parts = window.location.pathname.split('/').filter(Boolean);
+        this.experienceId = parts[parts.length - 1];
+        await this.load();
+      },
+
+      async load() {
+        this.loading = true;
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}`);
+          this.row = res.ok ? await res.json() : null;
+          this.syncFromRow();
+        } finally {
+          this.loading = false;
+        }
+      },
+
+      syncFromRow() {
+        if (!this.row) return;
+        this.draft = {};
+        for (const key of editableFields) this.draft[key] = this.row[key];
+        this.skillDrafts = this.row.skills.map((s) => ({ ...s }));
+        this.pointDrafts = this.row.points.map((p) => ({ ...p }));
+      },
+
+      get isDirty() {
+        if (!this.row) return false;
+        return editableFields.some((key) => this.draft[key] !== this.row[key]);
+      },
+
+      skillDirty(r) {
+        const original = this.row.skills.find((s) => s.id === r.id);
+        if (!original) return false;
+        return r.skill !== original.skill || r.weight !== original.weight || r.confidence !== original.confidence;
+      },
+
+      logout() {
+        localStorage.removeItem('otw_account_id');
+        localStorage.removeItem('otw_account_name');
+        window.location.href = '/';
+      },
+
+      cancel() {
+        this.syncFromRow();
+        this.saveError = '';
+      },
+
+      async save() {
+        this.saving = true;
+        this.saveError = '';
+        try {
+          const body = { ...this.draft };
+          if (!body.start_date) body.start_date = null;
+          if (!body.end_date) body.end_date = null;
+          const res = await fetch(`/api/experience/${this.experienceId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const errBody = await res.json().catch(() => ({}));
+            this.saveError = errBody.detail || 'Could not save, try again.';
+            return;
+          }
+          this.row = await res.json();
+          this.syncFromRow();
+        } finally {
+          this.saving = false;
+        }
+      },
+
+      async removeExperience() {
+        if (!confirm('Delete this experience, its points, and its skills? This cannot be undone.')) return;
+        await fetch(`/api/experience/${this.experienceId}`, { method: 'DELETE' });
+        window.location.href = '/portfolio/experience';
+      },
+
+      cancelSkill(id) {
+        const original = this.row.skills.find((s) => s.id === id);
+        const idx = this.skillDrafts.findIndex((s) => s.id === id);
+        if (original && idx !== -1) this.skillDrafts[idx] = { ...original };
+      },
+
+      async saveSkill(id) {
+        const r = this.skillDrafts.find((s) => s.id === id);
+        if (!r) return;
+        this.skillBusy[id] = true;
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}/skills/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ skill: r.skill, weight: r.weight, confidence: r.confidence }),
+          });
+          if (res.ok) {
+            this.row = await res.json();
+            this.syncFromRow();
+          }
+        } finally {
+          this.skillBusy[id] = false;
+        }
+      },
+
+      async deleteSkill(id) {
+        this.skillBusy[id] = true;
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}/skills/${id}`, { method: 'DELETE' });
+          if (res.ok) {
+            this.row = await res.json();
+            this.syncFromRow();
+          }
+        } finally {
+          this.skillBusy[id] = false;
+        }
+      },
+
+      async addSkill() {
+        if (!this.newSkill.skill.trim()) return;
+        this.addingSkill = true;
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}/skills`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.newSkill),
+          });
+          if (res.ok) {
+            this.row = await res.json();
+            this.syncFromRow();
+            this.newSkill = { skill: '', weight: 1, confidence: 1 };
+          }
+        } finally {
+          this.addingSkill = false;
+        }
+      },
+
+      pointDirty(p) {
+        const original = this.row.points.find((o) => o.id === p.id);
+        if (!original) return false;
+        return p.text !== original.text;
+      },
+
+      cancelPoint(id) {
+        const original = this.row.points.find((p) => p.id === id);
+        const idx = this.pointDrafts.findIndex((p) => p.id === id);
+        if (original && idx !== -1) this.pointDrafts[idx] = { ...original };
+      },
+
+      async savePoint(id) {
+        const p = this.pointDrafts.find((d) => d.id === id);
+        if (!p) return;
+        this.pointBusy[id] = true;
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}/points/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: p.text }),
+          });
+          if (res.ok) {
+            this.row = await res.json();
+            this.syncFromRow();
+          }
+        } finally {
+          this.pointBusy[id] = false;
+        }
+      },
+
+      async deletePoint(id) {
+        this.pointBusy[id] = true;
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}/points/${id}`, { method: 'DELETE' });
+          if (res.ok) {
+            this.row = await res.json();
+            this.syncFromRow();
+          }
+        } finally {
+          this.pointBusy[id] = false;
+        }
+      },
+
+      async addPoint() {
+        if (!this.newPoint.trim()) return;
+        this.addingPoint = true;
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}/points`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: this.newPoint }),
+          });
+          if (res.ok) {
+            this.row = await res.json();
+            this.syncFromRow();
+            this.newPoint = '';
+          }
+        } finally {
+          this.addingPoint = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}
