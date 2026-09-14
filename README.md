@@ -102,13 +102,26 @@ python3 -m venv .venv
 docker compose up -d qdrant
 
 make test                              # unit tests; no network or API key required
+make coverage                          # unit tests with a line and branch coverage report
 make lint                              # ruff and mypy
-make test-live                         # real LLM calls; requires LIVE_LLM_API_KEY
+make test-live                         # opt-in checks against real services, see Testing
 make ingest ACCOUNT=<github-username>  # sync from the command line
 make eval ACCOUNT=<account-id>         # retrieval and groundedness evaluation
 ```
 
-Unit tests use temporary SQLite databases, in-memory Qdrant, and injected fakes for the LLM, embedding model, Tectonic, and Playwright. Compiling PDFs outside Docker requires a local Tectonic install.
+### Testing
+
+Tests are written with pytest and live in two suites.
+
+`tests/unit/` runs on every `make test`. It covers each layer on its own: the GitHub client and sync pipeline, job and resume ingestion, skill extraction and weighting, retrieval, the LLM gateway (caching, budgets, key rotation), credential encryption, resume building, the evaluation metrics, and the command-line entry points. Every API router is exercised through FastAPI's test client, and a route sweep renders every page and calls every list endpoint, so a broken template or a failing route is caught even without a dedicated test. Unit tests use temporary SQLite databases, in-memory Qdrant, and injected fakes for GitHub, the LLM, the embedding model, Tectonic, and Playwright. `make coverage` adds a line and branch coverage report and fails below the threshold set in `pyproject.toml`. Compiling PDFs outside Docker requires a local Tectonic install.
+
+`tests/live/` talks to real services and never runs by default. `make test-live` runs every live suite that has its variable set and skips the rest:
+
+| Variable | Suite | Checks |
+| --- | --- | --- |
+| `LIVE_LLM_API_KEY` (and optionally `LIVE_LLM_PROVIDER`) | `test_llm_live.py` | Text, image, PDF, and multi-turn calls through the LLM gateway. Billed. |
+| `LIVE_GITHUB=1` (and optionally `GITHUB_TOKEN`) | `test_github_live.py` | GitHub API reachability, authentication, 404 handling, and a single-repository sync into a temporary database. |
+| `LIVE_APP_URL` (for example `http://localhost:8000`) | `test_app_live.py` | Health, every page, JSON endpoints, and the app's own GitHub status check against a running instance. Read-only. |
 
 ### Evaluation
 

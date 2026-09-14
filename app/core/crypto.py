@@ -36,15 +36,15 @@ def _load_or_create_key() -> bytes:
     key = Fernet.generate_key()
     # Create with 0600 from the start. Write-then-chmod would leave a window
     # where the file is world-readable.
-    fd = os.open(
-        _SECRET_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR
-    )
     try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(key)
+        fd = os.open(
+            _SECRET_KEY_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR
+        )
     except FileExistsError:
         # Lost a race with another process creating it first; read theirs.
         return _SECRET_KEY_PATH.read_bytes().strip()
+    with os.fdopen(fd, "wb") as f:
+        f.write(key)
     return key
 
 

@@ -24,6 +24,7 @@ from app.api.resume_build import router as resume_build_router
 from app.api.skills import router as skills_router
 from app.api.sources import router as sources_router
 from app.core.db import init_db
+from app.core.settings import get_settings
 from app.ingest.github.cancellation import request_cancel
 from app.ingest.github.sync import SyncSummary, sync_account, sync_account_progress
 
@@ -157,6 +158,25 @@ def monitor_page(request: Request) -> HTMLResponse:
     (app/core/rate_limits.py). Data from GET /api/monitor/status and
     GET /api/monitor/events (app/api/monitor.py)."""
     return templates.TemplateResponse(request, "monitor.html")
+
+
+@app.get("/explanation", response_class=HTMLResponse)
+def explanation_page(request: Request) -> HTMLResponse:
+    """Presentation page: what the project does and how it is built, meant
+    to be shown to someone as-is. Tabbed (what it does, tech stack, how it
+    works). No API calls and no account required, so it renders fine
+    logged out. The embedding model and monthly budget are passed in from
+    settings so the page names what this instance actually runs. LLM model
+    names are deliberately not shown: they are whatever LiteLLM model the
+    .env names. Diagram boxes are laid out by CSS grid and the right-angle
+    connectors between them are drawn client-side from real box positions
+    (see the script at the bottom of app/web/templates/explanation.html)."""
+    settings = get_settings()
+    models = {
+        "embedding": settings.embedding_model,
+        "budget": settings.monthly_budget_usd,
+    }
+    return templates.TemplateResponse(request, "explanation.html", {"models": models})
 
 
 @app.get("/jobs", response_class=HTMLResponse)

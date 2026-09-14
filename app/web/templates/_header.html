@@ -2,7 +2,7 @@
      every logged-in page. Assumes the enclosing Alpine scope defines
      `accountName` (every page here already does, for the account-picker
      redirect check in init()). Pass `top_active`
-     ('home' | 'portfolio' | 'jobs' | 'monitor' | '') before including
+     ('home' | 'portfolio' | 'jobs' | 'monitor' | 'explanation' | '') before including
      this to highlight the current section; defaults to none highlighted.
      Resume is a tab under Portfolio
      (app/web/templates/_portfolio_subnav.html) rather than its own
@@ -18,6 +18,7 @@
       <a href="/portfolio" class="otw-topnav-link {{ 'active' if top_active == 'portfolio' }}">Portfolio</a>
       <a href="/jobs" class="otw-topnav-link {{ 'active' if top_active == 'jobs' }}">Jobs</a>
       <a href="/monitor" class="otw-topnav-link {{ 'active' if top_active == 'monitor' }}">Monitor</a>
+      <a href="/explanation" class="otw-topnav-link {{ 'active' if top_active == 'explanation' }}">How it works</a>
     </nav>
     <div class="otw-profile">
       <a href="/settings" class="otw-profile-btn">

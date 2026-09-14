@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -466,12 +467,16 @@ def test_manual_skill_survives_reprocess(tmp_path, monkeypatch):
 
 
 def test_process_pending_start_is_idempotent_while_running(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.profile.jobs._EMPTY_PASSES_BEFORE_STOP", 1)
-    monkeypatch.setattr("app.profile.jobs._EMPTY_PASS_DELAY_SECONDS", 0.05)
+    """The worker is held open until the second /start call has returned,
+    so that call always lands while the first job is still running, however
+    slow the machine is."""
+    release = threading.Event()
+    monkeypatch.setattr(
+        "app.profile.jobs._worker", lambda account_id, job: release.wait(timeout=10)
+    )
 
     _reset_db(tmp_path)
     account = _make_account()
-    _make_repo(account, github_id=1, full_name="octocat/a", readme=None, description=None)
 
     client = _client()
     first = client.post(f"/api/projects/process-pending/start?account_id={account}")
@@ -480,8 +485,183 @@ def test_process_pending_start_is_idempotent_while_running(tmp_path, monkeypatch
     second = client.post(f"/api/projects/process-pending/start?account_id={account}")
     assert second.json()["started"] is False  # already running: no-op, not an error
 
+    release.set()
     # drain it so the background thread doesn't outlive the test
     with client.stream(
         "GET", f"/api/projects/process-pending/stream?account_id={account}"
     ) as resp:
         "".join(resp.iter_text())
+
+
+def test_process_pending_runs_extraction_over_only_this_accounts_repos(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account = _make_account()
+    other = _make_account(github_username="someone-else")
+    _make_repo(account, github_id=1, full_name="octocat/a")
+    _make_repo(account, github_id=2, full_name="octocat/b")
+    _make_repo(other, github_id=3, full_name="someone-else/c")
+    seen = []
+    monkeypatch.setattr(
+        "app.api.projects.build_profile", lambda repos: seen.extend(r.full_name for r in repos)
+    )
+
+    resp = _client().post(f"/api/projects/process-pending?account_id={account}")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"considered": 2}
+    assert sorted(seen) == ["octocat/a", "octocat/b"]
+
+
+def test_patch_project_trims_fields_and_rejects_blank_names(tmp_path):
+    _reset_db(tmp_path)
+    repo_id = _make_repo(_make_account())
+    client = _client()
+
+    resp = client.patch(
+        f"/api/projects/{repo_id}", json={"name": "  Renamed  ", "url": " https://x.dev "}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Renamed"
+    assert resp.json()["url"] == "https://x.dev"
+    assert resp.json()["full_name"] == "octocat/proj"  # not sent, left untouched
+
+    assert client.patch(f"/api/projects/{repo_id}", json={"name": "   "}).status_code == 422
+    assert client.patch(f"/api/projects/{repo_id}", json={"full_name": ""}).status_code == 422
+
+
+def test_patch_unknown_project_404s(tmp_path):
+    _reset_db(tmp_path)
+    resp = _client().patch("/api/projects/999999", json={"name": "x"})
+    assert resp.status_code == 404
+
+
+def test_patch_full_name_onto_an_existing_project_is_409(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    _make_repo(account, github_id=1, full_name="octocat/a")
+    second = _make_repo(account, github_id=2, full_name="octocat/b")
+
+    resp = _client().patch(f"/api/projects/{second}", json={"full_name": "octocat/a"})
+
+    assert resp.status_code == 409
+
+
+def test_starred_projects_are_capped_and_listed_first(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    ids = [_make_repo(account, github_id=i, full_name=f"octocat/p{i}") for i in range(1, 6)]
+    client = _client()
+
+    for repo_id in ids[2:5]:
+        assert client.patch(f"/api/projects/{repo_id}", json={"starred": True}).status_code == 200
+
+    over_cap = client.patch(f"/api/projects/{ids[0]}", json={"starred": True})
+    assert over_cap.status_code == 422
+    assert "unstar" in over_cap.json()["detail"]
+
+    # re-saving an already starred project doesn't count against the cap
+    assert client.patch(f"/api/projects/{ids[2]}", json={"starred": True}).status_code == 200
+
+    # unstarring frees a slot
+    assert client.patch(f"/api/projects/{ids[2]}", json={"starred": False}).status_code == 200
+    assert client.patch(f"/api/projects/{ids[0]}", json={"starred": True}).status_code == 200
+
+    listed = client.get(f"/api/projects?account_id={account}").json()
+    assert [p["full_name"] for p in listed if p["starred"]] == [p["full_name"] for p in listed[:3]]
+
+
+def test_project_links_add_edit_delete(tmp_path):
+    _reset_db(tmp_path)
+    repo_id = _make_repo(_make_account())
+    client = _client()
+
+    resp = client.post(
+        f"/api/projects/{repo_id}/links", json={"label": " Demo ", "url": " https://demo.dev "}
+    )
+    assert resp.status_code == 200
+    (link,) = resp.json()["links"]
+    assert (link["label"], link["url"], link["source"]) == ("Demo", "https://demo.dev", "manual")
+
+    resp = client.patch(f"/api/projects/{repo_id}/links/{link['id']}", json={"label": "Live"})
+    assert resp.status_code == 200
+    assert resp.json()["links"][0]["label"] == "Live"
+    assert resp.json()["links"][0]["url"] == "https://demo.dev"
+
+    resp = client.delete(f"/api/projects/{repo_id}/links/{link['id']}")
+    assert resp.status_code == 200
+    assert resp.json()["links"] == []
+
+
+def test_editing_an_extracted_link_locks_it_to_manual(tmp_path):
+    from app.core.db import ProjectLink
+
+    _reset_db(tmp_path)
+    repo_id = _make_repo(_make_account())
+    db = get_db()
+    link = ProjectLink(
+        repo_id=repo_id, label="Docs", url="https://docs.dev", source="readme_extracted"
+    )
+    db.add(link)
+    db.commit()
+    link_id = link.id
+    db.close()
+    client = _client()
+
+    unchanged = client.patch(f"/api/projects/{repo_id}/links/{link_id}", json={})
+    assert unchanged.json()["links"][0]["source"] == "readme_extracted"
+
+    edited = client.patch(
+        f"/api/projects/{repo_id}/links/{link_id}", json={"url": "https://docs.dev/v2"}
+    )
+    assert edited.json()["links"][0]["source"] == "manual"
+
+
+def test_project_link_validation_and_not_found(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    repo_id = _make_repo(account, github_id=1, full_name="octocat/a")
+    other_repo = _make_repo(account, github_id=2, full_name="octocat/b")
+    client = _client()
+    link_id = client.post(
+        f"/api/projects/{repo_id}/links", json={"label": "Demo", "url": "https://demo.dev"}
+    ).json()["links"][0]["id"]
+
+    links = f"/api/projects/{repo_id}/links"
+    assert client.post(links, json={"label": " ", "url": "https://x"}).status_code == 422
+    assert client.post(links, json={"label": "x", "url": " "}).status_code == 422
+    assert client.post(
+        "/api/projects/999999/links", json={"label": "x", "url": "https://x"}
+    ).status_code == 404
+
+    assert client.patch(f"{links}/{link_id}", json={"label": ""}).status_code == 422
+    assert client.patch(f"{links}/{link_id}", json={"url": ""}).status_code == 422
+    assert client.patch(f"{links}/999999", json={"label": "x"}).status_code == 404
+    assert client.delete(f"{links}/999999").status_code == 404
+    assert client.delete(f"/api/projects/999999/links/{link_id}").status_code == 404
+
+    # a link id that belongs to a different project is not reachable through this one
+    wrong_repo = f"/api/projects/{other_repo}/links/{link_id}"
+    assert client.patch(wrong_repo, json={"label": "x"}).status_code == 404
+    assert client.delete(wrong_repo).status_code == 404
+
+
+def test_vector_index_failures_never_block_skill_edits(tmp_path, monkeypatch):
+    """SQLite is the source of truth; Qdrant is a derived index. Adding or
+    deleting a skill still succeeds when indexing or cleanup fails."""
+    _reset_db(tmp_path)
+    repo_id = _make_repo(_make_account())
+
+    def qdrant_down(*args, **kwargs):
+        raise RuntimeError("qdrant unavailable")
+
+    monkeypatch.setattr("app.retrieval.index.index_skill_evidence", qdrant_down)
+    monkeypatch.setattr("app.retrieval.vectorstore.get_client", qdrant_down)
+    client = _client()
+
+    added = client.post(f"/api/projects/{repo_id}/skills", json={"skill": "Go"})
+    assert added.status_code == 200
+    (skill,) = added.json()["skills"]
+
+    deleted = client.delete(f"/api/projects/{repo_id}/skills/{skill['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["skills"] == []

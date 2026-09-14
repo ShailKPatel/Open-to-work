@@ -1,5 +1,17 @@
 import pytest
 
+import app.core.db as db_module
+
+
+@pytest.fixture(autouse=True)
+def _dispose_db_engine():
+    """Tests swap in a fresh SQLite file by resetting app.core.db._engine.
+    Dispose the engine each test leaves behind so its pooled connections
+    are closed instead of leaking until garbage collection."""
+    yield
+    if db_module._engine is not None:
+        db_module._engine.dispose()
+
 
 @pytest.fixture(autouse=True)
 def _default_github_username_exists(monkeypatch):

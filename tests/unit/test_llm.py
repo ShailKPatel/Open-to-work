@@ -1,9 +1,12 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pytest
+
 import app.core.db as db_module
 from app.core.db import init_db
 from app.core.llm import (
+    ApiKeyMissingError,
     BudgetExceededError,
     LLMRateLimitedError,
     complete,
@@ -316,3 +319,178 @@ def test_complete_accepts_multimodal_user_message(tmp_path, monkeypatch):
     assert result.content == "a flowchart"
     # the multimodal message shape reached the completion call untouched
     assert calls[0]["messages"][0]["content"][1]["type"] == "image_url"
+
+
+def _real_dispatch_env(tmp_path: Path, monkeypatch) -> None:
+    """No _completion_fn: complete() resolves a stored key and calls
+    litellm.completion itself, which each test replaces."""
+    monkeypatch.setenv("LLM_BULK_MODEL", "openai/gpt-4o-mini")
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "app.core.api_keys_store.validate_credentials", lambda provider, creds: ("valid", "ok")
+    )
+
+
+def _add_openai_key(budget_cap_usd: float | None = None) -> int:
+    from app.core import api_keys_store
+
+    added, detail = api_keys_store.add_key(
+        "openai", "Test key", {"api_key": "sk-test"}, budget_cap_usd
+    )
+    assert added is not None, detail
+    return added["id"]
+
+
+def _key_status(key_id: int) -> str:
+    from app.core.db import ApiKey, get_db
+
+    db = get_db()
+    try:
+        return db.get(ApiKey, key_id).status
+    finally:
+        db.close()
+
+
+def test_real_dispatch_without_any_key_raises_before_calling_the_provider(tmp_path, monkeypatch):
+    _real_dispatch_env(tmp_path, monkeypatch)
+    calls: list = []
+    monkeypatch.setattr("litellm.completion", _fake_completion_fn("x", calls=calls), raising=False)
+
+    with pytest.raises(ApiKeyMissingError, match="for this account"):
+        complete("bulk", [user_message("hi")], account_id=5)
+
+    assert calls == []
+
+
+def test_per_key_budget_cap_refuses_dispatch_once_reached(tmp_path, monkeypatch):
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(budget_cap_usd=0.05)
+    calls: list = []
+    monkeypatch.setattr("litellm.completion", _fake_completion_fn("ok", calls=calls), raising=False)
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.10, raising=False)
+
+    complete("bulk", [user_message("first")])
+    with pytest.raises(BudgetExceededError, match="key budget"):
+        complete("bulk", [user_message("second")])
+
+    assert len(calls) == 1
+
+
+def test_per_key_budget_cap_ignores_other_providers_spend(tmp_path, monkeypatch):
+    from app.core.llm import _record
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(budget_cap_usd=0.05)
+    _record(
+        tier="bulk",
+        model="anthropic/some-model",
+        prompt_hash="other-provider-call",
+        response_json={"content": "x"},
+        tokens_in=0,
+        tokens_out=0,
+        cost_usd=1.0,
+        latency_ms=0,
+        cached=False,
+    )
+    monkeypatch.setattr("litellm.completion", _fake_completion_fn("ok"), raising=False)
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0, raising=False)
+
+    assert complete("bulk", [user_message("hi")]).content == "ok"
+
+
+def test_provider_auth_error_marks_the_key_invalid_and_propagates(tmp_path, monkeypatch):
+    import litellm
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def bad_key(**kwargs):
+        raise litellm.AuthenticationError(
+            message="invalid api key", llm_provider="openai", model="gpt-4o-mini"
+        )
+
+    monkeypatch.setattr("litellm.completion", bad_key, raising=False)
+
+    with pytest.raises(litellm.AuthenticationError):
+        complete("bulk", [user_message("hi")])
+
+    assert _key_status(key_id) == "invalid"
+
+
+def test_provider_rate_limit_marks_the_key_rate_limited_and_wraps(tmp_path, monkeypatch):
+    import litellm
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def out_of_quota(**kwargs):
+        raise litellm.RateLimitError(
+            message="quota exceeded", llm_provider="openai", model="gpt-4o-mini"
+        )
+
+    monkeypatch.setattr("litellm.completion", out_of_quota, raising=False)
+
+    with pytest.raises(LLMRateLimitedError):
+        complete("bulk", [user_message("hi")])
+
+    assert _key_status(key_id) == "rate_limited"
+
+
+def test_unrelated_dispatch_error_leaves_the_key_status_alone(tmp_path, monkeypatch):
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def network_blip(**kwargs):
+        raise ConnectionError("network unreachable")
+
+    monkeypatch.setattr("litellm.completion", network_blip, raising=False)
+
+    with pytest.raises(ConnectionError):
+        complete("bulk", [user_message("hi")])
+
+    assert _key_status(key_id) == "valid"
+
+
+def test_unpriced_model_is_recorded_at_zero_cost(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+
+    def no_price(completion_response):
+        raise ValueError("model not in price map")
+
+    monkeypatch.setattr("litellm.completion_cost", no_price, raising=False)
+
+    result = complete("bulk", [user_message("hi")], _completion_fn=_fake_completion_fn("hi"))
+
+    assert result.cost_usd == 0.0
+
+
+def test_schema_requests_structured_output_and_parses_json(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0, raising=False)
+    schema = {"type": "object", "properties": {"skills": {"type": "array"}}}
+    calls: list = []
+
+    good = complete(
+        "bulk",
+        [user_message("a")],
+        schema=schema,
+        _completion_fn=_fake_completion_fn('{"skills": ["Go"]}', calls=calls),
+    )
+    bad = complete(
+        "bulk", [user_message("b")], schema=schema, _completion_fn=_fake_completion_fn("not json")
+    )
+
+    assert calls[0]["response_format"]["json_schema"]["schema"] == schema
+    assert good.parsed == {"skills": ["Go"]}
+    assert bad.parsed is None
+    assert bad.content == "not json"
+
+
+def test_embed_delegates_to_the_local_embedding_model(monkeypatch):
+    from app.core.llm import embed
+
+    monkeypatch.setattr(
+        "app.core.embeddings.embed", lambda texts: [[float(len(t))] for t in texts]
+    )
+
+    assert embed(["ab", "c"]) == [[2.0], [1.0]]

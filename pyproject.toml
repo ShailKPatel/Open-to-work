@@ -26,6 +26,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-cov>=5.0",  # coverage report and minimum threshold, `make coverage`
     "ruff>=0.6",
     "mypy>=1.11",
     "requests>=2.31",  # tests/live only (imported directly)
@@ -48,9 +49,20 @@ python_version = "3.12"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-# tests/live/ is excluded: real, billed LLM calls, opt-in only via
-# `make test-live`.
+# tests/live/ is excluded: real network calls (LLM providers, GitHub, a
+# running instance), opt-in only via `make test-live`.
 testpaths = ["tests/unit"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+fail_under = 90
+exclude_also = ["if __name__ == .__main__.:", "if TYPE_CHECKING:"]
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -1,12 +1,21 @@
-.PHONY: test test-live lint ingest eval dev up down start
+.PHONY: test coverage test-live lint ingest eval dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
 	.venv/bin/pytest
 
-# Real, billed LLM calls. Needs LIVE_LLM_API_KEY (and optionally
-# LIVE_LLM_PROVIDER) in the environment; see tests/live/test_llm_live.py.
-# Never run by `make test` or CI. -s keeps the per-test cost/token report.
+# Unit tests with line and branch coverage (terminal report plus
+# htmlcov/index.html). Fails if total coverage drops below fail_under in
+# pyproject.toml.
+coverage:
+	.venv/bin/pytest --cov --cov-report=term --cov-report=html
+
+# Opt-in suites against real services. Each file skips unless its variable
+# is set, so this runs only what is configured:
+#   LIVE_LLM_API_KEY (optionally LIVE_LLM_PROVIDER)  real, billed LLM calls
+#   LIVE_GITHUB=1 (optionally GITHUB_TOKEN)          real GitHub API calls
+#   LIVE_APP_URL=http://localhost:8000               a running instance
+# Never run by `make test` or CI. -s keeps the per-test reports.
 test-live:
 	.venv/bin/pytest tests/live -v -s
 

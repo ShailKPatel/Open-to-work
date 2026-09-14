@@ -128,6 +128,26 @@ def test_education_page_serves_html(tmp_path):
     assert "Education" in resp.text
 
 
+def test_explanation_page_serves_html(tmp_path):
+    """Static presentation page: renders with no account, and its diagram
+    boxes (the data-node hooks the wire script attaches arrows to) come
+    through the macro import intact."""
+    _reset_db(tmp_path)
+    client = _client()
+    resp = client.get("/explanation")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "Tech stack" in resp.text
+    assert 'data-node="llm"' in resp.text
+    assert 'data-node="p-ollama"' in resp.text
+    assert "Testing and quality" in resp.text
+    assert 'aria-label="pytest"' in resp.text
+    # Data flow tab: its include renders, and hover cards name the model
+    # this instance is configured with, not a hardcoded default.
+    assert 'data-wires="flowA"' in resp.text
+    assert get_settings().embedding_model in resp.text
+
+
 def test_projects_page_serves_html_not_the_api_endpoint(tmp_path):
     """Regression test: GET /portfolio/projects (the page) and
     GET /api/projects (the JSON list) used to collide at the same path
@@ -584,11 +604,13 @@ def test_delete_account_removes_qdrant_points_for_both_evidence_types(tmp_path, 
         index_skill_evidence,
     )
 
-    _reset_db(tmp_path)
     import os
 
-    vectorstore_module.get_client.cache_clear()
+    # Set before _reset_db, which caches settings: set after, the client
+    # would still point at the default server URL instead of in-memory.
     os.environ["QDRANT_URL"] = ":memory:"
+    _reset_db(tmp_path)
+    vectorstore_module.get_client.cache_clear()
     monkeypatch.setattr(
         "app.retrieval.index.embed", lambda texts: [[1.0, 0.0] for _ in texts]
     )

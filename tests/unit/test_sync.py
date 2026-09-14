@@ -3,12 +3,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import app.core.db as db_module
-from app.core.db import Repository, init_db
+from app.core.db import Account, Repository, init_db
 from app.core.settings import get_settings
 from app.ingest.github.cancellation import is_cancelled, request_cancel
 from app.ingest.github.sync import (
+    _last_authored_commit,
     sync_account,
     sync_account_progress,
+    sync_single_repo,
     sync_single_repo_progress,
 )
 
@@ -587,3 +589,185 @@ def test_sync_single_repo_progress_cancelled_before_fetch_starts(tmp_path, monke
     assert db.query(Repository).count() == 0
     db.close()
     assert is_cancelled("repo-run-1") is False
+
+
+def test_last_authored_commit_matches_login_case_insensitively():
+    naive_week = dt.datetime(2024, 3, 4)  # no tzinfo: treated as UTC
+    epoch_week = int(dt.datetime(2024, 5, 6, tzinfo=dt.UTC).timestamp())
+    empty_week = dt.datetime(2024, 9, 2, tzinfo=dt.UTC)
+    stats = [
+        FakeStatsEntry(author=None, total=99),  # deleted GitHub account
+        FakeStatsEntry(author=FakeAuthor(login="someone-else"), total=50),
+        FakeStatsEntry(
+            author=FakeAuthor(login="OctoCat"),
+            total=7,
+            weeks=[
+                FakeWeek(w=naive_week, c=3),
+                FakeWeek(w=epoch_week, c=4),
+                FakeWeek(w=empty_week, c=0),  # no commits that week: ignored
+            ],
+        ),
+    ]
+
+    assert _last_authored_commit(stats, "octocat") == (
+        7,
+        dt.datetime(2024, 5, 6, tzinfo=dt.UTC),
+    )
+
+
+def test_last_authored_commit_naive_week_comes_back_as_utc():
+    stats = [
+        FakeStatsEntry(
+            author=FakeAuthor(login="octocat"),
+            total=1,
+            weeks=[FakeWeek(w=dt.datetime(2024, 3, 4), c=1)],
+        )
+    ]
+
+    assert _last_authored_commit(stats, "octocat") == (1, dt.datetime(2024, 3, 4, tzinfo=dt.UTC))
+
+
+def test_last_authored_commit_without_a_matching_author_is_zero():
+    assert _last_authored_commit([], "octocat") == (0, None)
+    assert _last_authored_commit(
+        [FakeStatsEntry(author=FakeAuthor(login="someone-else"), total=3)], "octocat"
+    ) == (0, None)
+
+
+class _MixedContentsClient(FakeClient):
+    """Root listing with a directory, a non-manifest file, a readable
+    manifest, and a manifest whose content can't be fetched."""
+
+    def root_contents(self, repo):
+        return [
+            FakeContentEntry(type="dir", name="package.json", path="package.json"),
+            FakeContentEntry(type="file", name="notes.txt", path="notes.txt"),
+            FakeContentEntry(type="file", name="requirements.txt", path="requirements.txt"),
+            FakeContentEntry(type="file", name="Cargo.toml", path="Cargo.toml"),
+        ]
+
+    def file_text(self, repo, path):
+        return {"requirements.txt": "flask\n", "notes.txt": "flask\n"}.get(path)
+
+
+def test_sync_reads_only_fetchable_manifest_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+
+    sync_account("octocat", client=_MixedContentsClient([repo]))
+
+    db = db_module.get_db()
+    stored = db.query(Repository).one()
+    assert stored.manifests_json == {
+        "requirements.txt": {"ecosystem": "pip", "dependencies": ["flask"]}
+    }
+    db.close()
+
+
+def test_sync_naive_pushed_at_still_hits_cache_on_next_run(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+    repo.pushed_at = dt.datetime(2024, 6, 1, 12, 0)  # naive, as some API paths return
+    client = FakeClient([repo])
+
+    sync_account("octocat", client=client)
+    second = sync_account("octocat", client=client)
+
+    assert (second.fetched, second.cache_hits) == (0, 1)
+
+
+def test_sync_refetch_moves_repo_to_the_syncing_account(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    db = db_module.get_db()
+    account = Account(first_name="Ada", last_name="Lovelace", github_username="octocat")
+    db.add(account)
+    db.commit()
+    account_id = account.id
+    db.close()
+    repo = _make_repos(1)[0]
+    client = FakeClient([repo])
+
+    sync_account("octocat", client=client)
+    repo.pushed_at = repo.pushed_at + dt.timedelta(days=1)
+    sync_account("octocat", client=client, account_id=account_id)
+
+    db = db_module.get_db()
+    assert db.query(Repository).one().account_id == account_id
+    db.close()
+
+
+class _StatsPendingClient(FakeClient):
+    """GitHub still computing contributor stats: returns an empty list."""
+
+    def contributor_stats(self, repo):
+        self.stats_calls += 1
+        return []
+
+
+def test_sync_keeps_known_commit_stats_when_github_is_still_computing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+    sync_account("octocat", client=FakeClient([repo]))
+
+    repo.pushed_at = repo.pushed_at + dt.timedelta(days=1)
+    sync_account("octocat", client=_StatsPendingClient([repo]))
+
+    db = db_module.get_db()
+    stored = db.query(Repository).one()
+    assert stored.commits_authored == 5
+    assert stored.last_commit_at is not None
+    db.close()
+
+
+def test_sync_single_repo_credits_the_attribution_user_then_hits_cache(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    mine, theirs = _make_repos(2)
+    client = FakeClient([mine, theirs])
+
+    first = sync_single_repo(mine.full_name, "octocat", client=client)
+    assert (first.total_repos, first.fetched, first.cache_hits) == (1, 1, 0)
+
+    second = sync_single_repo(mine.full_name, "octocat", client=client)
+    assert (second.total_repos, second.fetched, second.cache_hits) == (1, 0, 1)
+
+    # contributor stats only list octocat, so another user is credited nothing
+    sync_single_repo(theirs.full_name, "ghopper", client=client)
+
+    db = db_module.get_db()
+    by_name = {r.full_name: r for r in db.query(Repository).all()}
+    assert by_name[mine.full_name].commits_authored == 5
+    assert by_name[theirs.full_name].commits_authored == 0
+    db.close()
+
+
+def test_sync_single_repo_progress_full_run_then_cache_hit(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+    client = FakeClient([repo])
+
+    events = list(sync_single_repo_progress(repo.full_name, "octocat", client=client))
+
+    assert [e["stage"] for e in events] == [
+        "checking_profile",
+        "listing_repos",
+        "repo_progress",
+        "done",
+    ]
+    assert events[2] == {
+        "stage": "repo_progress",
+        "index": 1,
+        "total_hint": 1,
+        "name": repo.full_name,
+        "cache_hit": False,
+    }
+    assert events[-1]["fetched"] == 1
+
+    again = list(sync_single_repo_progress(repo.full_name, "octocat", client=client))
+    assert again[2]["cache_hit"] is True
+    assert again[-1]["fetched"] == 0

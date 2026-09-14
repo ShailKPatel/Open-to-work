@@ -1,0 +1,1342 @@
+{% extends "_base.html" %}
+{% block title %}How it works · Open to Work{% endblock %}
+{% block content %}
+{% import "_explain_macros.html" as ex %}
+{% import "_explain_logos.html" as lg %}
+<div x-data="explainApp()" x-init="init()" @ex-layer.window="setLayer($event.detail, true)" class="ex-page min-h-screen flex flex-col">
+
+  {% set top_active = 'explanation' %}
+  {% include "_header.html" %}
+
+  <!-- Shared arrowheads for every diagram on this page. Zero-size, not
+       display:none: markers inside a display:none SVG don't render. -->
+  <svg class="ex-defs" width="0" height="0" aria-hidden="true" focusable="false">
+    <defs>
+      <marker id="ex-head" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,1 L9,5 L0,9 L2.4,5 z" fill="#9f9fa9" />
+      </marker>
+      <marker id="ex-head-hot" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,1 L9,5 L0,9 L2.4,5 z" fill="#18181b" />
+      </marker>
+      <marker id="ex-head-err" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+        <path d="M0,1 L9,5 L0,9 L2.4,5 z" fill="#d64545" />
+      </marker>
+    </defs>
+  </svg>
+
+  <main class="flex-1 px-10 pb-28 w-full max-w-[1320px] mx-auto">
+    <section class="ex-hero">
+      <p class="ex-eyebrow">How it works</p>
+      <h1 class="font-display ex-h1">How <em>Open to Work</em> is built</h1>
+      <p class="ex-lede-lg">
+        It reads your GitHub and your resume, learns what you can actually do, and writes
+        a resume tailored to one job posting. It runs on your machine in Docker; only the
+        LLM call leaves it.
+      </p>
+    </section>
+
+    <div class="ex-tabs-wrap">
+      <div class="ex-tabs" role="tablist" aria-label="Explanation sections">
+        <button type="button" role="tab" class="ex-tab" :class="{ active: tab === 'what' }" :aria-selected="tab === 'what'" @click="setTab('what')">
+          <span class="ex-tab-num">01</span>What it does
+        </button>
+        <button type="button" role="tab" class="ex-tab" :class="{ active: tab === 'stack' }" :aria-selected="tab === 'stack'" @click="setTab('stack')">
+          <span class="ex-tab-num">02</span>Tech stack
+        </button>
+        <button type="button" role="tab" class="ex-tab" :class="{ active: tab === 'flow' }" :aria-selected="tab === 'flow'" @click="setTab('flow')">
+          <span class="ex-tab-num">03</span>How it works
+        </button>
+      </div>
+    </div>
+
+    <!-- ============================ 01 WHAT IT DOES ============================ -->
+    {% set CAPS = [
+      ('Build your profile', [
+        ('branch', 'Sync your GitHub', 'Paste a username or repo link. Only repos pushed since the last sync are fetched again.'),
+        ('spark', 'Find your skills', 'Reads dependencies and READMEs. Every skill links back to the repo that proves it.'),
+        ('upload', 'Read your resume', 'Upload a PDF or image. Skills and work history are added to your profile.'),
+        ('user', 'Add anything by hand', 'Projects, experience bullets, education, skills, contact details and links.'),
+      ]),
+      ('Track jobs', [
+        ('briefcase', 'Save a posting four ways', 'Paste the text, a link, a screenshot, or a page you have to sign in to see.'),
+        ('filter', 'Pull out the details', 'Salary, seniority, years of experience and each required skill.'),
+        ('gauge', 'See your skill gaps', 'What a job asks for that you lack, and which skills your saved jobs want most.'),
+        ('check', 'Track applications', 'Mark a job applied, with a date and notes.'),
+      ]),
+      ('Write resumes', [
+        ('doc', 'Tailor a resume to one job', 'Picks your best matching projects and skills. It cannot add ones you do not have.'),
+        ('layers', 'Fit the page', 'One-page or two-page template. Trims a line at a time until it fits.'),
+        ('code', 'Edit with a prompt', 'Ask for a change in plain words and get a new PDF.'),
+        ('search', 'Keep a library', 'Every resume is saved, and the closest existing one is found for a new job.'),
+      ]),
+      ('Run it yourself', [
+        ('terminal', 'One command to start', 'Runs in Docker on your machine. Your data stays there.'),
+        ('key', 'Any LLM provider', 'OpenAI, Anthropic, Gemini, Mistral, Azure, Bedrock or local Ollama. Keys are encrypted.'),
+        ('shield', 'Spend limit', 'A monthly budget is checked before every LLM call, and repeat calls are free.'),
+        ('chart', 'Monitor usage', 'LLM spend by key, profile and model, plus GitHub rate limits.'),
+      ]),
+    ] %}
+    <div x-show="tab === 'what'" x-cloak role="tabpanel">
+      <section class="ex-section ex-section--first">
+        <header class="ex-section-head">
+          <span class="ex-section-num">1</span>
+          <div>
+            <h2 class="ex-h2">Three inputs in, one tailored resume out</h2>
+          </div>
+        </header>
+
+        <div class="ex-panel">
+          <div class="ex-scroll">
+            <div class="ex-diagram ex-what" data-wires="what">
+              {{ ex.node('w-github', 'Input', 'GitHub repos', 'READMEs, dependencies, commits.', logos=['github'], area='grid-column:1;grid-row:1') }}
+              {{ ex.node('w-resume', 'Input', 'Resume file', 'PDF or image.', 'doc', area='grid-column:1;grid-row:2') }}
+              {{ ex.node('w-job', 'Input', 'Job posting', 'Text, link or screenshot.', 'briefcase', area='grid-column:1;grid-row:3') }}
+
+              {{ ex.node('w-profile', 'Understand you', 'Skill profile', 'Every skill is backed by evidence from a repo or a past role.', 'user', area='grid-column:2;grid-row:1 / 3') }}
+              {{ ex.node('w-reqs', 'Understand the job', 'Requirements', 'Skills, level and seniority pulled from the posting.', 'filter', area='grid-column:2;grid-row:3') }}
+
+              {{ ex.node('w-match', 'Match', 'Best evidence', 'Vector search picks the projects and skills that fit this job.', 'search', area='grid-column:3;grid-row:1 / 4') }}
+              {{ ex.node('w-pdf', 'Output', 'Tailored resume', 'The LLM writes the wording, LaTeX lays out the PDF.', 'doc', ext=true, area='grid-column:4;grid-row:1 / 4') }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">2</span>
+          <div>
+            <h2 class="ex-h2">What you can do with it</h2>
+          </div>
+        </header>
+
+        <div class="ex-caps">
+          {% for group, items in CAPS %}
+          <div class="ex-stack-group">
+            <p class="ex-kicker">{{ group }}</p>
+            {% for ic, name, note in items %}
+            <div class="ex-cap">
+              <span class="ex-icon">{{ ex.icon(ic) }}</span>
+              <span><b>{{ name }}</b><i>{{ note }}</i></span>
+            </div>
+            {% endfor %}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+    </div>
+
+    <!-- ============================ 02 TECH STACK ============================ -->
+    <div x-show="tab === 'stack'" x-cloak role="tabpanel">
+
+      <!-- 1 · Built with -->
+      {% set STACK = [
+        ('Backend', [('python', 'Python 3.12', 'the whole app'), ('fastapi', 'FastAPI', 'web server and API'), ('pydantic', 'Pydantic', 'typed data and LLM output'), ('sqlalchemy', 'SQLAlchemy', 'database access')]),
+        ('Frontend', [('jinja', 'Jinja2', 'server-rendered pages'), ('tailwindcss', 'Tailwind CSS', 'styling'), ('alpinedotjs', 'Alpine.js', 'interactivity, no build step')]),
+        ('AI', [('litellm', 'LiteLLM', 'one API for every LLM provider'), ('huggingface', 'sentence-transformers', 'embeddings, run locally'), ('pytorch', 'PyTorch (CPU)', 'runs the embedding model')]),
+        ('Data', [('sqlite', 'SQLite', 'app data'), ('qdrant', 'Qdrant', 'vector search')]),
+        ('Ingestion', [('github', 'GitHub API', 'repos, READMEs, commits'), ('playwright', 'Playwright', 'job pages behind a login')]),
+        ('Output and infra', [('latex', 'LaTeX (Tectonic)', 'resume PDF'), ('docker', 'Docker Compose', 'one-command setup')]),
+        ('Testing and quality', [('pytest', 'pytest', 'unit, API and live tests, with coverage'), ('ruff', 'Ruff and mypy', 'linting and type checks')]),
+      ] %}
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">1</span>
+          <div>
+            <h2 class="ex-h2">Built with</h2>
+            <p class="ex-lede">The tools, grouped by the job they do.</p>
+          </div>
+        </header>
+
+        <div class="ex-stack">
+          {% for group, items in STACK %}
+          <div class="ex-stack-group">
+            <p class="ex-kicker">{{ group }}</p>
+            {% for logo, name, note in items %}
+            <div class="ex-stack-item">
+              <span class="ex-logo ex-logo--lg">{{ lg.logo(logo) }}</span>
+              <span><b>{{ name }}</b><i>{{ note }}</i></span>
+            </div>
+            {% endfor %}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <!-- 2 · Architecture map -->
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">2</span>
+          <div>
+            <h2 class="ex-h2">How the pieces connect</h2>
+            <p class="ex-lede">
+              Everything inside the blue frame runs in Docker on your machine. Dashed boxes are outside it.
+              Hover a box to highlight what it talks to.
+            </p>
+          </div>
+        </header>
+
+        <div class="ex-panel">
+          <div class="ex-scroll">
+            <div class="ex-diagram ex-arch" data-wires="arch">
+              <div class="ex-boundary" aria-hidden="true">
+                <span class="ex-boundary-label"><span class="ex-logo ex-logo--bare">{{ lg.logo('docker') }}</span>Docker · your machine</span>
+              </div>
+
+              {{ ex.node('browser', 'Frontend', 'Web pages', 'Server-rendered HTML. No Node, no build step.', logos=['jinja', 'tailwindcss', 'alpinedotjs'], area='grid-column:3;grid-row:1') }}
+
+              {{ ex.node('github', 'Outside', 'GitHub API', 'Public repos work without a token.', logos=['github'], ext=true, area='grid-column:1;grid-row:2') }}
+              {{ ex.node('ingest', 'Ingestion', 'Fetchers', 'Repos, job pages and resume files come in here.', logos=['playwright'], area='grid-column:2;grid-row:2') }}
+              {{ ex.node('api', 'Web server', 'FastAPI', 'Routes, background jobs, live progress.', logos=['python', 'fastapi'], area='grid-column:3;grid-row:2') }}
+              {{ ex.node('resume', 'Resume builder', 'LaTeX to PDF', 'The LLM writes JSON, a template turns it into a PDF.', logos=['latex'], area='grid-column:4;grid-row:2') }}
+
+              {{ ex.node('jobsites', 'Outside', 'Job sites', 'Career pages and job boards.', 'briefcase', ext=true, area='grid-column:1;grid-row:3') }}
+              {{ ex.node('embed', 'Embeddings', 'sentence-transformers', models.embedding ~ ' on CPU. No API key.', logos=['huggingface'], area='grid-column:2;grid-row:3', tip='Embedding model|' ~ models.embedding ~ '|Runs locally via sentence-transformers, downloaded once into the hf_cache volume.|Vector size follows the model: 768 for the default bge-base.|The same model embeds every Qdrant collection and every search query.') }}
+              {{ ex.node('sqlite', 'Database', 'SQLite', 'Stores all app data.', logos=['sqlite', 'sqlalchemy'], area='grid-column:3;grid-row:3', tip='Database|SQLite via SQLAlchemy|WAL journal mode plus a 30s busy timeout.|Every LLM call is logged here with model, tokens and cost.') }}
+              {{ ex.node('llm', 'LLM gateway', 'LiteLLM', 'One call path: cached and budget-capped.', logos=['litellm'], area='grid-column:4;grid-row:3', tip='LLM models|Any LiteLLM model, set in .env|A cheaper model for repo skills and links, a stronger one for extraction and resume writing.|Monthly budget: $' ~ ('%g' | format(models.budget)) ~ ', checked before every call.') }}
+              {{ ex.node('providers', 'Outside', 'LLM provider', 'The only call that leaves your machine.', 'cloud', ext=true, area='grid-column:5;grid-row:3') }}
+
+              {{ ex.node('qdrant', 'Vector search', 'Qdrant', 'Finds the evidence closest to a job.', logos=['qdrant'], area='grid-column:2;grid-row:4', tip='Vector database|Qdrant · cosine distance|Collections: skill_evidence, experience_points, resumes, job_postings, role_families.|Vectors from ' ~ models.embedding ~ '. Point id equals the SQLite row id.') }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3 · LLM gateway -->
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">3</span>
+          <div>
+            <h2 class="ex-h2">Every LLM call goes through one gateway</h2>
+            <p class="ex-lede">
+              No feature calls a provider directly. Each call passes the same checks in order,
+              so caching and spend limits can't be skipped. Switching provider is a setting.
+            </p>
+          </div>
+        </header>
+
+        <div class="ex-panel">
+          <div class="ex-scroll">
+            <div class="ex-diagram ex-gateway" data-wires="gateway">
+              {{ ex.node('caller', 'Any feature', 'complete()', 'Text, images or PDFs.', 'code', mono=true, area='grid-column:1;grid-row:1') }}
+              {{ ex.node('cache', 'Check 1', 'Seen before?', 'Same request is answered from the database.', 'hash', area='grid-column:2;grid-row:1') }}
+              {{ ex.node('budget', 'Check 2', 'Under budget?', 'Monthly cap checked before the call.', 'shield', area='grid-column:3;grid-row:1') }}
+              {{ ex.node('keys', 'Check 3', 'Pick a key', 'Encrypted at rest. Next key if one fails.', 'key', area='grid-column:4;grid-row:1') }}
+              {{ ex.node('litellm', 'Send', 'LiteLLM', 'Same JSON back from every provider.', logos=['litellm'], area='grid-column:5;grid-row:1') }}
+
+              <div class="ex-provider-stack" style="grid-column:6;grid-row:1">
+                <span class="ex-pill" data-node="p-openai"><span class="ex-logo ex-logo--bare">{{ lg.logo('openai') }}</span>OpenAI</span>
+                <span class="ex-pill" data-node="p-anthropic"><span class="ex-logo ex-logo--bare">{{ lg.logo('anthropic') }}</span>Anthropic</span>
+                <span class="ex-pill" data-node="p-gemini"><span class="ex-logo ex-logo--bare">{{ lg.logo('googlegemini') }}</span>Gemini</span>
+                <span class="ex-pill" data-node="p-mistral"><span class="ex-logo ex-logo--bare">{{ lg.logo('mistralai') }}</span>Mistral</span>
+                <span class="ex-pill" data-node="p-azure"><span class="ex-logo ex-logo--bare">{{ lg.logo('microsoftazure') }}</span>Azure OpenAI</span>
+                <span class="ex-pill" data-node="p-bedrock"><span class="ex-logo ex-logo--bare">{{ lg.logo('amazonwebservices') }}</span>AWS Bedrock</span>
+                <span class="ex-pill" data-node="p-ollama"><span class="ex-logo ex-logo--bare">{{ lg.logo('ollama') }}</span>Ollama <em>local</em></span>
+              </div>
+
+              {{ ex.node('ledger', 'Every call', 'Call ledger', 'Model, tokens and cost, saved in SQLite.', 'ledger', area='grid-column:4;grid-row:2') }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4 · Containerization -->
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">4</span>
+          <div>
+            <h2 class="ex-h2">Runs with one command</h2>
+            <p class="ex-lede">
+              No Python, Node or GPU drivers needed on the host. Docker Compose starts two
+              containers and keeps data in volumes, so it survives restarts.
+            </p>
+          </div>
+        </header>
+
+        <div class="ex-panel">
+          <div class="ex-scroll">
+            <div class="ex-diagram ex-docker" data-wires="docker">
+              {{ ex.node('make', 'You type', 'make start', 'That is the whole setup.', 'terminal', mono=true, area='grid-column:1;grid-row:1') }}
+              {{ ex.node('startsh', 'Bootstrap', 'start.sh', 'Installs Docker if missing, writes .env.', logos=['gnubash'], mono=true, area='grid-column:2;grid-row:1') }}
+              {{ ex.node('compose', 'Orchestration', 'Docker Compose', 'Two services, each health-checked.', logos=['docker'], area='grid-column:3;grid-row:1') }}
+
+              {{ ex.node('open', 'Ready', 'localhost:8000', 'Opens in your browser.', 'globe', ext=true, mono=true, area='grid-column:1;grid-row:2') }}
+              {{ ex.node('app', 'Container 1', 'app', 'Python 3.12, CPU-only PyTorch, Tectonic, Chromium.', logos=['python', 'pytorch'], mono=true, area='grid-column:2;grid-row:2') }}
+              {{ ex.node('qdrantc', 'Container 2', 'qdrant', 'The official Qdrant image.', logos=['qdrant'], mono=true, area='grid-column:3;grid-row:2') }}
+
+              {{ ex.node('vdata', 'Volume', './data', 'SQLite, resumes, encryption key.', 'disk', mono=true, area='grid-column:1;grid-row:3') }}
+              {{ ex.node('vhf', 'Volume', 'hf_cache', 'Embedding model, downloaded once.', logos=['huggingface'], mono=true, area='grid-column:2;grid-row:3') }}
+              {{ ex.node('vq', 'Volume', 'qdrant_storage', 'Vectors.', 'disk', mono=true, area='grid-column:3;grid-row:3') }}
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============================ 03 HOW IT WORKS ============================ -->
+    {% include "_explain_flow.html" %}
+  </main>
+</div>
+
+<style>
+  /* Light theme for this page only: the shared tokens are redefined here,
+     which also recolors the header, and the animated backdrop is hidden
+     so the diagrams are the only thing on the page. */
+  :root {
+    color-scheme: light;
+    --ink: #18181b;
+    --paper: #ffffff;
+    --surface: #ffffff;
+    --line: #e4e4e7;
+    --line-strong: #18181b;
+    --muted: #6b6b76;
+    --accent: #18181b;
+    --accent-ink: #ffffff;
+    --danger: #d64545;
+    --good: #18181b;
+    --ex-canvas: #f7f7f8;
+    --ex-border: #d4d4d8;
+    --ex-wire: #9f9fa9;
+    --ex-soft: #f4f4f5;
+    --ex-body: #52525b;
+    --ex-err: #c03a3a;
+    --ex-err-line: rgba(214, 69, 69, 0.5);
+    --ex-err-soft: #fdf3f3;
+  }
+  body { background: var(--paper); }
+  .otw-bg { display: none; }
+  .otw-topnav-link:hover { background: var(--ex-soft); }
+
+  .ex-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+  /* Hero + tabs */
+  .ex-hero { padding-top: 2rem; }
+  .ex-eyebrow { font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+  .ex-h1 { font-size: clamp(2.2rem, 4.6vw, 3.4rem); line-height: 1.08; margin-top: 0.7rem; }
+  .ex-h1 em { font-style: italic; color: var(--muted); }
+  .ex-lede-lg { margin-top: 1rem; max-width: 42rem; font-size: 1.08rem; line-height: 1.6; color: var(--ex-body); }
+
+  .ex-tabs-wrap { position: sticky; top: 1rem; z-index: 30; margin-top: 2.2rem; }
+  .ex-tabs {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    padding: 0.3rem;
+    border: 1px solid var(--line);
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 1px 3px rgba(24, 24, 27, 0.06);
+  }
+  .ex-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.65rem 1.3rem;
+    border-radius: 9999px;
+    font-size: 0.92rem;
+    color: var(--muted);
+    transition: color 0.15s ease, background 0.2s ease;
+  }
+  .ex-tab:hover { color: var(--ink); }
+  .ex-tab.active { background: var(--ink); color: #ffffff; }
+  .ex-tab-num { font-size: 0.72rem; opacity: 0.6; }
+
+  /* Sections */
+  .ex-section { margin-top: 4.5rem; }
+  .ex-section--first { margin-top: 3rem; }
+  .ex-section-head { display: flex; gap: 1rem; align-items: flex-start; }
+  .ex-section-num {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    margin-top: 0.2rem;
+    border-radius: 9999px;
+    background: var(--ink);
+    color: #ffffff;
+    font-size: 0.8rem;
+    font-weight: 600;
+  }
+  .ex-h2 { font-family: 'Fraunces', Georgia, serif; font-size: clamp(1.5rem, 2.4vw, 1.95rem); line-height: 1.2; }
+  .ex-lede { margin-top: 0.45rem; max-width: 46rem; color: var(--ex-body); line-height: 1.6; }
+
+  .ex-panel {
+    margin-top: 1.6rem;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--ex-canvas);
+  }
+  .ex-scroll { overflow-x: auto; padding: 2.5rem 2rem 2.2rem; }
+
+  /* Diagram canvas: CSS grid places the boxes, the script draws wires
+     between their real on-screen edges. */
+  .ex-diagram { position: relative; display: grid; }
+  .ex-wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 1; }
+  .ex-wire-labels { position: absolute; inset: 0; pointer-events: none; z-index: 3; }
+  .ex-fit { position: relative; }
+  .ex-fit.is-scaled { overflow: hidden; }
+
+  .ex-wire {
+    fill: none;
+    stroke: var(--ex-wire);
+    stroke-width: 1.5;
+    marker-end: url(#ex-head);
+    transition: opacity 0.2s ease, stroke 0.2s ease;
+  }
+  /* Moving dots only on the wires of the hovered box, so a still page
+     stays still. */
+  .ex-wire-flow {
+    fill: none;
+    stroke: var(--ink);
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-dasharray: 0.1 14;
+    opacity: 0;
+    animation: ex-flow 1.6s linear infinite;
+    transition: opacity 0.2s ease;
+  }
+  @keyframes ex-flow { to { stroke-dashoffset: -14.1; } }
+  .ex-wire.hot { stroke: var(--ink); marker-end: url(#ex-head-hot); }
+  .ex-wire-flow.hot { opacity: 0.85; }
+
+  .ex-wire-label {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    font-size: 0.7rem;
+    white-space: nowrap;
+    color: var(--ex-body);
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.1rem 0.45rem;
+    transition: opacity 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  }
+  .ex-wire-label.hot { color: var(--ink); border-color: var(--ink); }
+
+  .is-focus .ex-wire:not(.hot) { opacity: 0.2; }
+  .is-focus .ex-wire-label:not(.hot) { opacity: 0.25; }
+  .is-focus [data-node]:not(.hot) { opacity: 0.4; }
+
+  /* Boxes */
+  .ex-node {
+    position: relative;
+    z-index: 2;
+    background: #ffffff;
+    border: 1px solid var(--ex-border);
+    border-radius: 10px;
+    padding: 0.85rem 1rem 0.95rem;
+    box-shadow: 0 1px 2px rgba(24, 24, 27, 0.05);
+    transition: border-color 0.2s ease, opacity 0.2s ease, box-shadow 0.2s ease;
+  }
+  .ex-node:hover, .ex-node.hot { border-color: var(--ink); box-shadow: 0 4px 16px rgba(24, 24, 27, 0.08); }
+  .ex-node--ext { background: var(--ex-canvas); border-style: dashed; border-color: var(--ex-wire); box-shadow: none; }
+  .ex-node-top { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; min-height: 1.75rem; }
+  .ex-kicker { font-size: 0.64rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  .ex-icon {
+    flex-shrink: 0;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: #ffffff;
+    display: grid;
+    place-items: center;
+    color: var(--ink);
+  }
+  .ex-icon svg { width: 0.95rem; height: 0.95rem; }
+  .ex-logos { display: flex; gap: 0.3rem; flex-shrink: 0; }
+  .ex-logo {
+    flex-shrink: 0;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 7px;
+    border: 1px solid var(--line);
+    background: #ffffff;
+    display: grid;
+    place-items: center;
+  }
+  .ex-logo svg, .ex-logo img { width: 1.05rem; height: 1.05rem; display: block; }
+  .ex-logo img { border-radius: 9999px; }
+  .ex-logo--lg { width: 2.4rem; height: 2.4rem; border-radius: 9px; }
+  .ex-logo--lg svg, .ex-logo--lg img { width: 1.4rem; height: 1.4rem; }
+  .ex-logo--bare { width: auto; height: auto; border: none; background: none; }
+  .ex-logo--bare svg, .ex-logo--bare img { width: 0.95rem; height: 0.95rem; }
+  .ex-title { font-size: 1rem; font-weight: 600; line-height: 1.3; margin-top: 0.5rem; color: var(--ink); }
+  .ex-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.93rem; letter-spacing: -0.01em; }
+  .ex-sub { font-size: 0.8rem; line-height: 1.45; color: var(--ex-body); margin-top: 0.3rem; }
+  .ex-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.6rem; }
+  .ex-chips span {
+    font-size: 0.66rem;
+    padding: 0.14rem 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--ex-soft);
+    white-space: nowrap;
+  }
+
+  /* 1 what it does */
+  .ex-what {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    column-gap: 72px;
+    row-gap: 18px;
+    min-width: 940px;
+    padding: 0.25rem;
+  }
+  .ex-what .ex-node { align-self: center; }
+
+  /* 2 built with */
+  .ex-stack {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+    gap: 0.9rem;
+    margin-top: 1.6rem;
+  }
+  .ex-stack-group { padding: 1rem 1.1rem 1.1rem; border: 1px solid var(--line); border-radius: 12px; background: #ffffff; }
+  .ex-stack-item { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.8rem; }
+  .ex-stack-item b { display: block; font-size: 0.92rem; font-weight: 600; line-height: 1.25; }
+  .ex-stack-item i { display: block; font-style: normal; font-size: 0.76rem; color: var(--muted); line-height: 1.35; }
+
+  /* What you can do */
+  .ex-caps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+    gap: 0.9rem;
+    margin-top: 1.6rem;
+  }
+  .ex-cap { display: flex; align-items: flex-start; gap: 0.75rem; margin-top: 0.9rem; }
+  .ex-cap .ex-icon { margin-top: 0.1rem; }
+  .ex-cap b { display: block; font-size: 0.92rem; font-weight: 600; line-height: 1.3; }
+  .ex-cap i { display: block; font-style: normal; font-size: 0.8rem; color: var(--ex-body); line-height: 1.45; margin-top: 0.15rem; }
+
+  /* 3 architecture layout */
+  .ex-arch {
+    grid-template-columns: 150px repeat(3, minmax(0, 1fr)) 150px;
+    column-gap: 64px;
+    row-gap: 80px;
+    min-width: 1100px;
+    padding: 0.25rem 0.25rem 3rem;
+  }
+  .ex-boundary {
+    grid-column: 2 / 5;
+    grid-row: 2 / 5;
+    margin: -2.3rem -1.4rem -2.4rem;
+    border: 1.5px dashed rgba(36, 150, 237, 0.5);
+    border-radius: 14px;
+    background: rgba(36, 150, 237, 0.045);
+    position: relative;
+    z-index: 0;
+    pointer-events: none;
+  }
+  .ex-boundary-label {
+    position: absolute;
+    top: -0.8rem;
+    left: 1.2rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.18rem 0.7rem;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #1b6ab5;
+    background: #ffffff;
+    border: 1px solid rgba(36, 150, 237, 0.5);
+    border-radius: 9999px;
+  }
+
+  .ex-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    padding: 0.9rem 2rem 1.1rem;
+    border-top: 1px solid var(--line);
+    font-size: 0.75rem;
+    color: var(--muted);
+  }
+  .ex-legend span { display: inline-flex; align-items: center; gap: 0.5rem; }
+  .ex-legend i { display: inline-block; width: 1.4rem; height: 0.8rem; border-radius: 3px; }
+  .ex-legend-solid { border: 1px solid var(--ex-border); background: #ffffff; }
+  .ex-legend-dashed { border: 1px dashed var(--ex-wire); }
+
+  /* 4 gateway layout */
+  .ex-gateway {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) 170px;
+    column-gap: 40px;
+    row-gap: 72px;
+    align-items: stretch;
+    min-width: 1120px;
+    padding: 4rem 0.25rem 0.25rem;
+  }
+  /* Steps share one height so the arrows between them sit on one line;
+     the provider stack centers on that line instead of stretching. Its
+     negative block margin keeps the taller stack from setting the row
+     height: it overhangs into the padding above and the row gap below. */
+  .ex-provider-stack { display: flex; flex-direction: column; justify-content: center; gap: 0.35rem; align-self: center; margin-block: -2.5rem; padding-left: 1.6rem; }
+  .ex-pill {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.8rem;
+    border: 1px solid var(--ex-border);
+    border-radius: 7px;
+    background: #ffffff;
+    transition: border-color 0.2s ease, opacity 0.2s ease;
+  }
+  .ex-pill em { font-style: normal; font-size: 0.68rem; color: var(--muted); }
+  .ex-pill:hover, .ex-pill.hot { border-color: var(--ink); }
+
+  /* 5 docker layout */
+  .ex-docker {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: 150px;
+    row-gap: 80px;
+    min-width: 960px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 0.25rem;
+  }
+
+  /* ---------- Data flow tab ---------- */
+  .ex-code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85em; padding: 0.05rem 0.35rem; border: 1px solid var(--line); border-radius: 5px; background: var(--ex-soft); }
+
+  .ex-engines { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; margin-top: 1.6rem; }
+  @media (max-width: 900px) { .ex-engines { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .ex-engines { grid-template-columns: minmax(0, 1fr); } }
+  .ex-engine { position: relative; padding: 1rem 1.1rem 1.1rem; border: 1px solid var(--line); border-radius: 12px; background: #ffffff; }
+  .ex-engine .ex-icon { position: absolute; top: 0.9rem; right: 0.9rem; }
+  .ex-kicker-note { letter-spacing: 0.02em; text-transform: none; }
+  .ex-engine-val { margin-top: 0.45rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.86rem; color: var(--ink); overflow-wrap: anywhere; padding-right: 1.8rem; }
+
+  /* Node variants */
+  .ex-node--decision { border-color: #71717a; }
+  .ex-node--decision .ex-kicker::before { content: '◆'; margin-right: 0.4em; font-size: 0.85em; color: var(--ink); }
+  .ex-node--store { box-shadow: inset 3px 0 0 #71717a, 0 1px 2px rgba(24, 24, 27, 0.05); }
+  .ex-node--store.hot, .ex-node--store:hover { box-shadow: inset 3px 0 0 var(--ink), 0 4px 16px rgba(24, 24, 27, 0.08); }
+  .ex-node--err { border: 1px dashed var(--ex-err-line); background: var(--ex-err-soft); box-shadow: none; }
+  .ex-node--err .ex-kicker { color: var(--ex-err); }
+  .ex-node--err .ex-icon { color: var(--ex-err); border-color: var(--ex-err-line); background: #ffffff; }
+  .ex-node--err:hover, .ex-node--err.hot { border-color: var(--danger); box-shadow: none; }
+  .ex-node--link { cursor: pointer; padding-bottom: 1.9rem; }
+  .ex-node--link::after { content: 'Expand ↓'; position: absolute; right: 1rem; bottom: 0.7rem; font-size: 0.66rem; letter-spacing: 0.04em; color: var(--muted); transition: color 0.2s ease; }
+  .ex-node--link:hover::after { color: var(--ink); }
+  .ex-node--tip { cursor: help; }
+  .ex-node--link.ex-node--tip { cursor: pointer; }
+  .ex-chips .ex-chip-err { color: var(--ex-err); border-color: var(--ex-err-line); background: var(--ex-err-soft); }
+
+  /* Wire kinds */
+  .ex-wire.ex-wire--err { stroke: var(--ex-err-line); stroke-dasharray: 5 5; marker-end: url(#ex-head-err); }
+  .ex-wire.ex-wire--err.hot { stroke: var(--danger); marker-end: url(#ex-head-err); }
+  .ex-wire-flow.ex-wire--err { stroke: var(--danger); }
+  .ex-wire.ex-wire--loop { stroke-dasharray: 7 6; }
+  .ex-wire-label--err { color: var(--ex-err); border-color: var(--ex-err-line); }
+  .ex-wire-label--err.hot { color: var(--ex-err); border-color: var(--danger); }
+
+  .ex-legend-decision { border: 1px solid #71717a; background: #ffffff; }
+  .ex-legend-store { border: 1px solid var(--ex-border); background: #ffffff; box-shadow: inset 3px 0 0 #71717a; }
+  .ex-legend-err { border: 1px dashed var(--danger); background: var(--ex-err-soft); }
+  .ex-legend i.ex-legend-line-err { height: 0; border-radius: 0; border-top: 1.5px dashed var(--danger); }
+  .ex-legend i.ex-legend-line-loop { height: 0; border-radius: 0; border-top: 1.5px dashed #71717a; }
+
+  /* Overview map */
+  .ex-overview {
+    grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1.15fr) minmax(0, 1fr) 150px;
+    column-gap: 64px;
+    row-gap: 64px;
+    min-width: 1120px;
+    padding: 0.25rem;
+  }
+  /* Boxes keep their own height and sit centered in their rows, so a box
+     spanning two rows and the boxes it connects to share one arrow line. */
+  .ex-overview .ex-node:not(.ex-node--store) { align-self: center; }
+  .ex-store { display: flex; flex-direction: column; gap: 1.1rem; margin-top: 1rem; }
+  .ex-store-h { font-size: 0.64rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.5rem; }
+  /* One column: the storage box spans four rows, so height is free and
+     full names beat two cramped, truncated columns. */
+  .ex-store-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.35rem; }
+  .ex-store-list li {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.68rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--ex-soft);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Layer picker + layer pages */
+  #ex-layer-view { scroll-margin-top: 6rem; }
+  .ex-layer-picker { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1.6rem; }
+  .ex-layer-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.45rem 1rem 0.45rem 0.45rem;
+    border: 1px solid var(--line);
+    border-radius: 9999px;
+    background: #ffffff;
+    font-size: 0.88rem;
+    color: var(--ex-body);
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+  .ex-layer-btn:hover { color: var(--ink); border-color: var(--ink); }
+  .ex-layer-btn.active { color: #ffffff; background: var(--ink); border-color: var(--ink); }
+  .ex-layer-btn-letter {
+    display: grid;
+    place-items: center;
+    width: 1.6rem;
+    height: 1.6rem;
+    border-radius: 9999px;
+    border: 1px solid currentColor;
+    font-size: 0.78rem;
+    font-weight: 600;
+  }
+  .ex-layer { margin-top: 2.2rem; }
+  .ex-layer-head { display: flex; gap: 1.2rem; align-items: flex-start; }
+  .ex-layer-letter {
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    width: 3rem;
+    height: 3rem;
+    border-radius: 12px;
+    background: var(--ink);
+    color: #ffffff;
+    font-size: 1.4rem;
+    font-weight: 600;
+  }
+  .ex-h3 { font-family: 'Fraunces', Georgia, serif; font-size: 1.55rem; line-height: 1.2; }
+  .ex-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.9rem; }
+  .ex-meta span { font-size: 0.74rem; color: var(--ex-body); padding: 0.26rem 0.65rem; border: 1px solid var(--line); border-radius: 6px; background: #ffffff; }
+  .ex-meta b { color: var(--ink); font-weight: 600; margin-right: 0.35rem; }
+  .ex-panel-title { padding: 1.1rem 2rem 0; font-size: 0.72rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+
+  .ex-flow { column-gap: 56px; row-gap: 76px; min-width: 1120px; padding: 0.25rem 0.25rem 1rem; }
+  .ex-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .ex-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); column-gap: 48px; min-width: 1200px; }
+  .ex-flow-b { padding-left: 3.5rem; }
+  .ex-state {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    column-gap: 96px;
+    row-gap: 26px;
+    min-width: 920px;
+    max-width: 1060px;
+    margin: 0 auto;
+    padding: 4.5rem 0.25rem 5rem;
+  }
+
+  .ex-shapes { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 1rem; margin-top: 1rem; }
+  .ex-shape { padding: 1rem 1.2rem 1.1rem; border: 1px solid var(--line); border-radius: 12px; background: #ffffff; min-width: 0; }
+  .ex-shape pre {
+    margin-top: 0.7rem;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.76rem;
+    line-height: 1.6;
+    color: #27272a;
+  }
+  .ex-shape pre em { font-style: normal; color: var(--muted); }
+
+  .ex-calc { margin-top: 1rem; padding: 1.1rem 1.4rem 1.2rem; border: 1px solid var(--line); border-radius: 12px; background: #ffffff; }
+  .ex-calc-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5rem; margin-top: 0.8rem; }
+  .ex-term { display: flex; flex-direction: column; justify-content: center; padding: 0.5rem 0.8rem; border: 1px solid var(--line); border-radius: 8px; background: var(--ex-canvas); }
+  .ex-term b { font-weight: 600; font-size: 1.15rem; line-height: 1.1; }
+  .ex-term i { font-style: normal; font-size: 0.68rem; color: var(--muted); margin-top: 0.15rem; }
+  .ex-term--result { border-color: var(--ink); background: #ffffff; }
+  .ex-op { align-self: center; font-size: 1.1rem; color: var(--muted); padding: 0 0.1rem; }
+
+  /* Hover card: one floating element for the whole page, positioned by
+     the script so it can't be clipped by a diagram's scroll container. */
+  .ex-tip {
+    position: fixed;
+    z-index: 60;
+    max-width: 320px;
+    padding: 0.75rem 0.9rem 0.8rem;
+    border-radius: 10px;
+    background: #18181b;
+    box-shadow: 0 12px 32px rgba(24, 24, 27, 0.22);
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+  .ex-tip.show { opacity: 1; transform: translateY(0); }
+  .ex-tip-h { font-size: 0.64rem; letter-spacing: 0.12em; text-transform: uppercase; color: #a1a1aa; }
+  .ex-tip-main { margin-top: 0.3rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.84rem; color: #fafafa; overflow-wrap: anywhere; }
+  .ex-tip-line { margin-top: 0.4rem; font-size: 0.76rem; line-height: 1.45; color: #d4d4d8; }
+
+  @media (max-width: 640px) {
+    main.px-10 { padding-left: 1.25rem; padding-right: 1.25rem; }
+    .ex-tabs { flex-wrap: nowrap; }
+    .ex-tab { padding: 0.6rem 0.85rem; font-size: 0.85rem; }
+    .ex-tab-num { display: none; }
+    .ex-scroll { padding: 2.2rem 1.25rem 1.8rem; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ex-wire-flow { animation: none; }
+  }
+</style>
+
+<script>
+  function explainApp() {
+    return {
+      tab: 'what',
+      layer: 'github',
+      accountName: '',
+      layers: [
+        { id: 'github', letter: 'A', name: 'GitHub sync' },
+        { id: 'extract', letter: 'B', name: 'Skill extraction' },
+        { id: 'resume', letter: 'C', name: 'Resume upload' },
+        { id: 'jobs', letter: 'D', name: 'Job postings' },
+        { id: 'build', letter: 'E', name: 'Resume build' },
+      ],
+
+      init() {
+        try {
+          this.accountName = localStorage.getItem('otw_account_name') || '';
+        } catch (e) {
+          this.accountName = '';
+        }
+        const [tabPart, layerPart] = window.location.hash.slice(1).split('.');
+        if (['what', 'stack', 'flow'].includes(tabPart)) this.tab = tabPart;
+        if (this.layers.some((l) => l.id === layerPart)) this.layer = layerPart;
+      },
+
+      // Hash keeps the chosen tab (and data-flow layer) on reload, and
+      // lets a link point straight at one (/explanation#flow.jobs).
+      setTab(name) {
+        this.tab = name;
+        history.replaceState(null, '', '#' + (name === 'flow' ? 'flow.' + this.layer : name));
+      },
+
+      // Called from the layer picker, and (scroll=true) from clicking a
+      // lettered box in the overview map, which dispatches `ex-layer`.
+      setLayer(name, scroll) {
+        if (!this.layers.some((l) => l.id === name)) return;
+        this.tab = 'flow';
+        this.layer = name;
+        history.replaceState(null, '', '#flow.' + name);
+        if (scroll) {
+          this.$nextTick(() => {
+            const view = document.getElementById('ex-layer-view');
+            if (view) view.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          });
+        }
+      },
+    };
+  }
+
+  // Wire renderer. Boxes are laid out by CSS grid; each diagram root
+  // carries data-wires="<name>", and WIRES[name] lists which box edges to
+  // join. Wires are right-angle connectors with softened corners, and are
+  // recomputed from real on-screen positions on every resize (including a
+  // hidden tab becoming visible), so they stay attached however text wraps.
+  //   fs/ts: from/to side ('top' | 'bottom' | 'left' | 'right')
+  //   ff/tf: position along that side, 0..1 (default 0.5)
+  //   d:     how far a wire first leaves its box before turning, in px,
+  //          when it has to go around (loops, same-side joins)
+  //   lx/ly: label nudge in px
+  (function () {
+    var SVGNS = 'http://www.w3.org/2000/svg';
+    var NORMAL = { top: [0, -1], bottom: [0, 1], left: [-1, 0], right: [1, 0] };
+    var MIN_SCALE = 0.62;
+    var LEAD = 22;
+    var CORNER = 8;
+    var SNAP = 8;
+    var PROVIDERS = ['openai', 'anthropic', 'gemini', 'mistral', 'azure', 'bedrock', 'ollama'];
+
+    var WIRES = {
+      what: [
+        { from: 'w-github', fs: 'right', to: 'w-profile', ts: 'left' },
+        { from: 'w-resume', fs: 'right', to: 'w-profile', ts: 'left' },
+        { from: 'w-job', fs: 'right', to: 'w-reqs', ts: 'left' },
+        { from: 'w-profile', fs: 'right', to: 'w-match', ts: 'left' },
+        { from: 'w-reqs', fs: 'right', to: 'w-match', ts: 'left' },
+        { from: 'w-match', fs: 'right', to: 'w-pdf', ts: 'left' },
+      ],
+      arch: [
+        { from: 'browser', fs: 'bottom', to: 'api', ts: 'top', label: 'HTTP' },
+        { from: 'api', fs: 'left', to: 'ingest', ts: 'right' },
+        { from: 'ingest', fs: 'left', to: 'github', ts: 'right' },
+        { from: 'ingest', fs: 'left', to: 'jobsites', ts: 'right' },
+        { from: 'ingest', fs: 'bottom', to: 'embed', ts: 'top', label: 'text' },
+        { from: 'embed', fs: 'bottom', to: 'qdrant', ts: 'top', label: 'vectors' },
+        { from: 'api', fs: 'bottom', to: 'sqlite', ts: 'top', label: 'rows' },
+        { from: 'api', fs: 'right', to: 'resume', ts: 'left' },
+        { from: 'resume', fs: 'bottom', to: 'llm', ts: 'top', label: 'prompt' },
+        { from: 'llm', fs: 'right', to: 'providers', ts: 'left' },
+      ],
+      gateway: [
+        { from: 'caller', fs: 'right', to: 'cache', ts: 'left' },
+        { from: 'cache', fs: 'right', to: 'budget', ts: 'left' },
+        { from: 'budget', fs: 'right', to: 'keys', ts: 'left' },
+        { from: 'keys', fs: 'right', to: 'litellm', ts: 'left' },
+        { from: 'cache', fs: 'top', to: 'caller', ts: 'top', d: 34, label: 'seen: answered for $0' },
+        { from: 'litellm', fs: 'bottom', to: 'ledger', ts: 'right', label: 'logged' },
+        { from: 'ledger', fs: 'left', to: 'budget', ts: 'bottom', label: 'spend this month' },
+      ].concat(PROVIDERS.map(function (p) {
+        return { from: 'litellm', fs: 'right', to: 'p-' + p, ts: 'left' };
+      })),
+      overview: [
+        { from: 'in-github', fs: 'right', to: 'A', ts: 'left' },
+        { from: 'A', fs: 'bottom', to: 'B', ts: 'top', label: 'repos marked pending' },
+        { from: 'A', fs: 'right', to: 'store', ts: 'left', tf: 0.11 },
+        { from: 'B', fs: 'right', to: 'store', ts: 'left', tf: 0.37 },
+        { from: 'in-resume', fs: 'right', to: 'C', ts: 'left' },
+        { from: 'C', fs: 'right', to: 'store', ts: 'left', tf: 0.63 },
+        { from: 'in-job', fs: 'right', to: 'D', ts: 'left' },
+        { from: 'D', fs: 'right', to: 'store', ts: 'left', tf: 0.89 },
+        { from: 'store', fs: 'right', ff: 0.11, to: 'portfolio', ts: 'left' },
+        { from: 'portfolio', fs: 'right', to: 'out-portfolio', ts: 'left' },
+        { from: 'store', fs: 'right', ff: 0.5, to: 'E', ts: 'left' },
+        { from: 'E', fs: 'right', to: 'out-pdf', ts: 'left' },
+        { from: 'store', fs: 'right', ff: 0.89, to: 'analytics', ts: 'left' },
+        { from: 'analytics', fs: 'right', to: 'out-gaps', ts: 'left' },
+      ],
+      flowA: [
+        { from: 'a-input', fs: 'right', to: 'a-parse', ts: 'left' },
+        { from: 'a-parse', fs: 'right', to: 'a-dedupe', ts: 'left' },
+        { from: 'a-dedupe', fs: 'right', to: 'a-save', ts: 'left' },
+        { from: 'a-save', fs: 'right', to: 'a-stream', ts: 'left' },
+        { from: 'a-parse', fs: 'bottom', to: 'a-e422', ts: 'top', kind: 'err', label: 'invalid' },
+        { from: 'a-dedupe', fs: 'bottom', to: 'a-e409', ts: 'top', kind: 'err', label: 'duplicate' },
+        { from: 'a-stream', fs: 'bottom', to: 'a-hint', ts: 'top' },
+        { from: 'a-hint', fs: 'left', to: 'a-e404', ts: 'right', kind: 'err' },
+        { from: 'a-hint', fs: 'bottom', to: 'a-list', ts: 'top' },
+        { from: 'a-list', fs: 'left', to: 'a-stop', ts: 'right' },
+        { from: 'a-stop', fs: 'left', to: 'a-changed', ts: 'right', label: 'no', ly: -14 },
+        { from: 'a-stop', fs: 'bottom', ff: 0.8, to: 'a-ecancel', ts: 'left', kind: 'err', label: 'yes' },
+        { from: 'a-changed', fs: 'left', to: 'a-fetch', ts: 'right', label: 'yes', ly: -14 },
+        { from: 'a-changed', fs: 'bottom', to: 'a-hit', ts: 'top', label: 'unchanged' },
+        { from: 'a-fetch', fs: 'left', to: 'a-erl', ts: 'right', kind: 'err', label: '403 · 429', ly: -14 },
+        { from: 'a-fetch', fs: 'bottom', to: 'a-upsert', ts: 'top' },
+        { from: 'a-upsert', fs: 'bottom', ff: 0.3, to: 'a-progress', ts: 'top', tf: 0.3 },
+        { from: 'a-hit', fs: 'bottom', to: 'a-progress', ts: 'top', tf: 0.85, label: 'commit' },
+        { from: 'a-progress', fs: 'right', to: 'a-stop', ts: 'bottom', tf: 0.3, kind: 'loop', label: 'next repo' },
+        { from: 'a-progress', fs: 'left', to: 'a-done', ts: 'right', label: 'list exhausted', ly: -14 },
+      ],
+      flowB: [
+        { from: 'b-trigger', fs: 'bottom', to: 'b-eligible', ts: 'top' },
+        { from: 'b-eligible', fs: 'right', to: 'b-wipe', ts: 'left' },
+        { from: 'b-wipe', fs: 'right', to: 'b-manifest', ts: 'left' },
+        { from: 'b-manifest', fs: 'right', to: 'b-commit', ts: 'left' },
+        { from: 'b-commit', fs: 'right', to: 'b-source', ts: 'left' },
+        { from: 'b-source', fs: 'bottom', ff: 0.15, to: 'b-llm', ts: 'top', tf: 0.8, label: 'text found' },
+        { from: 'b-source', fs: 'bottom', to: 'b-nosig', ts: 'top', kind: 'err', label: 'none' },
+        { from: 'b-llm', fs: 'left', to: 'b-weight', ts: 'right', label: 'claims', ly: -14 },
+        { from: 'b-llm', fs: 'bottom', ff: 0.6, to: 'b-erl', ts: 'top', tf: 0.6, kind: 'err', label: '429 · budget' },
+        { from: 'b-llm', fs: 'bottom', ff: 0.15, to: 'b-efail', ts: 'top', tf: 0.8, kind: 'err' },
+        { from: 'b-weight', fs: 'left', to: 'b-write', ts: 'right' },
+        { from: 'b-write', fs: 'left', to: 'b-index', ts: 'right' },
+        { from: 'b-index', fs: 'bottom', to: 'b-progress', ts: 'top' },
+        { from: 'b-progress', fs: 'left', to: 'b-eligible', ts: 'left', d: 40, kind: 'loop', label: 'next repo' },
+        { from: 'b-progress', fs: 'right', to: 'b-aggregate', ts: 'left', label: 'queue empty', ly: -14 },
+      ],
+      flowBstate: [
+        { from: 's-synced', fs: 'right', to: 's-pending', ts: 'left' },
+        { from: 's-pending', fs: 'right', ff: 0.25, to: 's-proc', ts: 'left', label: 'worker picks up', ly: -14 },
+        { from: 's-proc', fs: 'right', to: 's-extracted', ts: 'left' },
+        { from: 's-proc', fs: 'right', to: 's-nosig', ts: 'left' },
+        { from: 's-proc', fs: 'right', to: 's-failed', ts: 'left', kind: 'err' },
+        { from: 's-proc', fs: 'right', to: 's-rl', ts: 'left', kind: 'err' },
+        { from: 's-failed', fs: 'left', to: 's-pending', ts: 'right', tf: 0.82, kind: 'loop', label: 'Reprocess' },
+        { from: 's-rl', fs: 'bottom', to: 's-pending', ts: 'bottom', d: 40, kind: 'loop', label: 'next run' },
+        { from: 's-extracted', fs: 'top', to: 's-pending', ts: 'top', d: 40, kind: 'loop', label: 'repo pushed again' },
+      ],
+      flowC: [
+        { from: 'c-upload', fs: 'right', to: 'c-save', ts: 'left' },
+        { from: 'c-save', fs: 'right', to: 'c-type', ts: 'left' },
+        { from: 'c-type', fs: 'right', to: 'c-llm', ts: 'left', label: 'yes', ly: -14 },
+        { from: 'c-type', fs: 'bottom', to: 'c-unsupp', ts: 'top', kind: 'err', label: 'no' },
+        { from: 'c-llm', fs: 'right', to: 'c-store', ts: 'left', label: 'JSON', ly: -14 },
+        { from: 'c-llm', fs: 'bottom', to: 'c-failed', ts: 'top', kind: 'err', label: 'error' },
+        { from: 'c-store', fs: 'bottom', to: 'c-index', ts: 'top' },
+        { from: 'c-index', fs: 'bottom', to: 'c-mskills', ts: 'top' },
+        { from: 'c-mskills', fs: 'left', to: 'c-mexp', ts: 'right' },
+        { from: 'c-mexp', fs: 'left', to: 'c-out', ts: 'right' },
+      ],
+      flowD: [
+        { from: 'd-paste', fs: 'right', to: 'd-hash', ts: 'top', label: 'text as-is' },
+        { from: 'd-url', fs: 'right', to: 'd-fetchurl', ts: 'left' },
+        { from: 'd-fetchurl', fs: 'right', to: 'd-hash', ts: 'left' },
+        { from: 'd-auth', fs: 'right', to: 'd-fetchauth', ts: 'left' },
+        { from: 'd-fetchauth', fs: 'right', to: 'd-hash', ts: 'left', tf: 0.85 },
+        { from: 'd-shot', fs: 'right', to: 'd-shotllm', ts: 'left' },
+        { from: 'd-shotllm', fs: 'right', to: 'd-dedupe', ts: 'left', tf: 0.8 },
+        { from: 'd-hash', fs: 'bottom', to: 'd-dedupe', ts: 'top' },
+        { from: 'd-dedupe', fs: 'bottom', to: 'd-dup', ts: 'top', kind: 'loop', label: 'seen' },
+        { from: 'd-dedupe', fs: 'right', ff: 0.25, to: 'd-save', ts: 'left', tf: 0.75, label: 'new' },
+        { from: 'd-save', fs: 'bottom', to: 'd-extract', ts: 'top' },
+        { from: 'd-extract', fs: 'bottom', to: 'd-efail', ts: 'top', kind: 'err', label: 'error' },
+        { from: 'd-extract', fs: 'right', ff: 0.25, to: 'd-role', ts: 'left', tf: 0.75, label: 'ok' },
+        { from: 'd-role', fs: 'bottom', to: 'd-index', ts: 'top' },
+        { from: 'd-index', fs: 'bottom', to: 'd-analytics', ts: 'top' },
+      ],
+      flowE1: [
+        { from: 'e-pick', fs: 'top', to: 'e-err404', ts: 'bottom', kind: 'err', label: 'unknown id' },
+        { from: 'e-pick', fs: 'right', to: 'e-det', ts: 'left' },
+        { from: 'e-det', fs: 'right', to: 'e-points', ts: 'left' },
+        { from: 'e-det', fs: 'right', to: 'e-projects', ts: 'left' },
+        { from: 'e-det', fs: 'right', to: 'e-skills', ts: 'left' },
+        { from: 'e-points', fs: 'right', to: 'e-llm', ts: 'left' },
+        { from: 'e-projects', fs: 'right', to: 'e-llm', ts: 'left' },
+        { from: 'e-skills', fs: 'right', to: 'e-llm', ts: 'left' },
+        { from: 'e-llm', fs: 'right', to: 'e-ground', ts: 'left', label: 'JSON', ly: -14 },
+        { from: 'e-llm', fs: 'bottom', to: 'e-errllm', ts: 'top', kind: 'err' },
+        { from: 'e-ground', fs: 'bottom', to: 'e-data', ts: 'top' },
+      ],
+      flowE2: [
+        { from: 'e2-data', fs: 'right', to: 'e2-render', ts: 'left' },
+        { from: 'e2-render', fs: 'right', to: 'e2-compile', ts: 'left' },
+        { from: 'e2-compile', fs: 'right', to: 'e2-count', ts: 'left' },
+        { from: 'e2-count', fs: 'right', to: 'e2-save', ts: 'left', label: 'fits', ly: -14 },
+        { from: 'e2-save', fs: 'right', to: 'e2-pdf', ts: 'left' },
+        { from: 'e2-count', fs: 'bottom', to: 'e2-cut', ts: 'top', label: 'too long' },
+        { from: 'e2-cut', fs: 'left', to: 'e2-render', ts: 'bottom', kind: 'loop', label: 're-render' },
+        { from: 'e2-cut', fs: 'right', to: 'e2-nocut', ts: 'left', kind: 'err', label: 'no safe cut', ly: -14 },
+        { from: 'e2-nocut', fs: 'top', to: 'e2-save', ts: 'bottom', kind: 'err', label: 'best PDF' },
+      ],
+      docker: [
+        { from: 'make', fs: 'right', to: 'startsh', ts: 'left' },
+        { from: 'startsh', fs: 'right', to: 'compose', ts: 'left' },
+        { from: 'compose', fs: 'bottom', to: 'app', ts: 'top' },
+        { from: 'compose', fs: 'bottom', to: 'qdrantc', ts: 'top', label: 'starts' },
+        { from: 'app', fs: 'right', to: 'qdrantc', ts: 'left', label: 'waits until healthy' },
+        { from: 'app', fs: 'left', to: 'open', ts: 'right', label: 'ready' },
+        { from: 'app', fs: 'bottom', to: 'vdata', ts: 'top' },
+        { from: 'app', fs: 'bottom', to: 'vhf', ts: 'top' },
+        { from: 'qdrantc', fs: 'bottom', to: 'vq', ts: 'top' },
+      ],
+    };
+
+    // A box's edge point in the diagram's own unscaled coordinates, so
+    // wires land correctly whether or not fit() has shrunk the diagram.
+    function box(el, base, scale) {
+      var r = el.getBoundingClientRect();
+      return { x: (r.left - base.left) / scale, y: (r.top - base.top) / scale, w: r.width / scale, h: r.height / scale };
+    }
+
+    function anchor(b, side, frac) {
+      if (side === 'top') return [b.x + b.w * frac, b.y];
+      if (side === 'bottom') return [b.x + b.w * frac, b.y + b.h];
+      if (side === 'left') return [b.x, b.y + b.h * frac];
+      return [b.x + b.w, b.y + b.h * frac];
+    }
+
+    // Two boxes facing each other whose edges overlap get a straight
+    // wire: one end slides along its edge to line up with the other,
+    // instead of a small step in the middle. The end on the longer edge
+    // is the one that slides, so a wire leaves a small box from its
+    // middle rather than from wherever it meets a tall one.
+    function straighten(p1, n1, ba, p2, n2, bb) {
+      if (n1[0] + n2[0] !== 0 || n1[1] + n2[1] !== 0) return;
+      var i = n1[0] !== 0 ? 1 : 0;
+      var o = 1 - i;
+      if ((p2[o] - p1[o]) * (n1[o] || 0) <= 0) return;
+      var lo = i === 1 ? 'y' : 'x';
+      var len = i === 1 ? 'h' : 'w';
+      var pad = 10;
+      var inB = p1[i] > bb[lo] + pad && p1[i] < bb[lo] + bb[len] - pad;
+      var inA = p2[i] > ba[lo] + pad && p2[i] < ba[lo] + ba[len] - pad;
+      if (inA && (ba[len] > bb[len] || !inB)) p1[i] = p2[i];
+      else if (inB) p2[i] = p1[i];
+    }
+
+    function pt(p) {
+      return p[0].toFixed(1) + ',' + p[1].toFixed(1);
+    }
+
+    function swap(p) {
+      return [p[1], p[0]];
+    }
+
+    // Route between two sides that both face left/right. Vertical pairs
+    // reuse it with x and y swapped.
+    function routeParallel(p1, n1, p2, n2, lead) {
+      if (n1[0] === -n2[0] && (p2[0] - p1[0]) * n1[0] > 12) {
+        if (Math.abs(p1[1] - p2[1]) < SNAP) return [p1, [p2[0], p1[1]]];
+        var mx = (p1[0] + p2[0]) / 2;
+        return [p1, [mx, p1[1]], [mx, p2[1]], p2];
+      }
+      if (n1[0] === n2[0]) {
+        var x = n1[0] > 0 ? Math.max(p1[0], p2[0]) + lead : Math.min(p1[0], p2[0]) - lead;
+        return [p1, [x, p1[1]], [x, p2[1]], p2];
+      }
+      var s = [p1[0] + n1[0] * lead, p1[1]];
+      var e = [p2[0] + n2[0] * lead, p2[1]];
+      var my = Math.abs(p1[1] - p2[1]) < 40 ? Math.max(p1[1], p2[1]) + 60 : (p1[1] + p2[1]) / 2;
+      return [p1, s, [s[0], my], [e[0], my], e, p2];
+    }
+
+    function route(p1, n1, p2, n2, lead) {
+      var h1 = n1[0] !== 0;
+      var h2 = n2[0] !== 0;
+      if (h1 && h2) return routeParallel(p1, n1, p2, n2, lead);
+      if (!h1 && !h2) return routeParallel(swap(p1), swap(n1), swap(p2), swap(n2), lead).map(swap);
+      var s = [p1[0] + n1[0] * lead, p1[1] + n1[1] * lead];
+      var e = [p2[0] + n2[0] * lead, p2[1] + n2[1] * lead];
+      if (h1) {
+        if ((p2[0] - p1[0]) * n1[0] > 0 && (p1[1] - p2[1]) * n2[1] > 0) return [p1, [p2[0], p1[1]], p2];
+        return [p1, s, [s[0], e[1]], e, p2];
+      }
+      if ((p2[1] - p1[1]) * n1[1] > 0 && (p1[0] - p2[0]) * n2[0] > 0) return [p1, [p1[0], p2[1]], p2];
+      return [p1, s, [e[0], s[1]], e, p2];
+    }
+
+    // Drop repeated and straight-through points, so corners are real turns.
+    function simplify(points) {
+      var out = [];
+      points.forEach(function (p) {
+        var last = out[out.length - 1];
+        if (last && Math.abs(last[0] - p[0]) < 0.5 && Math.abs(last[1] - p[1]) < 0.5) return;
+        if (out.length >= 2) {
+          var a = out[out.length - 2];
+          var cross = (last[0] - a[0]) * (p[1] - last[1]) - (last[1] - a[1]) * (p[0] - last[0]);
+          if (Math.abs(cross) < 0.5) out.pop();
+        }
+        out.push(p);
+      });
+      return out;
+    }
+
+    function pathFor(points) {
+      var d = 'M' + pt(points[0]);
+      for (var i = 1; i < points.length - 1; i++) {
+        var a = points[i - 1], b = points[i], c = points[i + 1];
+        var l1 = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        var l2 = Math.hypot(c[0] - b[0], c[1] - b[1]);
+        var r = Math.min(CORNER, l1 / 2, l2 / 2);
+        var p = [b[0] - (b[0] - a[0]) / l1 * r, b[1] - (b[1] - a[1]) / l1 * r];
+        var q = [b[0] + (c[0] - b[0]) / l2 * r, b[1] + (c[1] - b[1]) / l2 * r];
+        d += ' L' + pt(p) + ' Q' + pt(b) + ' ' + pt(q);
+      }
+      return d + ' L' + pt(points[points.length - 1]);
+    }
+
+    // Labels sit on the middle of a wire's longest straight run.
+    function labelPoint(points) {
+      var best = null, bestLen = -1;
+      for (var i = 0; i < points.length - 1; i++) {
+        var len = Math.hypot(points[i + 1][0] - points[i][0], points[i + 1][1] - points[i][1]);
+        if (len > bestLen) {
+          bestLen = len;
+          best = [(points[i][0] + points[i + 1][0]) / 2, (points[i][1] + points[i + 1][1]) / 2];
+        }
+      }
+      return best;
+    }
+
+    function draw(root) {
+      var specs = WIRES[root.dataset.wires];
+      if (!specs || !root.offsetWidth) return;
+      var base = root.getBoundingClientRect();
+      var scale = root._scale || 1;
+      var svg = root.querySelector('.ex-wires');
+      var labels = root.querySelector('.ex-wire-labels');
+      svg.setAttribute('viewBox', '0 0 ' + root.offsetWidth + ' ' + root.offsetHeight);
+      svg.replaceChildren();
+      labels.replaceChildren();
+
+      specs.forEach(function (s) {
+        var a = root.querySelector('[data-node="' + s.from + '"]');
+        var b = root.querySelector('[data-node="' + s.to + '"]');
+        if (!a || !b) return;
+        var n1 = NORMAL[s.fs];
+        var n2 = NORMAL[s.ts];
+        var ba = box(a, base, scale);
+        var bb = box(b, base, scale);
+        var p1 = anchor(ba, s.fs, s.ff == null ? 0.5 : s.ff);
+        var p2 = anchor(bb, s.ts, s.tf == null ? 0.5 : s.tf);
+        straighten(p1, n1, ba, p2, n2, bb);
+        p1 = [p1[0] + n1[0] * 3, p1[1] + n1[1] * 3];
+        p2 = [p2[0] + n2[0] * 8, p2[1] + n2[1] * 8];
+
+        var points = simplify(route(p1, n1, p2, n2, s.d != null ? s.d : LEAD));
+        var d = pathFor(points);
+        var kind = s.kind ? ' ex-wire--' + s.kind : '';
+        ['ex-wire', 'ex-wire-flow'].forEach(function (cls) {
+          var path = document.createElementNS(SVGNS, 'path');
+          path.setAttribute('d', d);
+          path.setAttribute('class', cls + kind);
+          path.dataset.from = s.from;
+          path.dataset.to = s.to;
+          svg.appendChild(path);
+        });
+
+        if (s.label) {
+          var mid = labelPoint(points);
+          var tag = document.createElement('span');
+          tag.className = 'ex-wire-label' + (s.kind === 'err' ? ' ex-wire-label--err' : '');
+          tag.textContent = s.label;
+          tag.style.left = (mid[0] + (s.lx || 0)) + 'px';
+          tag.style.top = (mid[1] + (s.ly || 0)) + 'px';
+          tag.dataset.from = s.from;
+          tag.dataset.to = s.to;
+          labels.appendChild(tag);
+        }
+      });
+
+      if (root._focusId) focus(root, root._focusId);
+    }
+
+    // Hovering a box lights up its wires and direct neighbours, dims the rest.
+    function focus(root, id) {
+      root._focusId = id;
+      root.classList.toggle('is-focus', Boolean(id));
+      root.querySelectorAll('.hot').forEach(function (el) { el.classList.remove('hot'); });
+      if (!id) return;
+      var linked = {};
+      linked[id] = true;
+      root.querySelectorAll('[data-from]').forEach(function (el) {
+        if (el.dataset.from === id || el.dataset.to === id) {
+          el.classList.add('hot');
+          linked[el.dataset.from] = true;
+          linked[el.dataset.to] = true;
+        }
+      });
+      Object.keys(linked).forEach(function (nodeId) {
+        var el = root.querySelector('[data-node="' + nodeId + '"]');
+        if (el) el.classList.add('hot');
+      });
+    }
+
+    function setup(root) {
+      var svg = document.createElementNS(SVGNS, 'svg');
+      svg.setAttribute('class', 'ex-wires');
+      svg.setAttribute('aria-hidden', 'true');
+      var labels = document.createElement('div');
+      labels.className = 'ex-wire-labels';
+      root.prepend(svg);
+      root.appendChild(labels);
+
+      var fitBox = document.createElement('div');
+      fitBox.className = 'ex-fit';
+      root.parentNode.insertBefore(fitBox, root);
+      fitBox.appendChild(root);
+      var scroller = fitBox.parentNode;
+
+      // Narrower than the diagram's design width (its CSS min-width):
+      // shrink it to fit, so a 1280px laptop or a 1024px projector shows
+      // the whole picture. Below MIN_SCALE text gets too small to read,
+      // so it scrolls sideways at full size instead.
+      function fit() {
+        var cs = getComputedStyle(scroller);
+        var avail = scroller.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+        var design = parseFloat(getComputedStyle(root).minWidth) || 0;
+        var scale = design && avail > 0 && avail < design ? avail / design : 1;
+        if (scale < MIN_SCALE) scale = 1;
+        root._scale = scale;
+        root.style.transformOrigin = 'top left';
+        root.style.transform = scale === 1 ? '' : 'scale(' + scale + ')';
+        fitBox.classList.toggle('is-scaled', scale !== 1);
+        var height = scale === 1 ? '' : Math.ceil(root.offsetHeight * scale) + 'px';
+        if (fitBox.style.height !== height) fitBox.style.height = height;
+      }
+
+      var pending = false;
+      function schedule() {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(function () {
+          pending = false;
+          fit();
+          draw(root);
+        });
+      }
+      var observer = new ResizeObserver(schedule);
+      observer.observe(scroller);
+      observer.observe(root);
+
+      root.addEventListener('mouseover', function (e) {
+        var node = e.target.closest('[data-node]');
+        var id = node && root.contains(node) ? node.dataset.node : null;
+        if (id !== root._focusId) focus(root, id);
+      });
+      root.addEventListener('mouseleave', function () { focus(root, null); });
+
+      // Lettered boxes in the data-flow overview open their layer; the
+      // Alpine component listens for `ex-layer` on window.
+      function openLayer(e) {
+        var node = e.target.closest('[data-layer]');
+        if (!node || !root.contains(node)) return;
+        if (e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('ex-layer', { detail: node.dataset.layer }));
+      }
+      root.addEventListener('click', openLayer);
+      root.addEventListener('keydown', openLayer);
+      return schedule;
+    }
+
+    // One floating hover card for every [data-tip] box on the page.
+    // position:fixed on <body>, so a diagram's own scroll container can't
+    // clip it. data-tip is "Heading|main value|detail|detail...".
+    function setupTips() {
+      var tip = document.createElement('div');
+      tip.className = 'ex-tip';
+      tip.setAttribute('role', 'tooltip');
+      document.body.appendChild(tip);
+      var current = null;
+
+      function place(target) {
+        var r = target.getBoundingClientRect();
+        var t = tip.getBoundingClientRect();
+        var gap = 10;
+        var left = Math.min(Math.max(8, r.left + r.width / 2 - t.width / 2), window.innerWidth - t.width - 8);
+        var top = r.top - t.height - gap;
+        if (top < 8) top = Math.min(r.bottom + gap, window.innerHeight - t.height - 8);
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+      }
+
+      function show(target) {
+        var parts = (target.dataset.tip || '').split('|');
+        tip.replaceChildren();
+        parts.forEach(function (text, i) {
+          var el = document.createElement('p');
+          el.className = i === 0 ? 'ex-tip-h' : i === 1 ? 'ex-tip-main' : 'ex-tip-line';
+          el.textContent = text;
+          tip.appendChild(el);
+        });
+        current = target;
+        place(target);
+        tip.classList.add('show');
+      }
+
+      function hide() {
+        current = null;
+        tip.classList.remove('show');
+      }
+
+      document.addEventListener('mouseover', function (e) {
+        var target = e.target.closest('[data-tip]');
+        if (target === current) return;
+        if (target) show(target);
+        else hide();
+      });
+      document.addEventListener('focusin', function (e) {
+        var target = e.target.closest('[data-tip]');
+        if (target) show(target);
+      });
+      document.addEventListener('focusout', hide);
+      window.addEventListener('scroll', function () { if (current) place(current); }, { passive: true });
+    }
+
+    document.addEventListener('DOMContentLoaded', function () {
+      setupTips();
+      var redraws = Array.prototype.map.call(document.querySelectorAll('[data-wires]'), setup);
+      // Web fonts change box heights after first paint without resizing
+      // the diagram root itself, so redraw once they land.
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(function () { redraws.forEach(function (redraw) { redraw(); }); });
+      }
+    });
+  })();
+</script>
+{% endblock %}
