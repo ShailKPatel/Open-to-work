@@ -32,7 +32,7 @@ Each skill links back to the evidence behind it: a dependency manifest, a README
 ### Operations
 
 - Multiple local profiles on one machine, with no login.
-- LLM provider keys are entered in the app and encrypted at rest. Supported providers include OpenAI, Azure OpenAI, AWS Bedrock, Mistral, and Ollama. Keys can be disabled, limited to specific profiles, or given their own monthly budget.
+- LLM provider keys are entered in the app and encrypted at rest. Supported providers are Gemini (the default), OpenAI, Anthropic, Mistral, Azure OpenAI, AWS Bedrock, and Ollama. Keys can be disabled, limited to specific profiles, or given their own monthly budget. The model for each tier and the overall monthly budget are picked on the same page.
 - Every LLM call goes through a single client. The client caches responses by content hash, checks the monthly budget before sending a request, and records cost, tokens, and latency for each call.
 - A monitor page shows GitHub rate-limit headroom, LLM spend broken down by provider, key, profile, tier, and model, and a log of rate-limit events.
 - The SQLite database is snapshotted to `data/backups/` on every startup, and the 10 most recent snapshots are kept.
@@ -65,34 +65,36 @@ Python 3.12, FastAPI, SQLAlchemy with SQLite, Qdrant, sentence-transformers (`BA
 
 ## Getting started
 
-Requires Docker with Compose.
+Requires Docker with Compose. The app is meant to run locally on your own machine.
 
 ```bash
 git clone <repository-url> open-to-work
 cd open-to-work
-cp .env.example .env
-docker compose up --build
+make start
 ```
 
-Alternatively, `make start` checks for Docker, creates `.env` if it doesn't exist, waits for the health check, and opens the browser.
+`make start` installs Docker on Linux if it is missing, builds and starts the containers, waits for the health check, and opens the browser. The app uses port 8000 and Qdrant uses port 6333. If either port is taken, the next free port is used and the script prints the address. `docker compose up --build` also works, but only on the default ports.
 
-Open http://localhost:8000, create a profile, add an LLM API key when prompted, and sync a GitHub account.
+Create a profile, paste a Gemini API key when prompted, and sync a GitHub account. Gemini keys are free to create at [Google AI Studio](https://aistudio.google.com/apikey).
 
 ### Configuration
 
-Settings are read from `.env`. API keys are not set here; they are entered in the app.
+There is nothing to configure before the first run. Settings are made in the app and stored in the local SQLite database.
 
-| Variable | Default | Purpose |
+On the **Manage APIs** page (`/apis`):
+
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| `GITHUB_TOKEN` | empty | Optional. Raises the GitHub API limit from 60 to 5,000 requests per hour. |
-| `LLM_BULK_MODEL` | `openai/gpt-4o-mini` | Per-repository extraction, role-family naming, and groundedness checks. |
-| `LLM_QUALITY_MODEL` | `openai/gpt-4o` | Resume generation, page fitting, and job and resume extraction. |
-| `MONTHLY_BUDGET_USD` | `20.0` | Cap across all LLM calls, checked before each request. |
-| `EMBEDDING_MODEL` | `BAAI/bge-base-en-v1.5` | Local sentence-transformers model. |
-| `APP_SECRET_KEY` | generated | Fernet key for stored credentials. If unset, a key is generated into `data/.secret_key` with 0600 permissions. |
-| `QDRANT_URL` | `http://localhost:6333` | Set to the `qdrant` service automatically under Docker Compose. |
+| Provider keys | none | Encrypted at rest. Any number of keys per provider. |
+| Bulk model | `gemini/gemini-flash-lite-latest` | Per-repository extraction, role-family naming, and groundedness checks. |
+| Quality model | `gemini/gemini-flash-latest` | Resume generation, page fitting, and job and resume extraction. |
+| Monthly budget | $20 | Cap across all LLM calls, checked before each request. |
 
-Application data (the SQLite database, uploaded files, backups, and the secret key) lives in `./data`, which is mounted into the container.
+Gemini is the default because its keys are free and quick to get. The `-latest` aliases follow Google's current Flash models, so the defaults keep working after older versions are retired. To use another provider, add its key and pick its models on the same page. The model field suggests models from LiteLLM's catalog and accepts any LiteLLM model name, such as `ollama/llama3.1`.
+
+The only file-based setting is optional: `GITHUB_TOKEN` in `.env`, which raises the GitHub API limit from 60 to 5,000 requests per hour. `make start` creates `.env` from `.env.example` on the first run. Nothing else is read from `.env`.
+
+Everything else is fixed in code: the local embedding model (`BAAI/bge-base-en-v1.5`), the database location, and the upload folders. All application data (the SQLite database, uploaded files, backups, and the generated key that encrypts stored credentials) lives in `./data`, which is mounted into the container.
 
 ## Development
 
@@ -119,7 +121,7 @@ Tests are written with pytest and live in two suites.
 
 | Variable | Suite | Checks |
 | --- | --- | --- |
-| `LIVE_LLM_API_KEY` (and optionally `LIVE_LLM_PROVIDER`) | `test_llm_live.py` | Text, image, PDF, and multi-turn calls through the LLM gateway. Billed. |
+| `LIVE_LLM_API_KEY` (and optionally `LIVE_LLM_PROVIDER`, default `gemini`, with `LIVE_LLM_BULK_MODEL` and `LIVE_LLM_QUALITY_MODEL` for other providers) | `test_llm_live.py` | Text, image, PDF, and multi-turn calls through the LLM gateway. Billed. |
 | `LIVE_GITHUB=1` (and optionally `GITHUB_TOKEN`) | `test_github_live.py` | GitHub API reachability, authentication, 404 handling, and a single-repository sync into a temporary database. |
 | `LIVE_APP_URL` (for example `http://localhost:8000`) | `test_app_live.py` | Health, every page, JSON endpoints, and the app's own GitHub status check against a running instance. Read-only. |
 

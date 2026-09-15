@@ -9,11 +9,6 @@
   <main class="flex-1 flex items-center justify-center px-8 pb-24">
     <div class="w-full max-w-md">
       <h1 class="font-display text-4xl" x-text="accountName ? ('Welcome, ' + accountName) : 'Sync a GitHub account'"></h1>
-      <p class="mt-3 text-[color:var(--muted)]">
-        Builds an evidence-backed skill profile from public repos: READMEs,
-        dependency manifests, and commit history. Not tied to any one
-        account; enter any GitHub username.
-      </p>
 
       <form @submit.prevent="sync" class="mt-10 space-y-6">
         <div>
@@ -71,7 +66,7 @@
         <p x-text="result" class="text-sm"></p>
         <template x-if="accountId">
           <a href="/portfolio/projects" class="inline-block mt-3 text-sm underline hover:text-[color:var(--ink)]">
-            View detected projects →
+            View projects →
           </a>
         </template>
       </div>

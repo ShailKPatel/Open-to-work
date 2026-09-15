@@ -50,30 +50,60 @@
     </div>
 
     <!-- ============================ 01 WHAT IT DOES ============================ -->
+    {% set budget_str = '%g' | format(models.budget) %}
+    {% set JOURNEY = [
+      ('branch', 'Pull in your work', 'Connect your GitHub',
+       "Type your GitHub username. It reads each project's README and the libraries it uses, then works out which skills that project proves.",
+       ['Public repos need no token', 'Reads 9 kinds of dependency file', 'Only re-reads repos you changed'], ''),
+      ('user', 'Fill in the rest', 'Add anything by hand',
+       'Not everything lives on GitHub. Add past jobs bullet by bullet, education, skills, contact details and links, or upload an old resume and let it fill those in for you.',
+       ['Old resume as PDF or image', 'What you typed is never overwritten', 'Star your best projects and skills'], ''),
+      ('briefcase', 'Save jobs you want', 'Add job listings',
+       'Found a job you like? Paste the text, drop in the link, upload a screenshot, or fetch a page you have to sign in to see. It pulls out the salary, seniority, years of experience and every skill they ask for.',
+       ['Same posting is only saved once', 'Shows the skills you are missing', 'Track where you applied'], ''),
+      ('db', 'Nothing is forgotten', 'It keeps the memory',
+       'Your projects, skills, saved jobs and every resume it writes stay in a local database. Come back next month and it all is still there, ready for the next application.',
+       ['Stored on your own machine', 'Backup on every start, last 10 kept', 'Repeated AI requests cost $0'], ''),
+      ('vector', 'Smart matching with RAG', 'It finds your best proof',
+       'Everything you add is also saved to a vector database that searches by meaning, not exact words. For each job it looks up the projects, skills and bullet points that fit best, and hands only those to the AI. This is retrieval-augmented generation, or RAG.',
+       ['Qdrant vector database', 'Runs on your computer, no API key', 'Similar job titles grouped together'],
+       'Embedding model|' ~ models.embedding ~ '|Turns your text into vectors on your own CPU.|Five searchable collections: skill evidence, experience bullets, resumes, job postings and job title families.'),
+      ('doc', 'Ready to send', 'Get a resume made with LaTeX',
+       'The AI writes a summary and project bullets from that evidence, and LaTeX typesets a clean PDF. Too long? It removes one item at a time until it fits on one or two pages.',
+       ['Up to 4 projects and 15 skills', 'One-page or two-page template', 'Ask for edits in plain English'], ''),
+    ] %}
+    {% set TRUST = [
+      ('lock', 'Private', 'Your data stays with you',
+       'It runs in Docker on your computer. The only thing that leaves is the text sent to the AI provider you pick.'),
+      ('shield', 'Honest', 'It cannot make things up',
+       'Any project or skill the AI returns that is not in your profile is thrown out before the PDF is made. Work history and education are copied exactly, never rewritten.'),
+      ('key', 'Your key, your budget', 'You control the cost',
+       'Use OpenAI, Anthropic, Gemini, Mistral, Azure, AWS Bedrock or local Ollama. Keys are encrypted, and a $' ~ budget_str ~ ' monthly cap is checked before every AI call.'),
+    ] %}
     {% set CAPS = [
       ('Build your profile', [
         ('branch', 'Sync your GitHub', 'Paste a username or repo link. Only repos pushed since the last sync are fetched again.'),
         ('spark', 'Find your skills', 'Reads dependencies and READMEs. Every skill links back to the repo that proves it.'),
-        ('upload', 'Read your resume', 'Upload a PDF or image. Skills and work history are added to your profile.'),
+        ('upload', 'Read your old resume', 'Upload a PDF or image. New skills and past jobs are added to your profile.'),
         ('user', 'Add anything by hand', 'Projects, experience bullets, education, skills, contact details and links.'),
       ]),
       ('Track jobs', [
-        ('briefcase', 'Save a posting four ways', 'Paste the text, a link, a screenshot, or a page you have to sign in to see.'),
-        ('filter', 'Pull out the details', 'Salary, seniority, years of experience and each required skill.'),
+        ('briefcase', 'Save a job four ways', 'Paste the text, a link, a screenshot, or a page you have to sign in to see.'),
+        ('filter', 'Get the details', 'Salary, seniority, years of experience and each required skill.'),
         ('gauge', 'See your skill gaps', 'What a job asks for that you lack, and which skills your saved jobs want most.'),
         ('check', 'Track applications', 'Mark a job applied, with a date and notes.'),
       ]),
       ('Write resumes', [
         ('doc', 'Tailor a resume to one job', 'Picks your best matching projects and skills. It cannot add ones you do not have.'),
-        ('layers', 'Fit the page', 'One-page or two-page template. Trims a line at a time until it fits.'),
-        ('code', 'Edit with a prompt', 'Ask for a change in plain words and get a new PDF.'),
-        ('search', 'Keep a library', 'Every resume is saved, and the closest existing one is found for a new job.'),
+        ('layers', 'Fit the page', 'One-page or two-page template. Trims one item at a time until it fits.'),
+        ('code', 'Ask for changes', 'Say what to change in plain words and get a new PDF.'),
+        ('search', 'Keep a library', 'Every resume is saved, and the closest one you already have is found for a new job.'),
       ]),
       ('Run it yourself', [
         ('terminal', 'One command to start', 'Runs in Docker on your machine. Your data stays there.'),
-        ('key', 'Any LLM provider', 'OpenAI, Anthropic, Gemini, Mistral, Azure, Bedrock or local Ollama. Keys are encrypted.'),
-        ('shield', 'Spend limit', 'A monthly budget is checked before every LLM call, and repeat calls are free.'),
-        ('chart', 'Monitor usage', 'LLM spend by key, profile and model, plus GitHub rate limits.'),
+        ('key', 'Any AI provider', 'OpenAI, Anthropic, Gemini, Mistral, Azure, Bedrock or local Ollama. Keys are encrypted.'),
+        ('shield', 'Spend limit', 'A monthly budget is checked before every AI call, and repeat calls are free.'),
+        ('chart', 'See your usage', 'AI spend by key, profile and model, plus GitHub rate limits.'),
       ]),
     ] %}
     <div x-show="tab === 'what'" x-cloak role="tabpanel">
@@ -81,22 +111,48 @@
         <header class="ex-section-head">
           <span class="ex-section-num">1</span>
           <div>
-            <h2 class="ex-h2">Three inputs in, one tailored resume out</h2>
+            <h2 class="ex-h2">From your GitHub to a finished resume</h2>
+            <p class="ex-lede">Six things happen behind the scenes. You only do the first three.</p>
+          </div>
+        </header>
+
+        <ol class="ex-journey">
+          {% for ic, kicker, title, body, chips, tip in JOURNEY %}
+          <li class="ex-step{{ ' ex-node--tip' if tip }}"{% if tip %} data-tip="{{ tip }}"{% endif %}>
+            <div class="ex-step-top">
+              <span class="ex-step-num">{{ '%02d' | format(loop.index) }}</span>
+              <span class="ex-icon">{{ ex.icon(ic) }}</span>
+            </div>
+            <p class="ex-kicker ex-step-kicker">{{ kicker }}</p>
+            <h3 class="ex-step-title">{{ title }}</h3>
+            <p class="ex-step-body">{{ body }}</p>
+            <div class="ex-chips">{% for c in chips %}<span>{{ c }}</span>{% endfor %}</div>
+          </li>
+          {% endfor %}
+        </ol>
+      </section>
+
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">2</span>
+          <div>
+            <h2 class="ex-h2">The whole picture</h2>
+            <p class="ex-lede">Three kinds of input, one resume made for one job.</p>
           </div>
         </header>
 
         <div class="ex-panel">
           <div class="ex-scroll">
             <div class="ex-diagram ex-what" data-wires="what">
-              {{ ex.node('w-github', 'Input', 'GitHub repos', 'READMEs, dependencies, commits.', logos=['github'], area='grid-column:1;grid-row:1') }}
-              {{ ex.node('w-resume', 'Input', 'Resume file', 'PDF or image.', 'doc', area='grid-column:1;grid-row:2') }}
-              {{ ex.node('w-job', 'Input', 'Job posting', 'Text, link or screenshot.', 'briefcase', area='grid-column:1;grid-row:3') }}
+              {{ ex.node('w-github', 'Input', 'Your GitHub', 'Projects, READMEs and the libraries you use.', logos=['github'], area='grid-column:1;grid-row:1') }}
+              {{ ex.node('w-resume', 'Input', 'You', 'Details you type in, or an old resume.', 'user', area='grid-column:1;grid-row:2') }}
+              {{ ex.node('w-job', 'Input', 'A job you want', 'Text, link or screenshot.', 'briefcase', area='grid-column:1;grid-row:3') }}
 
-              {{ ex.node('w-profile', 'Understand you', 'Skill profile', 'Every skill is backed by evidence from a repo or a past role.', 'user', area='grid-column:2;grid-row:1 / 3') }}
-              {{ ex.node('w-reqs', 'Understand the job', 'Requirements', 'Skills, level and seniority pulled from the posting.', 'filter', area='grid-column:2;grid-row:3') }}
+              {{ ex.node('w-profile', 'Remembers you', 'Your skill profile', 'Every skill is linked to the project or past job that proves it.', 'db', area='grid-column:2;grid-row:1 / 3') }}
+              {{ ex.node('w-reqs', 'Understands the job', 'What they need', 'Skills, seniority and salary pulled from the posting.', 'filter', area='grid-column:2;grid-row:3') }}
 
-              {{ ex.node('w-match', 'Match', 'Best evidence', 'Vector search picks the projects and skills that fit this job.', 'search', area='grid-column:3;grid-row:1 / 4') }}
-              {{ ex.node('w-pdf', 'Output', 'Tailored resume', 'The LLM writes the wording, LaTeX lays out the PDF.', 'doc', ext=true, area='grid-column:4;grid-row:1 / 4') }}
+              {{ ex.node('w-match', 'Smart match · RAG', 'Your best evidence', 'A vector search finds what fits this job by meaning, not keywords.', 'vector', area='grid-column:3;grid-row:1 / 4') }}
+              {{ ex.node('w-pdf', 'Output', 'Tailored resume PDF', 'AI writes the words, LaTeX lays out the page.', 'doc', ext=true, area='grid-column:4;grid-row:1 / 4') }}
             </div>
           </div>
         </div>
@@ -104,9 +160,29 @@
 
       <section class="ex-section">
         <header class="ex-section-head">
-          <span class="ex-section-num">2</span>
+          <span class="ex-section-num">3</span>
           <div>
-            <h2 class="ex-h2">What you can do with it</h2>
+            <h2 class="ex-h2">Built so you can trust it</h2>
+          </div>
+        </header>
+
+        <div class="ex-engines">
+          {% for ic, kicker, title, body in TRUST %}
+          <div class="ex-engine">
+            <span class="ex-icon">{{ ex.icon(ic) }}</span>
+            <p class="ex-kicker">{{ kicker }}</p>
+            <p class="ex-title">{{ title }}</p>
+            <p class="ex-sub">{{ body }}</p>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">4</span>
+          <div>
+            <h2 class="ex-h2">Everything it can do</h2>
           </div>
         </header>
 
@@ -193,7 +269,7 @@
               {{ ex.node('jobsites', 'Outside', 'Job sites', 'Career pages and job boards.', 'briefcase', ext=true, area='grid-column:1;grid-row:3') }}
               {{ ex.node('embed', 'Embeddings', 'sentence-transformers', models.embedding ~ ' on CPU. No API key.', logos=['huggingface'], area='grid-column:2;grid-row:3', tip='Embedding model|' ~ models.embedding ~ '|Runs locally via sentence-transformers, downloaded once into the hf_cache volume.|Vector size follows the model: 768 for the default bge-base.|The same model embeds every Qdrant collection and every search query.') }}
               {{ ex.node('sqlite', 'Database', 'SQLite', 'Stores all app data.', logos=['sqlite', 'sqlalchemy'], area='grid-column:3;grid-row:3', tip='Database|SQLite via SQLAlchemy|WAL journal mode plus a 30s busy timeout.|Every LLM call is logged here with model, tokens and cost.') }}
-              {{ ex.node('llm', 'LLM gateway', 'LiteLLM', 'One call path: cached and budget-capped.', logos=['litellm'], area='grid-column:4;grid-row:3', tip='LLM models|Any LiteLLM model, set in .env|A cheaper model for repo skills and links, a stronger one for extraction and resume writing.|Monthly budget: $' ~ ('%g' | format(models.budget)) ~ ', checked before every call.') }}
+              {{ ex.node('llm', 'LLM gateway', 'LiteLLM', 'One call path: cached and budget-capped.', logos=['litellm'], area='grid-column:4;grid-row:3', tip='LLM models|Any LiteLLM model, picked on Manage APIs|A cheaper model for repo skills and links, a stronger one for extraction and resume writing.|Monthly budget: $' ~ ('%g' | format(models.budget)) ~ ', checked before every call.') }}
               {{ ex.node('providers', 'Outside', 'LLM provider', 'The only call that leaves your machine.', 'cloud', ext=true, area='grid-column:5;grid-row:3') }}
 
               {{ ex.node('qdrant', 'Vector search', 'Qdrant', 'Finds the evidence closest to a job.', logos=['qdrant'], area='grid-column:2;grid-row:4', tip='Vector database|Qdrant · cosine distance|Collections: skill_evidence, experience_points, resumes, job_postings, role_families.|Vectors from ' ~ models.embedding ~ '. Point id equals the SQLite row id.') }}
@@ -257,7 +333,7 @@
           <div class="ex-scroll">
             <div class="ex-diagram ex-docker" data-wires="docker">
               {{ ex.node('make', 'You type', 'make start', 'That is the whole setup.', 'terminal', mono=true, area='grid-column:1;grid-row:1') }}
-              {{ ex.node('startsh', 'Bootstrap', 'start.sh', 'Installs Docker if missing, writes .env.', logos=['gnubash'], mono=true, area='grid-column:2;grid-row:1') }}
+              {{ ex.node('startsh', 'Bootstrap', 'start.sh', 'Installs Docker if missing, picks free ports.', logos=['gnubash'], mono=true, area='grid-column:2;grid-row:1') }}
               {{ ex.node('compose', 'Orchestration', 'Docker Compose', 'Two services, each health-checked.', logos=['docker'], area='grid-column:3;grid-row:1') }}
 
               {{ ex.node('open', 'Ready', 'localhost:8000', 'Opens in your browser.', 'globe', ext=true, mono=true, area='grid-column:1;grid-row:2') }}
@@ -496,6 +572,35 @@
   .ex-stack-item { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.8rem; }
   .ex-stack-item b { display: block; font-size: 0.92rem; font-weight: 600; line-height: 1.25; }
   .ex-stack-item i { display: block; font-style: normal; font-size: 0.76rem; color: var(--muted); line-height: 1.35; }
+
+  /* Six-step journey */
+  .ex-journey {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.9rem;
+    margin-top: 1.6rem;
+    padding: 0;
+    list-style: none;
+  }
+  @media (max-width: 1000px) { .ex-journey { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 620px) { .ex-journey { grid-template-columns: minmax(0, 1fr); } }
+  .ex-step {
+    display: flex;
+    flex-direction: column;
+    padding: 1.15rem 1.2rem 1.2rem;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #ffffff;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+  .ex-step:hover { border-color: var(--ink); box-shadow: 0 4px 16px rgba(24, 24, 27, 0.08); }
+  .ex-step-top { display: flex; align-items: center; justify-content: space-between; }
+  .ex-step-num { font-family: 'Fraunces', Georgia, serif; font-size: 1.9rem; line-height: 1; color: var(--ink); }
+  .ex-step-kicker { margin-top: 0.9rem; }
+  .ex-step-title { font-size: 1.05rem; font-weight: 600; line-height: 1.3; margin-top: 0.25rem; color: var(--ink); }
+  .ex-step-body { flex: 1; font-size: 0.86rem; line-height: 1.55; color: var(--ex-body); margin-top: 0.45rem; }
+  .ex-step .ex-chips { margin-top: 0.9rem; }
+  .ex-step .ex-chips span { white-space: normal; }
 
   /* What you can do */
   .ex-caps {

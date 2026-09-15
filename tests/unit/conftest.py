@@ -1,6 +1,20 @@
+from types import SimpleNamespace
+
 import pytest
 
 import app.core.db as db_module
+
+
+@pytest.fixture(autouse=True)
+def _no_real_skill_review(monkeypatch):
+    """Extraction and resume merges now end in an LLM review of new skill
+    names (app/profile/skill_review.py). Default every test to a review that
+    removes nothing, so no test makes a real LLM call; tests of the review
+    itself patch this again with their own fake."""
+    monkeypatch.setattr(
+        "app.profile.skill_review.complete",
+        lambda *args, **kwargs: SimpleNamespace(parsed={"remove": []}),
+    )
 
 
 @pytest.fixture(autouse=True)

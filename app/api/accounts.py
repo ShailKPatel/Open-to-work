@@ -30,6 +30,7 @@ from app.core.db import (
     Skill,
     SkillEvidence,
     SkillStar,
+    SkillVerdict,
     SocialLink,
     SyncSource,
     get_db,
@@ -321,6 +322,7 @@ def delete_account(account_id: int) -> dict:
         db.execute(delete(SocialLink).where(SocialLink.account_id == account_id))
         db.execute(delete(Skill).where(Skill.account_id == account_id))
         db.execute(delete(SkillStar).where(SkillStar.account_id == account_id))
+        db.execute(delete(SkillVerdict).where(SkillVerdict.account_id == account_id))
         db.execute(delete(Profile).where(Profile.account_id == account_id))
         db.execute(delete(SyncSource).where(SyncSource.account_id == account_id))
         db.execute(delete(Resume).where(Resume.account_id == account_id))

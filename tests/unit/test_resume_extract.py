@@ -58,6 +58,7 @@ def test_extracts_experiences_with_dates(monkeypatch):
                 "title": "Software Engineer",
                 "start_date": "2020-01-01",
                 "end_date": "",
+                "points": ["Developed API services", "  ", "Implemented unit tests"],
             },
             {"company": "  ", "title": "Intern", "start_date": "", "end_date": ""},  # dropped
             {"company": "Beta LLC", "title": "", "start_date": "", "end_date": ""},  # dropped
@@ -75,6 +76,7 @@ def test_extracts_experiences_with_dates(monkeypatch):
     assert claim.title == "Software Engineer"
     assert claim.start_date.isoformat() == "2020-01-01"
     assert claim.end_date is None  # empty string means "still there" / unknown
+    assert claim.points == ["Developed API services", "Implemented unit tests"]
 
 
 def test_experiences_defaults_to_empty_list_when_field_missing(monkeypatch):

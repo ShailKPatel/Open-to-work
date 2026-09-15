@@ -5,17 +5,17 @@
   points, error paths and data shapes. Wire specs for every data-wires
   name used here live in explanation.html's script (WIRES).
 
-  `models` comes from the route (app/api/main.py explanation_page), read
-  from app/core/settings.py. LLM model names are not shown: they are
-  whatever LiteLLM model .env names.
+  `models` comes from the route (app/api/main.py explanation_page): the
+  embedding model and the monthly budget. LLM model names are not shown:
+  they are whatever LiteLLM model is picked on /apis.
 #}
 {% import "_explain_macros.html" as ex %}
 
 {% set budget = '%g' | format(models.budget) %}
 {% set T_EMBED = "Embedding model|" ~ models.embedding ~ "|Runs locally via sentence-transformers on CPU. No API key, no network call.|Cached by a hash of the text, so the same text is never encoded twice." %}
-{% set T_BULK = "LLM · cheaper model|Any LiteLLM model, set in .env (LLM_BULK_MODEL)|Used for high-volume work: repo skills, project links, role-family names.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
-{% set T_QUALITY = "LLM · stronger model|Any LiteLLM model, set in .env (LLM_QUALITY_MODEL)|Used where one mistake matters: job and resume extraction, writing resume content, page-fit cuts.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
-{% set T_VISION = "LLM · stronger model, reads files|Any LiteLLM model, set in .env (LLM_QUALITY_MODEL)|The PDF or image itself is sent to the model." %}
+{% set T_BULK = "LLM · cheaper model|Any LiteLLM model, picked on Manage APIs|Used for high-volume work: repo skills, project links, role-family names.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
+{% set T_QUALITY = "LLM · stronger model|Any LiteLLM model, picked on Manage APIs|Used where one mistake matters: job and resume extraction, writing resume content, page-fit cuts.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
+{% set T_VISION = "LLM · stronger model, reads files|Any LiteLLM model, picked on Manage APIs|The PDF or image itself is sent to the model." %}
 {% set T_QDRANT = "Vector database|Qdrant, its own Docker container|Cosine distance.|Every account-scoped search filters on the payload's account_id.|Point id equals the SQLite row id, so an edit overwrites in place." %}
 {% set T_SQLITE = "Database|SQLite via SQLAlchemy|WAL journal mode plus a 30s busy timeout.|Source of truth: Qdrant is a derived index built from these rows." %}
 {% set T_GITHUB = "GitHub client|PyGithub, 100 items per page|Token optional: raises the limit from 60 to 5,000 requests an hour.|tenacity retries only 403, 429 and 5xx, and waits at most 10s for a reset." %}
@@ -45,7 +45,7 @@
         <span class="ex-icon">{{ ex.icon('spark') }}</span>
         <p class="ex-kicker">LLM <span class="ex-kicker-note">(${{ budget }}/month limit)</span></p>
         <p class="ex-engine-val">Any LiteLLM model</p>
-        <p class="ex-sub">Set in <code class="ex-code">.env</code>: a cheaper one for bulk work, a stronger one for writing.</p>
+        <p class="ex-sub">Picked on Manage APIs: a cheaper one for bulk work, a stronger one for writing.</p>
       </div>
       <div class="ex-engine">
         <span class="ex-icon">{{ ex.icon('cpu') }}</span>

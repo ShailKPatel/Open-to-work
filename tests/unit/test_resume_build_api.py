@@ -254,3 +254,45 @@ def test_generate_defaults_max_pages_by_template(monkeypatch):
     )
 
     assert captured["max_pages"] == 2
+
+
+def test_options_endpoint_returns_selections(tmp_path, monkeypatch):
+    import os
+    import app.core.db as db_module
+    from app.core.db import Account, JobPosting, Repository, get_db, init_db
+    from app.core.settings import get_settings
+
+    db_module._engine = None
+    db_module._SessionLocal = None
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
+    get_settings.cache_clear()
+    init_db()
+
+    db = get_db()
+    account = Account(first_name="Ada", last_name="Lovelace", github_username="octocat", contact_email="ada@example.com")
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    posting = JobPosting(
+        account_id=account.id, source="pasted", external_id="opt", company="Acme",
+        title="Backend Engineer", raw_text_quarantined="Python and FastAPI developer", content_hash="opthash",
+    )
+    db.add(posting)
+
+    repo = Repository(account_id=account.id, github_id=101, name="otw", full_name="octocat/otw", url="https://github.com/octocat/otw")
+    db.add(repo)
+    db.commit()
+
+    account_id, posting_id = account.id, posting.id
+    db.close()
+
+    resp = _client().get(f"/api/resume-build/options?account_id={account_id}&job_posting_id={posting_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "emails" in data
+    assert "phones" in data
+    assert "projects" in data
+    assert "skills" in data
+    assert "experience" in data
+

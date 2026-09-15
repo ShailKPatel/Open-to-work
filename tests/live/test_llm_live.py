@@ -4,8 +4,8 @@ testpaths is ["tests/unit"]); run with `make test-live`, or
 
 Skipped unless LIVE_LLM_API_KEY is set, so a key in the environment never
 turns on paid calls in the normal test run. LIVE_LLM_PROVIDER picks which
-provider the key belongs to (default "openai"); set LLM_BULK_MODEL and
-LLM_QUALITY_MODEL to matching "<provider>/<model>" strings when using a
+provider the key belongs to (default "gemini"); set LIVE_LLM_BULK_MODEL and
+LIVE_LLM_QUALITY_MODEL to matching "<provider>/<model>" strings when using a
 different provider.
 
 Covers text-only, image, PDF, and multi-turn context through
@@ -23,12 +23,13 @@ import requests
 
 import app.core.db as db_module
 from app.core import api_keys_store
+from app.core.app_settings import update_llm_settings
 from app.core.db import init_db
 from app.core.llm import complete, user_message
 from app.core.settings import get_settings
 
 _API_KEY = os.environ.get("LIVE_LLM_API_KEY", "")
-_PROVIDER = os.environ.get("LIVE_LLM_PROVIDER", "openai")
+_PROVIDER = os.environ.get("LIVE_LLM_PROVIDER", "gemini")
 
 pytestmark = pytest.mark.skipif(
     not _API_KEY,
@@ -44,6 +45,10 @@ def _reset_db(tmp_path: Path):
     init_db()
     row, detail = api_keys_store.add_key(_PROVIDER, "live test", {"api_key": _API_KEY}, None)
     assert row is not None, detail
+    update_llm_settings(
+        bulk_model=os.environ.get("LIVE_LLM_BULK_MODEL") or None,
+        quality_model=os.environ.get("LIVE_LLM_QUALITY_MODEL") or None,
+    )
 
 
 def _report(label: str, result) -> None:

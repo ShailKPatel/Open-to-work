@@ -305,10 +305,17 @@ def test_list_providers_covers_every_registered_provider(tmp_path):
 
 
 def test_default_provider_reflects_settings(tmp_path):
+    from app.core.app_settings import update_llm_settings
+
     _reset_db(tmp_path)
     body = _client().get("/api/api-keys/default-provider").json()
-    assert body["bulk"] == "openai"  # LLM_BULK_MODEL default: openai/gpt-4o-mini
-    assert body["bulk_label"] == "OpenAI"
+    assert body["bulk"] == "gemini"
+    assert body["bulk_label"] == "Gemini"
+
+    update_llm_settings(bulk_model="anthropic/claude-haiku-4-5")
+    body = _client().get("/api/api-keys/default-provider").json()
+    assert body["bulk"] == "anthropic"
+    assert body["quality"] == "gemini"
 
 
 def test_add_key_endpoint_rejects_unknown_provider(tmp_path):

@@ -7,18 +7,81 @@
   {% include "_header.html" %}
 
   <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
-    <div class="flex items-center justify-between gap-4">
+    <div class="mt-8 flex items-center justify-between gap-4">
       <h1 class="font-display text-3xl">Manage APIs</h1>
       <a :href="accountName ? '/settings' : '/'" class="otw-btn-ghost px-3 py-2 text-sm">
         ← back
       </a>
     </div>
-    <p class="mt-2 text-sm text-[color:var(--muted)]">
-      Keys here are device-wide, shared by every profile on this device.
-      Any number of keys per provider is fine; the one marked "active" is
-      preferred, but a disabled or off-limits key is skipped in favor of
-      another that covers the profile making the call.
-    </p>
+
+    <!-- Models and budget: which LiteLLM model each tier uses, plus the
+         global monthly cap. Stored in the database (app/api/app_settings.py). -->
+    <section class="mt-10" x-cloak x-show="!loading">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Models and budget</h2>
+      <p class="mt-2 text-sm text-[color:var(--muted)]">
+        Pick a provider and model for each kind of work. The model list is
+        a suggestion from LiteLLM's catalog; any model name is accepted.
+      </p>
+
+      <form @submit.prevent="saveLlm" class="otw-tile mt-4 px-5 py-5 space-y-5">
+        <template x-for="tier in tiers" :key="tier.id">
+          <div>
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+              <span x-text="tier.label"></span>
+              <span class="normal-case" x-text="'(' + tier.hint + ')'"></span>
+            </label>
+            <div class="mt-1 flex flex-wrap items-end gap-3">
+              <div class="otw-dd" style="min-width: 10rem;" :data-open="llmMenu === tier.id" @click.outside="closeLlmMenu(tier.id)">
+                <button type="button" class="otw-dd-btn" @click="llmMenu = llmMenu === tier.id ? null : tier.id">
+                  <span x-text="providerLabel(llmForm[tier.id].provider)"></span>
+                  <span class="otw-dd-caret">▾</span>
+                </button>
+                <div class="otw-dd-panel" x-show="llmMenu === tier.id" x-cloak>
+                  <template x-for="p in providers" :key="p.provider">
+                    <button type="button" class="otw-dd-option" :class="{ selected: llmForm[tier.id].provider === p.provider }" @click="pickLlmProvider(tier.id, p.provider)" x-text="p.label"></button>
+                  </template>
+                </div>
+              </div>
+              <input
+                x-model.trim="llmForm[tier.id].name"
+                :list="'llm-models-' + tier.id"
+                autocomplete="off"
+                class="otw-input flex-1"
+                style="min-width: 12rem;"
+                placeholder="model name, e.g. gemini-flash-latest"
+                @input="llmSaved = false"
+              />
+              <datalist :id="'llm-models-' + tier.id">
+                <template x-for="name in modelNames(llmForm[tier.id].provider)" :key="name">
+                  <option :value="name"></option>
+                </template>
+              </datalist>
+            </div>
+            <p class="mt-1 text-xs otw-error" x-show="looksLikeApiKey(llmForm[tier.id].name)">
+              That looks like an API key, not a model name. Keys go under "Add a key" below.
+            </p>
+            <p class="mt-1 text-xs text-[color:var(--muted)]" x-show="isUnlistedModel(llmForm[tier.id])">
+              Not in the suggested list for this provider. Double-check the spelling before saving.
+            </p>
+            <p class="mt-1 text-xs otw-error" x-show="!hasUsableKey(llmForm[tier.id].provider)" x-text="'No ' + providerLabel(llmForm[tier.id].provider) + ' key is turned on yet. Add one below.'"></p>
+          </div>
+        </template>
+
+        <div>
+          <label class="block text-xs uppercase tracking-wide text-[color:var(--muted)]">
+            Monthly budget <span class="normal-case">(USD, across every key)</span>
+          </label>
+          <input type="number" min="0" step="0.01" x-model="llmForm.budget" @input="llmSaved = false" class="otw-input mt-1 max-w-xs" />
+        </div>
+
+        <div class="flex items-center gap-3 flex-wrap">
+          <button type="submit" class="otw-btn px-6" :disabled="llmSaving">Save</button>
+          <button type="button" @click="resetLlmDefaults" class="otw-btn-ghost px-4 py-2 text-sm">Use defaults</button>
+          <span x-show="llmSaved" x-cloak class="otw-tick text-sm"><span>✓</span> Saved</span>
+          <p x-show="llmError" x-text="llmError" class="text-sm otw-error"></p>
+        </div>
+      </form>
+    </section>
 
     <!-- Stored keys -->
     <section class="mt-10" x-cloak x-show="!loading">
@@ -49,7 +112,7 @@
 
                 <p class="mt-2 text-xs">
                   <span x-show="key.status === 'valid'" class="otw-tick"><span>✓</span> Working</span>
-                  <span x-show="key.status === 'invalid'" class="otw-error">✕ Invalid</span>
+                  <span x-show="key.status === 'invalid'" class="otw-error inline-flex items-center gap-1"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg> Invalid</span>
                   <span x-show="key.status === 'rate_limited'" style="color: var(--accent);">○ Rate-limited / exhausted</span>
                   <span x-show="key.status === 'unknown'" class="text-[color:var(--muted)]">Unchecked</span>
                   <span x-show="key.budget_cap_usd" class="text-[color:var(--muted)]" x-text="' · budget cap $' + key.budget_cap_usd"></span>
@@ -203,20 +266,138 @@
       busy: {},
       editing: null,
       editForm: { budget_cap_usd: '', allowed_account_ids: [] },
+      tiers: [
+        { id: 'bulk', label: 'Bulk model', hint: 'repo skills, role families, groundedness checks' },
+        { id: 'quality', label: 'Quality model', hint: 'job and resume extraction, resume writing, page fitting' },
+      ],
+      llmSettings: null,
+      llmForm: { bulk: { provider: '', name: '' }, quality: { provider: '', name: '' }, budget: '' },
+      llmCatalog: [],
+      llmMenu: null,
+      llmSaving: false,
+      llmSaved: false,
+      llmError: '',
 
       async init() {
         this.accountName = localStorage.getItem('otw_account_name') || '';
+        // The model catalog loads LiteLLM server-side, which is slow the
+        // first time, so the page doesn't wait for it.
+        fetch('/api/app-settings/llm/models')
+          .then((res) => res.json())
+          .then((catalog) => { this.llmCatalog = catalog; })
+          .catch(() => {});
         try {
-          const [keysRes, providersRes, accountsRes] = await Promise.all([
+          const [keysRes, providersRes, accountsRes, llmRes] = await Promise.all([
             fetch('/api/api-keys'),
             fetch('/api/api-keys/providers'),
             fetch('/accounts'),
+            fetch('/api/app-settings/llm'),
           ]);
           this.keys = await keysRes.json();
           this.providers = await providersRes.json();
           this.accounts = await accountsRes.json();
+          this.applyLlm(await llmRes.json());
         } finally {
           this.loading = false;
+        }
+      },
+
+      // "azure/..." is LiteLLM's prefix for the azure_openai provider;
+      // every other provider's prefix is its own name.
+      splitModel(model) {
+        const i = model.indexOf('/');
+        const prefix = model.slice(0, i);
+        return { provider: prefix === 'azure' ? 'azure_openai' : prefix, name: model.slice(i + 1) };
+      },
+
+      joinModel({ provider, name }) {
+        return `${provider === 'azure_openai' ? 'azure' : provider}/${name}`;
+      },
+
+      applyLlm(settings) {
+        this.llmSettings = settings;
+        this.llmForm = {
+          bulk: this.splitModel(settings.bulk_model),
+          quality: this.splitModel(settings.quality_model),
+          budget: settings.monthly_budget_usd,
+        };
+      },
+
+      resetLlmDefaults() {
+        const s = this.llmSettings;
+        this.llmForm = {
+          bulk: this.splitModel(s.default_bulk_model),
+          quality: this.splitModel(s.default_quality_model),
+          budget: s.default_monthly_budget_usd,
+        };
+        this.llmSaved = false;
+        this.llmError = '';
+      },
+
+      pickLlmProvider(tier, provider) {
+        if (this.llmForm[tier].provider !== provider) {
+          this.llmForm[tier] = { provider, name: '' };
+          this.llmSaved = false;
+        }
+        this.llmMenu = null;
+      },
+
+      closeLlmMenu(tier) {
+        if (this.llmMenu === tier) this.llmMenu = null;
+      },
+
+      modelNames(provider) {
+        const entry = this.llmCatalog.find((c) => c.provider === provider);
+        return entry ? entry.models.map((m) => m.slice(entry.prefix.length + 1)) : [];
+      },
+
+      // Same prefixes app/core/app_settings.py rejects on save.
+      looksLikeApiKey(name) {
+        return /^(AIza|sk-|gsk_|xai-|hf_|AKIA|ya29\.)/.test(name || '');
+      },
+
+      isUnlistedModel({ provider, name }) {
+        const names = this.modelNames(provider);
+        return Boolean(name) && names.length > 0 && !names.includes(name) && !this.looksLikeApiKey(name);
+      },
+
+      hasUsableKey(provider) {
+        return this.keys.some((k) => k.provider === provider && k.enabled);
+      },
+
+      async saveLlm() {
+        this.llmError = '';
+        this.llmSaved = false;
+        if (!this.llmForm.bulk.name || !this.llmForm.quality.name) {
+          this.llmError = 'Pick a model for both tiers.';
+          return;
+        }
+        if (this.llmForm.budget === '' || Number(this.llmForm.budget) < 0) {
+          this.llmError = 'Set a monthly budget of $0 or more.';
+          return;
+        }
+        this.llmSaving = true;
+        try {
+          const res = await fetch('/api/app-settings/llm', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              bulk_model: this.joinModel(this.llmForm.bulk),
+              quality_model: this.joinModel(this.llmForm.quality),
+              monthly_budget_usd: Number(this.llmForm.budget),
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            this.llmError = typeof data.detail === 'string' ? data.detail : 'Could not save these settings.';
+            return;
+          }
+          this.applyLlm(data);
+          this.llmSaved = true;
+        } catch (e) {
+          this.llmError = 'Could not reach the server, try again.';
+        } finally {
+          this.llmSaving = false;
         }
       },
 

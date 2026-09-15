@@ -55,7 +55,11 @@ _SYSTEM_PROMPT = (
     "explicitly describes the project as building, using, or implementing, "
     "not things merely mentioned in badges, license text, contributor "
     "lists, or links to unrelated projects. Do not infer skills beyond what "
-    "the text actually states. Assign each a confidence in [0, 1] "
+    "the text actually states. Name each skill the way it would appear on a "
+    "resume, using its common official name (e.g. 'React', 'PostgreSQL', "
+    "'Scikit-learn'). Name the library or framework, not individual classes, "
+    "functions, or models inside it (e.g. 'Scikit-learn', not 'ElasticNetCV' "
+    "or 'RobustScaler'). Skip code editors and IDEs. Assign each a confidence in [0, 1] "
     "reflecting how explicitly the text states it. If nothing qualifies, "
     "return an empty list."
 )

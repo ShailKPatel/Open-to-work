@@ -12,7 +12,8 @@ coverage:
 
 # Opt-in suites against real services. Each file skips unless its variable
 # is set, so this runs only what is configured:
-#   LIVE_LLM_API_KEY (optionally LIVE_LLM_PROVIDER)  real, billed LLM calls
+#   LIVE_LLM_API_KEY (optionally LIVE_LLM_PROVIDER,  real, billed LLM calls
+#     LIVE_LLM_BULK_MODEL, LIVE_LLM_QUALITY_MODEL)
 #   LIVE_GITHUB=1 (optionally GITHUB_TOKEN)          real GitHub API calls
 #   LIVE_APP_URL=http://localhost:8000               a running instance
 # Never run by `make test` or CI. -s keeps the per-test reports.
@@ -48,7 +49,7 @@ down:
 
 dev: up
 
-# Friendlier front door: checks Docker, preps .env, waits for health,
-# opens the browser. `make up` still works for raw compose output.
+# Friendlier front door: checks Docker, picks free ports, waits for
+# health, opens the browser. `make up` still works for raw compose output.
 start:
 	./start.sh

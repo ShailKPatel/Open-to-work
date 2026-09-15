@@ -13,7 +13,10 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.db import EmbeddingCache, get_db
-from app.core.settings import get_settings
+
+# Changing this invalidates every stored vector (and the Qdrant collection
+# sizes follow it), so it is a code constant rather than a user setting.
+EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 
 
 def _content_hash(text: str) -> str:
@@ -34,7 +37,7 @@ def embed(texts: list[str], _encode_fn: Any = None) -> list[list[float]]:
     if not texts:
         return []
 
-    model_name = get_settings().embedding_model
+    model_name = EMBEDDING_MODEL
     hashes = [_content_hash(t) for t in texts]
 
     db = get_db()

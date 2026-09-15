@@ -5,6 +5,7 @@ from github import UnknownObjectException
 
 import app.core.db as db_module
 from app.core.db import init_db
+from app.core.embeddings import EMBEDDING_MODEL
 from app.core.settings import get_settings
 from app.ingest.github.sync import SyncSummary
 
@@ -145,7 +146,7 @@ def test_explanation_page_serves_html(tmp_path):
     # Data flow tab: its include renders, and hover cards name the model
     # this instance is configured with, not a hardcoded default.
     assert 'data-wires="flowA"' in resp.text
-    assert get_settings().embedding_model in resp.text
+    assert EMBEDDING_MODEL in resp.text
 
 
 def test_projects_page_serves_html_not_the_api_endpoint(tmp_path):
@@ -160,7 +161,7 @@ def test_projects_page_serves_html_not_the_api_endpoint(tmp_path):
     resp = client.get("/portfolio/projects")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
-    assert "Detected projects" in resp.text
+    assert "Projects" in resp.text
 
 
 def test_sync_github_not_tied_to_one_username(tmp_path, monkeypatch):

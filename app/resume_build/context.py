@@ -61,32 +61,42 @@ def _date_range(start: dt.date | None, end: dt.date | None) -> str:
     return f"{start_text} -- {end_text}"
 
 
-def build_header_context(account: Account, social_links: list[SocialLink]) -> dict[str, Any]:
+def build_header_context(
+    account: Account,
+    social_links: list[SocialLink],
+    selected_email: str | None = None,
+    selected_phone: str | None = None,
+) -> dict[str, Any]:
     """contact_items: location/email/phone, in that fixed order, only the
     ones actually set. social_items: github (from Account.github_username,
     the sync identity, not a SocialLink row, see that model's docstring)
     first if present, then every SocialLink row in whatever order the
-    account added them.
+    account added them. Allows selecting a specific email/phone for custom
+    resume builds.
     """
     contact_items: list[dict[str, Any]] = []
     if account.contact_location:
         contact_items.append(
             {"icon": r"\faMapMarker*", "text": account.contact_location, "href": None}
         )
-    if account.contact_email:
+
+    email_to_use = selected_email if selected_email is not None else account.contact_email
+    if email_to_use:
         contact_items.append(
             {
                 "icon": r"\faEnvelope",
-                "text": account.contact_email,
-                "href": f"mailto:{account.contact_email}",
+                "text": email_to_use,
+                "href": f"mailto:{email_to_use}",
             }
         )
-    if account.contact_phone:
+
+    phone_to_use = selected_phone if selected_phone is not None else account.contact_phone
+    if phone_to_use:
         contact_items.append(
             {
                 "icon": r"\faPhone",
-                "text": account.contact_phone,
-                "href": f"tel:{account.contact_phone}",
+                "text": phone_to_use,
+                "href": f"tel:{phone_to_use}",
             }
         )
 
@@ -110,6 +120,7 @@ def build_header_context(account: Account, social_links: list[SocialLink]) -> di
         "contact_items": contact_items,
         "social_items": social_items,
     }
+
 
 
 def build_experience_context(db: Session, account_id: int) -> list[dict[str, Any]]:

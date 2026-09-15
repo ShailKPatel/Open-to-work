@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command startup: install Docker if missing (Linux), prep .env,
+# One-command startup: install Docker if missing (Linux), pick free ports,
 # build+run, wait for health, open browser. Safe to re-run: does whatever
 # step is still needed and skips the rest. No host Python/Node required.
 set -euo pipefail
@@ -9,9 +9,6 @@ BOLD='\033[1m'; DIM='\033[2m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33
 ok()   { printf "  ${GREEN}✔${RESET} %s\n" "$1"; }
 err()  { printf "  ${RED}✘${RESET} %s\n" "$1"; }
 step() { printf "${BOLD}%s${RESET}\n" "$1"; }
-
-URL="http://localhost:8000"
-HEALTH="$URL/health"
 
 step "Open to Work: startup"
 echo
@@ -44,11 +41,12 @@ fi
 
 # Freshly installed on Linux means the current shell isn't in the `docker`
 # group yet (takes a new login to apply), so fall back to sudo for this run
-# only instead of requiring a log out and back in.
+# only instead of requiring a log out and back in. sudo drops environment
+# variables by default, so the chosen ports are passed through explicitly.
 DOCKER=(docker)
 if ! docker info >/dev/null 2>&1; then
   if sudo docker info >/dev/null 2>&1; then
-    DOCKER=(sudo docker)
+    DOCKER=(sudo --preserve-env=APP_PORT,QDRANT_PORT docker)
     err "Using 'sudo docker' for this run. Log out/in once to use docker without sudo from now on."
   else
     err "Docker installed but daemon not reachable. Start it and re-run this script."
@@ -57,15 +55,38 @@ if ! docker info >/dev/null 2>&1; then
 fi
 ok "Docker running"
 
-# 2. .env from template, first run only; never overwrite an existing one
+# 2. .env only holds the optional GITHUB_TOKEN. Created on first run so
+# there is an obvious place to put it; never overwritten.
 if [ ! -f .env ]; then
   cp .env.example .env
-  ok "Created .env from .env.example (add GITHUB_TOKEN there later if needed)"
-else
-  ok ".env present"
+  ok "Created .env (optional: add a GITHUB_TOKEN there for higher GitHub limits)"
 fi
 
-# 3. Build + start, detached, quieter output than a raw `up --build`
+# 3. Ports: 8000 for the app and 6333 for Qdrant, or the next free port
+# when something else already holds one. A port this app's own running
+# containers publish is kept, so a re-run doesn't move the app.
+port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
+free_port() {
+  local port=$1
+  while port_in_use "$port"; do port=$((port + 1)); done
+  echo "$port"
+}
+published_port() {
+  "${DOCKER[@]}" compose port "$1" "$2" 2>/dev/null | awk -F: 'NF { print $NF; exit }' || true
+}
+
+APP_PORT="$(published_port app 8000)"
+APP_PORT="${APP_PORT:-$(free_port 8000)}"
+QDRANT_PORT="$(published_port qdrant 6333)"
+QDRANT_PORT="${QDRANT_PORT:-$(free_port 6333)}"
+export APP_PORT QDRANT_PORT
+[ "$APP_PORT" = 8000 ] && ok "App port 8000" || ok "Port 8000 is busy, using $APP_PORT for the app"
+[ "$QDRANT_PORT" = 6333 ] && ok "Qdrant port 6333" || ok "Port 6333 is busy, using $QDRANT_PORT for Qdrant"
+
+URL="http://localhost:$APP_PORT"
+HEALTH="$URL/health"
+
+# 4. Build + start, detached, quieter output than a raw `up --build`
 step "Building image (first run takes a few minutes: downloads Python, torch, models)..."
 if ! "${DOCKER[@]}" compose up --build -d --wait 2>&1 | grep -Ev '^\s*$'; then
   echo
@@ -74,7 +95,7 @@ if ! "${DOCKER[@]}" compose up --build -d --wait 2>&1 | grep -Ev '^\s*$'; then
 fi
 echo
 
-# 4. Poll /health as a second check (compose --wait already waited on the
+# 5. Poll /health as a second check (compose --wait already waited on the
 # container healthcheck, but confirm the port answers from outside).
 step "Waiting for app to answer..."
 SPIN='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -99,7 +120,7 @@ echo -e "${BOLD}${GREEN}Ready →${RESET} ${BOLD}$URL${RESET}"
 echo -e "${DIM}Stop with: docker compose down${RESET}"
 echo
 
-# 5. Best-effort auto-open (never fail the script over this)
+# 6. Best-effort auto-open (never fail the script over this)
 if command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1 &
 elif command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1 &
 fi

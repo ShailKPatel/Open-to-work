@@ -10,22 +10,8 @@
     {% set data_active = 'experience' %}
     {% include "_portfolio_subnav.html" %}
 
-    <div class="flex items-start justify-between gap-4 flex-wrap mt-8">
-      <div>
-        <h1 class="font-display text-4xl">Experience</h1>
-        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
-          Roles worked, entered by hand, there's no repo to sync this
-          from. Add a skill to any role the same way you'd add one to a
-          project; it shows up on the Skills page either way.
-        </p>
-        <p class="mt-2 text-[color:var(--muted)] max-w-xl">
-          Give each role lots of points, not one paragraph; every point
-          gets its own semantic-search entry, so when a resume is built
-          for a specific job, the ones that actually match it (a web
-          project here, a leadership moment there) get pulled in and the
-          rest stay out. One para can't be split like that.
-        </p>
-      </div>
+    <div class="flex items-center justify-between gap-4 flex-wrap mt-8">
+      <h1 class="font-display text-4xl">Experience</h1>
       <button @click="addingOpen = !addingOpen" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">
         <span x-show="!addingOpen">+ Add experience</span>
         <span x-show="addingOpen">Close</span>

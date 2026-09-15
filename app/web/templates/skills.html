@@ -10,18 +10,18 @@
     {% set data_active = 'skills' %}
     {% include "_portfolio_subnav.html" %}
 
-    <div class="flex items-start justify-between gap-4 flex-wrap mt-8">
-      <div>
-        <h1 class="font-display text-4xl">Skills</h1>
-        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
-          Every skill across your projects and experience, in one place,
-          plus anything you'd rather just add by hand, not tied to either.
-        </p>
+    <div class="flex items-center justify-between gap-4 flex-wrap mt-8">
+      <h1 class="font-display text-4xl">Skills</h1>
+      <div class="flex items-center gap-2.5 shrink-0">
+        <button @click="openMapView()" class="otw-btn-ghost text-sm px-4 py-2 flex items-center gap-2 border border-[color:var(--line-strong)] hover:border-[color:var(--ink)]">
+          <svg class="w-4 h-4 text-[color:var(--ink)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>
+          <span>2D Cluster Map</span>
+        </button>
+        <button @click="addingOpen = !addingOpen" class="otw-btn-ghost text-sm px-4 py-2">
+          <span x-show="!addingOpen">+ Add a skill</span>
+          <span x-show="addingOpen">Close</span>
+        </button>
       </div>
-      <button @click="addingOpen = !addingOpen" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">
-        <span x-show="!addingOpen">+ Add a skill</span>
-        <span x-show="addingOpen">Close</span>
-      </button>
     </div>
 
     <div x-show="addingOpen" x-cloak class="otw-tile p-6 mt-6">
@@ -35,23 +35,51 @@
       <p x-show="addError" class="otw-error text-xs mt-3" x-text="addError"></p>
     </div>
 
+    <div x-cloak x-show="!loading && groups.length > 0" class="mt-8 flex items-center gap-4 flex-wrap">
+      <input
+        x-ref="search"
+        x-model="query"
+        type="search"
+        placeholder="Search skills or projects"
+        aria-label="Search skills or projects"
+        class="otw-input flex-1 min-w-[12rem]"
+        @keydown.escape="query = ''"
+      />
+      <label class="flex items-center gap-2 text-sm text-[color:var(--muted)] shrink-0 cursor-pointer">
+        <input type="checkbox" x-model="starredOnly" class="otw-checkbox" />
+        Starred only
+      </label>
+      <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="countLabel"></span>
+    </div>
+
     <div x-cloak x-show="!loading && groups.length === 0" class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">No skills yet, add one, or link one from a project or experience entry.</p>
     </div>
 
-    <div x-cloak class="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 items-start">
-      <template x-for="group in pagedGroups" :key="group.name">
-        <div class="otw-tile p-5">
+    <div x-cloak x-show="!loading && groups.length > 0 && filteredGroups.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No skills match that search.</p>
+    </div>
+
+    <!-- Skill Cards Grid with Dynamic Floating Popover Sources -->
+    <div x-cloak class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 items-start">
+      <template x-for="(group, index) in pagedGroups" :key="group.name">
+        <div
+          x-data="{ popoverOpen: false }"
+          @mouseleave="popoverOpen = false"
+          class="otw-tile p-5 relative transition-all duration-150 hover:border-[color:var(--line-strong)]"
+        >
           <div class="flex items-start justify-between gap-4">
             <div class="flex items-center gap-2 min-w-0">
               <button
                 @click="toggleStar(group)"
                 :disabled="Boolean(starBusy[group.name])"
                 :title="group.starred ? 'Unstar' : 'Star'"
-                class="text-lg leading-none shrink-0"
-                :class="group.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
-              ><span x-text="group.starred ? '★' : '☆'"></span></button>
-              <p class="font-display text-lg" x-text="group.name"></p>
+                class="text-base leading-none shrink-0 transition-colors"
+                :class="group.starred ? 'text-amber-500' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+              >
+                <svg class="w-4 h-4 inline stroke-current" :class="group.starred ? 'fill-amber-500' : 'fill-none'" viewBox="0 0 24 24" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              </button>
+              <p class="font-display text-lg truncate" x-text="group.name"></p>
             </div>
             <button
               x-show="group.manual_skill_id"
@@ -59,28 +87,300 @@
               class="text-xs otw-btn-danger-text shrink-0"
             >Remove</button>
           </div>
-          <p x-show="group.sources.length === 0" class="text-xs text-[color:var(--muted)] mt-2 italic">
-            Added manually, not linked to anything yet.
-          </p>
-          <div x-show="group.sources.length > 0" class="mt-3 flex flex-wrap gap-2">
-            <template x-for="source in group.sources" :key="source.type + '-' + source.evidence_id">
-              <a
-                :href="source.type === 'project' ? '/portfolio/projects/' + source.ref_id : '/portfolio/experience/' + source.ref_id"
-                class="text-xs border border-[color:var(--line)] px-2 py-1 hover:text-[color:var(--ink)] text-[color:var(--muted)]"
-                x-text="(source.type === 'project' ? 'Project: ' : 'Experience: ') + source.name"
-              ></a>
+
+          <!-- Sources Trigger Indicator -->
+          <div class="mt-3 flex items-center justify-between text-xs text-[color:var(--muted)]">
+            <template x-if="group.sources.length === 0">
+              <span class="italic text-[color:var(--muted)]">Added manually</span>
             </template>
+            <template x-if="group.sources.length > 0">
+              <button
+                type="button"
+                @mouseenter="popoverOpen = true"
+                @click="popoverOpen = !popoverOpen"
+                class="flex items-center gap-1.5 cursor-pointer text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] transition-colors"
+              >
+                <span class="inline-block w-2 h-2 rounded-full bg-[color:var(--accent)]"></span>
+                <span class="font-medium" x-text="uniqueSources(group).length + (uniqueSources(group).length === 1 ? ' source' : ' sources')"></span>
+                <svg class="w-3 h-3 text-[color:var(--muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              </button>
+            </template>
+          </div>
+
+          <!-- Dynamic Floating Popover (Positioned outside tile, auto-aligns left/center/right) -->
+          <div
+            x-show="popoverOpen && group.sources.length > 0"
+            x-cloak
+            x-transition:enter="transition ease-out duration-150"
+            x-transition:enter-start="opacity-0 scale-95"
+            x-transition:enter-end="opacity-100 scale-100"
+            x-transition:leave="transition ease-in duration-100"
+            x-transition:leave-start="opacity-100 scale-100"
+            x-transition:leave-end="opacity-0 scale-95"
+            class="absolute top-full mt-2 z-40 w-72 p-4 otw-tile shadow-2xl bg-[color:var(--tile)] border border-[color:var(--line-strong)]"
+            :class="index % 3 === 2 ? 'right-0' : (index % 3 === 1 ? 'left-1/2 -translate-x-1/2' : 'left-0')"
+          >
+            <div class="flex items-center justify-between pb-2 border-b border-[color:var(--line)] mb-2">
+              <p class="text-[10px] uppercase tracking-wider text-[color:var(--muted)] font-semibold">Exact Sources</p>
+              <button @click="popoverOpen = false" class="text-[color:var(--muted)] hover:text-[color:var(--ink)]">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+              </button>
+            </div>
+            <div class="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
+              <template x-for="source in group.sources" :key="source.type + '-' + source.evidence_id">
+                <a
+                  :href="source.type === 'project' ? '/portfolio/projects/' + source.ref_id : '/portfolio/experience/' + source.ref_id"
+                  class="text-xs flex items-center justify-between gap-2 p-2 rounded hover:bg-[color:var(--surface)] border border-transparent hover:border-[color:var(--line)] text-[color:var(--muted)] hover:text-[color:var(--ink)] transition-colors"
+                >
+                  <div class="flex items-center gap-1.5 min-w-0">
+                    <span class="text-[10px] font-mono uppercase px-1 py-0.5 rounded bg-[color:var(--surface)] text-[color:var(--muted)] shrink-0" x-text="source.type === 'project' ? 'Project' : 'Exp'"></span>
+                    <span class="truncate font-medium text-[color:var(--ink)]" x-text="source.name"></span>
+                  </div>
+                  <span
+                    class="text-[10px] text-[color:var(--muted)] shrink-0 italic"
+                    x-text="formatEvidenceType(source.evidence_type)"
+                  ></span>
+                </a>
+              </template>
+            </div>
           </div>
         </div>
       </template>
     </div>
 
-    <div x-cloak x-show="!loading && groups.length > pageSize" class="otw-pagination">
+    <div x-cloak x-show="!loading && filteredGroups.length > pageSize" class="otw-pagination">
       <button @click="page = Math.max(1, page - 1)" :disabled="page <= 1">← Prev</button>
       <span>Page <span x-text="page"></span> of <span x-text="totalPages"></span></span>
       <button @click="page = Math.min(totalPages, page + 1)" :disabled="page >= totalPages">Next →</button>
     </div>
+
+    <!-- Names the automatic review judged not to be skills. They stay out of
+         future syncs; adding one back approves it for good. -->
+    <div x-cloak x-show="!loading && rejected.length > 0" class="mt-12">
+      <button @click="rejectedOpen = !rejectedOpen" class="text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">
+        <span x-text="rejectedOpen ? '▾' : '▸'"></span>
+        Filtered out as not skills (<span x-text="rejected.length"></span>)
+      </button>
+      <div x-show="rejectedOpen" class="mt-3">
+        <p class="text-xs text-[color:var(--muted)]">
+          Found in your projects or resume, but judged not to be real skills. Future syncs keep them out unless you add one back.
+        </p>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <template x-for="item in rejected" :key="item.name">
+            <span class="text-xs border border-[color:var(--line)] px-2 py-1 text-[color:var(--muted)] flex items-center gap-2">
+              <span x-text="item.name"></span>
+              <button
+                @click="addBack(item)"
+                :disabled="Boolean(addBackBusy[item.name])"
+                class="text-[color:var(--ink)] hover:underline"
+              >Add back</button>
+            </span>
+          </template>
+        </div>
+      </div>
+    </div>
   </main>
+
+  <!-- 2D Skill Cluster Map View (Themed & Un-cramped Dropdown Filter) -->
+  <div
+    x-show="mapOpen"
+    x-cloak
+    @keydown.escape.window="closeMapView()"
+    class="fixed inset-0 z-50 bg-[color:var(--bg)] text-[color:var(--ink)] flex flex-col select-none overflow-hidden"
+  >
+    <!-- Fixed Header Control Bar -->
+    <div class="absolute top-4 left-4 right-4 z-50 flex items-center justify-between gap-4 pointer-events-none">
+      <!-- Left Controls Card -->
+      <div class="pointer-events-auto flex items-center gap-3 otw-tile p-2.5 shadow-2xl backdrop-blur">
+        <div class="flex items-center gap-2 px-2 border-r border-[color:var(--line)] pr-3">
+          <svg class="w-5 h-5 text-[color:var(--ink)] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>
+          <div>
+            <h2 class="text-sm font-semibold text-[color:var(--ink)] leading-none font-display">2D Skill Cluster Map</h2>
+            <p class="text-[10px] text-[color:var(--muted)] mt-0.5" x-text="mapData.nodes ? mapData.nodes.length + ' skills mapped by embedding distance' : 'Loading map...'"></p>
+          </div>
+        </div>
+
+        <input
+          x-model="mapQuery"
+          type="search"
+          placeholder="Search map skills..."
+          class="otw-input px-3 py-1.5 text-xs w-44"
+        />
+
+        <!-- Cluster Filter Dropdown (Spacious & Un-cramped) -->
+        <select
+          x-model="selectedClusterId"
+          class="otw-input text-xs w-52 font-medium cursor-pointer shrink-0"
+        >
+          <option :value="null">All Clusters</option>
+          <template x-for="c in mapData.clusters" :key="c.id">
+            <option :value="c.id" x-text="c.label + ' (' + getClusterNodeCount(c.id) + ')'"></option>
+          </template>
+        </select>
+      </div>
+
+      <!-- Right Action Bar & Fixed Close Button -->
+      <div class="pointer-events-auto flex items-center gap-2">
+        <button
+          @click="resetMapTransform()"
+          title="Reset Map Center"
+          class="otw-btn-ghost text-xs px-3 py-2 flex items-center gap-1.5 border border-[color:var(--line-strong)] hover:border-[color:var(--ink)] font-medium shadow-2xl"
+        >
+          <svg class="w-4 h-4 text-[color:var(--ink)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+          <span>Center</span>
+        </button>
+
+        <!-- Prominent SVG Close Button -->
+        <button
+          @click="closeMapView()"
+          title="Close Map View (Esc)"
+          class="otw-tile hover:border-[color:var(--ink)] w-10 h-10 rounded-xl shadow-2xl flex items-center justify-center shrink-0 cursor-pointer text-[color:var(--ink)] transition-all"
+        >
+          <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Interactive Pan & Zoom Map Viewport -->
+    <div
+      x-ref="mapViewport"
+      @mousedown="startMapPan($event)"
+      @mousemove="handleMapPan($event)"
+      @mouseup="endMapPan()"
+      @mouseleave="endMapPan()"
+      @wheel.prevent="handleMapWheel($event)"
+      class="relative flex-1 w-full h-full cursor-grab active:cursor-grabbing overflow-hidden bg-[color:var(--bg)]"
+    >
+      <!-- Background Infinite Radial Grid Lines -->
+      <div
+        class="absolute inset-0 pointer-events-none opacity-25"
+        :style="'background-image: radial-gradient(var(--line-strong) 1px, transparent 1px); background-size: ' + (30 * mapZoom) + 'px ' + (30 * mapZoom) + 'px; background-position: ' + (mapPanX) + 'px ' + (mapPanY) + 'px;'"
+      ></div>
+
+      <!-- Map Loading Spinner -->
+      <div x-show="mapLoading" class="absolute inset-0 z-30 flex items-center justify-center bg-[color:var(--bg)]/80 backdrop-blur-sm">
+        <div class="flex flex-col items-center gap-3">
+          <div class="w-10 h-10 border-4 border-[color:var(--line)] border-t-[color:var(--accent)] rounded-full animate-spin"></div>
+          <p class="text-sm font-medium text-[color:var(--muted)]">Embedding & projecting 2D skill map...</p>
+        </div>
+      </div>
+
+      <!-- Map Empty State -->
+      <div x-show="!mapLoading && mapData.nodes && mapData.nodes.length === 0" class="absolute inset-0 z-20 flex items-center justify-center text-[color:var(--muted)] text-sm">
+        No skills added yet to display on the map.
+      </div>
+
+      <!-- Pannable & Zoomable Map Stage -->
+      <div
+        class="absolute left-1/2 top-1/2 w-0 h-0 transition-transform duration-75 ease-out"
+        :style="'transform: translate3d(' + mapPanX + 'px, ' + mapPanY + 'px, 0) scale(' + mapZoom + ');'"
+      >
+        <!-- Cluster Background Glowing Hulls -->
+        <template x-for="c in mapData.clusters" :key="'hull-' + c.id">
+          <div
+            x-show="shouldShowClusterHull(c.id)"
+            class="absolute rounded-full pointer-events-none transition-all duration-300 blur-3xl opacity-20"
+            :style="getClusterHullStyle(c.id)"
+          ></div>
+        </template>
+
+        <!-- Skill Nodes -->
+        <template x-for="node in mapData.nodes" :key="node.name">
+          <div
+            @click.stop="selectMapNode(node)"
+            class="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-all duration-150 group"
+            :class="isNodeVisible(node) ? 'opacity-100 scale-100 z-20' : 'opacity-20 scale-90 z-0 pointer-events-none'"
+            :style="'left: ' + node.x + 'px; top: ' + node.y + 'px;'"
+          >
+            <!-- Node Colored Circle Dot -->
+            <div class="relative flex items-center justify-center">
+              <div
+                class="w-6 h-6 rounded-full flex items-center justify-center shadow-xl transition-transform duration-200 group-hover:scale-125 border border-white/40"
+                :style="'background-color: ' + node.cluster_color + '; box-shadow: 0 0 18px ' + node.cluster_color + '99;'"
+              >
+                <svg x-show="node.starred" class="w-3 h-3 text-amber-300 fill-current" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              </div>
+              <!-- Selected Pulse Ring -->
+              <div
+                x-show="selectedNode && selectedNode.name === node.name"
+                class="absolute -inset-2.5 rounded-full border-2 border-[color:var(--ink)] animate-pulse"
+              ></div>
+            </div>
+
+            <!-- Node Label Chip -->
+            <div
+              class="mt-1.5 px-2.5 py-1 rounded-lg otw-tile backdrop-blur text-center transition-all whitespace-nowrap shadow-xl flex items-center gap-1.5"
+              :class="selectedNode && selectedNode.name === node.name ? 'border-[color:var(--ink)] ring-2 ring-[color:var(--accent)] scale-105' : 'border-[color:var(--line)] group-hover:border-[color:var(--line-strong)]'"
+            >
+              <span class="text-xs font-semibold text-[color:var(--ink)]" x-text="node.name"></span>
+              <span
+                x-show="node.sources && node.sources.length > 0"
+                class="text-[9px] font-mono px-1 rounded bg-[color:var(--surface)] text-[color:var(--muted)]"
+                x-text="node.sources.length"
+              ></span>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Zoom Controls (Bottom Left) -->
+      <div class="absolute bottom-6 left-6 z-40 flex flex-col gap-2 pointer-events-auto">
+        <div class="otw-tile p-1 shadow-2xl flex flex-col gap-1 backdrop-blur">
+          <button @click="zoomIn()" title="Zoom In" class="w-8 h-8 flex items-center justify-center text-base font-bold text-[color:var(--ink)] hover:bg-[color:var(--surface)] rounded-lg transition-colors">+</button>
+          <button @click="zoomOut()" title="Zoom Out" class="w-8 h-8 flex items-center justify-center text-base font-bold text-[color:var(--ink)] hover:bg-[color:var(--surface)] rounded-lg transition-colors">−</button>
+          <button @click="resetMapTransform()" title="Reset Zoom (100%)" class="w-8 h-8 flex items-center justify-center text-[10px] font-medium text-[color:var(--muted)] hover:text-[color:var(--ink)] hover:bg-[color:var(--surface)] rounded-lg transition-colors">100%</button>
+        </div>
+      </div>
+
+      <!-- Selected Node Detail Card Inspector (Bottom Right) -->
+      <div
+        x-show="selectedNode"
+        x-transition
+        class="absolute bottom-6 right-6 z-40 w-80 otw-tile p-5 shadow-2xl text-[color:var(--ink)] pointer-events-auto backdrop-blur"
+      >
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <span class="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full font-semibold border" :style="'background-color: ' + selectedNode?.cluster_color + '22; color: ' + selectedNode?.cluster_color + '; border-color: ' + selectedNode?.cluster_color" x-text="selectedNode?.cluster_label"></span>
+            <h3 class="text-xl font-bold text-[color:var(--ink)] mt-2 flex items-center gap-2 font-display">
+              <span x-text="selectedNode?.name"></span>
+              <span x-show="selectedNode?.starred" class="text-amber-500 text-sm">
+                <svg class="w-4 h-4 fill-current inline" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              </span>
+            </h3>
+          </div>
+          <button @click="selectedNode = null" class="text-[color:var(--muted)] hover:text-[color:var(--ink)]">
+            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+
+        <div class="mt-4 pt-3 border-t border-[color:var(--line)]">
+          <div class="flex items-center justify-between text-xs text-[color:var(--muted)] mb-2">
+            <span>Sources</span>
+            <span x-text="selectedNode?.sources ? selectedNode.sources.length + ' evidence linked' : 'Manual entry'"></span>
+          </div>
+
+          <template x-if="!selectedNode?.sources || selectedNode.sources.length === 0">
+            <p class="text-xs text-[color:var(--muted)] italic">Added manually (freestanding skill)</p>
+          </template>
+
+          <div class="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
+            <template x-for="src in selectedNode?.sources || []" :key="src.type + '-' + src.evidence_id">
+              <a
+                :href="src.type === 'project' ? '/portfolio/projects/' + src.ref_id : '/portfolio/experience/' + src.ref_id"
+                class="text-xs flex items-center justify-between p-2 rounded-lg bg-[color:var(--surface)] border border-[color:var(--line)] hover:border-[color:var(--line-strong)] text-[color:var(--muted)] hover:text-[color:var(--ink)] transition-colors"
+              >
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-[color:var(--tile)] text-[color:var(--muted)] shrink-0" x-text="src.type"></span>
+                  <span class="truncate font-medium text-[color:var(--ink)]" x-text="src.name"></span>
+                </div>
+                <span class="text-[10px] text-[color:var(--muted)] italic" x-text="formatEvidenceType(src.evidence_type)"></span>
+              </a>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -97,6 +397,25 @@
       starBusy: {},
       page: 1,
       pageSize: 20,
+      query: '',
+      starredOnly: false,
+      rejected: [],
+      rejectedOpen: false,
+      addBackBusy: {},
+
+      // 2D Map State
+      mapOpen: false,
+      mapLoading: false,
+      mapData: { clusters: [], nodes: [] },
+      mapPanX: 0,
+      mapPanY: 0,
+      mapZoom: 1.0,
+      isPanning: false,
+      panStartX: 0,
+      panStartY: 0,
+      mapQuery: '',
+      selectedClusterId: null,
+      selectedNode: null,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -105,27 +424,198 @@
           window.location.href = '/';
           return;
         }
+        this.$watch('query', () => { this.page = 1; });
+        this.$watch('starredOnly', () => { this.page = 1; });
         await this.load();
       },
 
+      get filteredGroups() {
+        const q = this.query.trim().toLowerCase();
+        const pool = this.starredOnly ? this.groups.filter((g) => g.starred) : this.groups;
+        if (!q) return pool;
+        const ranked = [];
+        for (const group of pool) {
+          const name = group.name.toLowerCase();
+          let rank;
+          if (name.startsWith(q)) rank = 0;
+          else if (name.includes(q)) rank = 1;
+          else if (group.sources.some((s) => s.name.toLowerCase().includes(q))) rank = 2;
+          else continue;
+          ranked.push({ group, rank });
+        }
+        return ranked.sort((a, b) => a.rank - b.rank).map((r) => r.group);
+      },
+
+      get countLabel() {
+        const shown = this.filteredGroups.length;
+        const total = this.groups.length;
+        return shown === total ? `${total} skills` : `${shown} of ${total}`;
+      },
+
       get totalPages() {
-        return Math.max(1, Math.ceil(this.groups.length / this.pageSize));
+        return Math.max(1, Math.ceil(this.filteredGroups.length / this.pageSize));
       },
 
       get pagedGroups() {
         const start = (this.page - 1) * this.pageSize;
-        return this.groups.slice(start, start + this.pageSize);
+        return this.filteredGroups.slice(start, start + this.pageSize);
+      },
+
+      uniqueSources(group) {
+        const seen = new Set();
+        return group.sources.filter((s) => {
+          const key = s.type + '-' + s.ref_id;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      },
+
+      formatEvidenceType(type) {
+        if (!type) return '';
+        const map = {
+          declared_dependency: 'dependency',
+          readme_described: 'README',
+          description_described: 'description',
+          bullet_point: 'bullet',
+          manual: 'manual',
+          extracted: 'extracted',
+        };
+        return map[type] || type.replace(/_/g, ' ');
+      },
+
+      getClusterNodeCount(clusterId) {
+        if (!this.mapData.nodes) return 0;
+        return this.mapData.nodes.filter((n) => n.cluster_id === clusterId).length;
       },
 
       async load() {
         this.loading = true;
         try {
-          const res = await fetch(`/api/skills?account_id=${this.accountId}`);
+          const [res, rejectedRes] = await Promise.all([
+            fetch(`/api/skills?account_id=${this.accountId}`),
+            fetch(`/api/skills/rejected?account_id=${this.accountId}`),
+          ]);
           this.groups = await res.json();
+          this.rejected = rejectedRes.ok ? await rejectedRes.json() : [];
           if (this.page > this.totalPages) this.page = this.totalPages;
         } finally {
           this.loading = false;
         }
+      },
+
+      // Same call as "+ Add a skill": a hand-added skill overrules the review.
+      async addBack(item) {
+        this.addBackBusy[item.name] = true;
+        try {
+          await fetch('/api/skills', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), name: item.name }),
+          });
+          await this.load();
+          if (this.mapOpen) await this.loadMap();
+        } finally {
+          this.addBackBusy[item.name] = false;
+        }
+      },
+
+      // 2D Skill Map Methods
+      async openMapView() {
+        this.mapOpen = true;
+        if (!this.mapData.nodes || this.mapData.nodes.length === 0) {
+          await this.loadMap();
+        }
+      },
+
+      closeMapView() {
+        this.mapOpen = false;
+        this.selectedNode = null;
+      },
+
+      async loadMap() {
+        this.mapLoading = true;
+        try {
+          const res = await fetch(`/api/skills/map?account_id=${this.accountId}`);
+          this.mapData = await res.json();
+          this.resetMapTransform();
+        } finally {
+          this.mapLoading = false;
+        }
+      },
+
+      startMapPan(e) {
+        this.isPanning = true;
+        this.panStartX = e.clientX - this.mapPanX;
+        this.panStartY = e.clientY - this.mapPanY;
+      },
+
+      handleMapPan(e) {
+        if (!this.isPanning) return;
+        this.mapPanX = e.clientX - this.panStartX;
+        this.mapPanY = e.clientY - this.panStartY;
+      },
+
+      endMapPan() {
+        this.isPanning = false;
+      },
+
+      handleMapWheel(e) {
+        const delta = e.deltaY > 0 ? -0.15 : 0.15;
+        this.mapZoom = Math.min(Math.max(0.3, this.mapZoom + delta), 3.5);
+      },
+
+      zoomIn() {
+        this.mapZoom = Math.min(3.5, this.mapZoom + 0.25);
+      },
+
+      zoomOut() {
+        this.mapZoom = Math.max(0.3, this.mapZoom - 0.25);
+      },
+
+      resetMapTransform() {
+        this.mapPanX = 0;
+        this.mapPanY = 0;
+        this.mapZoom = 1.0;
+      },
+
+      selectMapNode(node) {
+        this.selectedNode = node;
+      },
+
+      isNodeVisible(node) {
+        if (this.selectedClusterId !== null && node.cluster_id !== this.selectedClusterId) {
+          return false;
+        }
+        if (this.mapQuery.trim()) {
+          const q = this.mapQuery.trim().toLowerCase();
+          return node.name.toLowerCase().includes(q) || (node.cluster_label && node.cluster_label.toLowerCase().includes(q));
+        }
+        return true;
+      },
+
+      shouldShowClusterHull(clusterId) {
+        if (this.selectedClusterId !== null && this.selectedClusterId !== clusterId) {
+          return false;
+        }
+        return true;
+      },
+
+      getClusterHullStyle(clusterId) {
+        if (!this.mapData.nodes) return 'display: none;';
+        const nodes = this.mapData.nodes.filter(n => n.cluster_id === clusterId);
+        if (!nodes || nodes.length === 0) return 'display: none;';
+        const avgX = nodes.reduce((acc, n) => acc + n.x, 0) / nodes.length;
+        const avgY = nodes.reduce((acc, n) => acc + n.y, 0) / nodes.length;
+        let maxDist = 100;
+        for (const n of nodes) {
+          const dist = Math.hypot(n.x - avgX, n.y - avgY);
+          if (dist > maxDist) maxDist = dist;
+        }
+        const radius = Math.max(140, maxDist + 90);
+        const cluster = this.mapData.clusters.find(c => c.id === clusterId);
+        const color = cluster ? cluster.color : '#6366f1';
+        return `left: ${avgX}px; top: ${avgY}px; width: ${radius * 2}px; height: ${radius * 2}px; margin-left: -${radius}px; margin-top: -${radius}px; background-color: ${color};`;
       },
 
       logout() {
@@ -152,14 +642,12 @@
           this.newSkillName = '';
           this.addingOpen = false;
           await this.load();
+          if (this.mapOpen) await this.loadMap();
         } finally {
           this.adding = false;
         }
       },
 
-      // Flips in place; starred-first reordering happens on the next
-      // load(), same as the projects list, so the card doesn't jump away
-      // from under the cursor.
       async toggleStar(group) {
         this.starBusy[group.name] = true;
         try {
@@ -168,7 +656,10 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ account_id: Number(this.accountId), name: group.name, starred: !group.starred }),
           });
-          if (res.ok) group.starred = !group.starred;
+          if (res.ok) {
+            group.starred = !group.starred;
+            if (this.mapOpen) await this.loadMap();
+          }
         } finally {
           this.starBusy[group.name] = false;
         }
@@ -178,6 +669,7 @@
         if (!group.manual_skill_id) return;
         await fetch(`/api/skills/${group.manual_skill_id}`, { method: 'DELETE' });
         await this.load();
+        if (this.mapOpen) await this.loadMap();
       },
     };
   }

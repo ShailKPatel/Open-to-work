@@ -11,8 +11,9 @@ anywhere for this account (a manual `Skill` row, or evidence from a
 project or experience, the exact same union GET /api/skills reads) is
 left alone, no new row, no new evidence source; a name that's
 new becomes a freestanding `Skill` row, same as adding one by hand from
-the Skills page. No LLM call, no fuzzy matching, casefold-equal is equal,
-the same rule this app already uses everywhere skills get deduplicated.
+the Skills page, unless the skill review (app/profile/skill_review.py)
+rejects it first. No fuzzy matching, casefold-equal is equal, the same rule
+this app already uses everywhere skills get deduplicated.
 
 Experience: matched on (company, title), both casefolded and trimmed, NOT
 on dates. Two resumes (or a resume and a hand-entered role) describing
@@ -32,8 +33,16 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.db import Experience, ExperienceSkillEvidence, Repository, Skill, SkillEvidence
+from app.core.db import (
+    Experience,
+    ExperiencePoint,
+    ExperienceSkillEvidence,
+    Repository,
+    Skill,
+    SkillEvidence,
+)
 from app.profile.resume_extract import ExperienceClaim, ResumeExtraction
+from app.profile.skill_review import name_key, review_names
 
 
 @dataclass
@@ -41,6 +50,7 @@ class ProfileMergeSummary:
     skills_added: int
     experiences_added: int
     experiences_enriched: int
+    experience_points_added: int = 0
 
 
 def _existing_skill_names(db: Session, account_id: int) -> set[str]:
@@ -68,10 +78,12 @@ def _existing_skill_names(db: Session, account_id: int) -> set[str]:
 
 def _merge_skills(db: Session, account_id: int, tags: list[str]) -> int:
     existing = _existing_skill_names(db, account_id)
+    new_names = [t.strip() for t in tags if t.strip() and t.strip().casefold() not in existing]
+    # Same LLM review as project skills, run before anything is written.
+    rejected = review_names(db, account_id, new_names)
     added = 0
-    for tag in tags:
-        name = tag.strip()
-        if not name or name.casefold() in existing:
+    for name in new_names:
+        if name.casefold() in existing or name_key(name) in rejected:
             continue
         db.add(Skill(account_id=account_id, name=name))
         existing.add(name.casefold())  # this pass's own duplicates count once too
@@ -83,7 +95,7 @@ def _merge_skills(db: Session, account_id: int, tags: list[str]) -> int:
 
 def _merge_experiences(
     db: Session, account_id: int, claims: list[ExperienceClaim]
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     existing_rows = list(
         db.execute(select(Experience).where(Experience.account_id == account_id)).scalars()
     )
@@ -94,36 +106,76 @@ def _merge_experiences(
 
     added = 0
     enriched = 0
+    points_added = 0
+    new_points_to_index: list[ExperiencePoint] = []
+
     for claim in claims:
         key = (claim.company.casefold(), claim.title.casefold())
         existing = by_key.get(key)
+        target_row: Experience
+
         if existing is None:
-            row = Experience(
+            target_row = Experience(
                 account_id=account_id,
                 title=claim.title,
                 company=claim.company,
                 start_date=claim.start_date,
                 end_date=claim.end_date,
             )
-            db.add(row)
+            db.add(target_row)
             db.flush()  # this pass's own duplicate claims should match, not double-add
-            by_key[key] = row
+            by_key[key] = target_row
             added += 1
-            continue
+        else:
+            target_row = existing
+            changed = False
+            if target_row.start_date is None and claim.start_date is not None:
+                target_row.start_date = claim.start_date
+                changed = True
+            if target_row.end_date is None and claim.end_date is not None:
+                target_row.end_date = claim.end_date
+                changed = True
+            if changed:
+                enriched += 1
 
-        changed = False
-        if existing.start_date is None and claim.start_date is not None:
-            existing.start_date = claim.start_date
-            changed = True
-        if existing.end_date is None and claim.end_date is not None:
-            existing.end_date = claim.end_date
-            changed = True
-        if changed:
-            enriched += 1
+        if claim.points:
+            existing_points = list(
+                db.execute(
+                    select(ExperiencePoint).where(
+                        ExperiencePoint.experience_id == target_row.id
+                    )
+                ).scalars()
+            )
+            existing_texts = {p.text.strip().casefold() for p in existing_points}
+            current_max_order = max((p.order_index for p in existing_points), default=0)
 
-    if added or enriched:
+            for p_text in claim.points:
+                clean_text = p_text.strip()
+                if not clean_text or clean_text.casefold() in existing_texts:
+                    continue
+                current_max_order += 1
+                new_point = ExperiencePoint(
+                    experience_id=target_row.id,
+                    text=clean_text,
+                    order_index=current_max_order,
+                )
+                db.add(new_point)
+                existing_texts.add(clean_text.casefold())
+                new_points_to_index.append(new_point)
+                points_added += 1
+
+    if added or enriched or points_added:
         db.commit()
-    return added, enriched
+
+    if new_points_to_index:
+        try:
+            from app.retrieval.index import index_experience_points
+
+            index_experience_points(new_points_to_index, account_id=account_id)
+        except Exception:
+            pass
+
+    return added, enriched, points_added
 
 
 def merge_resume_into_profile(
@@ -133,14 +185,15 @@ def merge_resume_into_profile(
     call again on the same extraction (reprocessing a resume re-merges
     it): every duplicate check is against the account's current state,
     so a second pass adds nothing new for what already made it in, and
-    can still enrich a date that got filled in elsewhere since.
+    can still enrich a date or point that got filled in elsewhere since.
     """
     skills_added = _merge_skills(db, account_id, extraction.tags)
-    experiences_added, experiences_enriched = _merge_experiences(
+    experiences_added, experiences_enriched, points_added = _merge_experiences(
         db, account_id, extraction.experiences
     )
     return ProfileMergeSummary(
         skills_added=skills_added,
         experiences_added=experiences_added,
         experiences_enriched=experiences_enriched,
+        experience_points_added=points_added,
     )

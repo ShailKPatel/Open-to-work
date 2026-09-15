@@ -50,6 +50,8 @@ def test_get_contact_defaults_to_null(tmp_path):
         "contact_email": None,
         "contact_phone": None,
         "contact_location": None,
+        "emails": [],
+        "phones": [],
         "github_username": "octocat",
     }
 
@@ -144,3 +146,39 @@ def test_social_link_scoped_to_owning_account(tmp_path):
 
     resp = client.delete(f"/api/accounts/{account_b}/social-links/{link_id}")
     assert resp.status_code == 404
+
+
+def test_multiple_emails_and_phones_with_primary(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+
+    # Add email 1 (becomes primary by default)
+    e1 = client.post(f"/api/accounts/{account_id}/emails", json={"email": "primary@example.com"}).json()
+    assert e1["is_primary"] is True
+
+    # Add email 2 (not primary)
+    e2 = client.post(f"/api/accounts/{account_id}/emails", json={"email": "secondary@example.com"}).json()
+    assert e2["is_primary"] is False
+
+    # Check contact endpoint return
+    c = client.get(f"/api/accounts/{account_id}/contact").json()
+    assert c["contact_email"] == "primary@example.com"
+    assert len(c["emails"]) == 2
+
+    # Switch primary to e2
+    up = client.patch(f"/api/accounts/{account_id}/emails/{e2['id']}", json={"is_primary": True}).json()
+    assert up["is_primary"] is True
+
+    c2 = client.get(f"/api/accounts/{account_id}/contact").json()
+    assert c2["contact_email"] == "secondary@example.com"
+
+    # Add phone 1 and phone 2
+    p1 = client.post(f"/api/accounts/{account_id}/phones", json={"phone": "+1-555-0100"}).json()
+    p2 = client.post(f"/api/accounts/{account_id}/phones", json={"phone": "+1-555-0200", "is_primary": True}).json()
+    assert p2["is_primary"] is True
+
+    c3 = client.get(f"/api/accounts/{account_id}/contact").json()
+    assert c3["contact_phone"] == "+1-555-0200"
+    assert len(c3["phones"]) == 2
+

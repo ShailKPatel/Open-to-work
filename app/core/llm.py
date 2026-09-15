@@ -20,12 +20,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from sqlalchemy import func, select
 
+from app.core.app_settings import Tier, get_llm_settings
 from app.core.db import LLMCall, get_db
 from app.core.llm_providers import (
     PROVIDER_LABELS,
@@ -34,11 +36,8 @@ from app.core.llm_providers import (
     provider_of_model,
 )
 from app.core.rate_limits import record_event
-from app.core.settings import get_settings
 
 logger = logging.getLogger(__name__)
-
-Tier = Literal["bulk", "quality"]
 
 
 class BudgetExceededError(RuntimeError):
@@ -65,6 +64,32 @@ class LLMRateLimitedError(RuntimeError):
     """
 
 
+class LLMUnavailableError(LLMRateLimitedError):
+    """The provider is overloaded or unreachable (HTTP 500/502/503/504, a
+    timeout, a dropped connection) even after complete() retried and tried
+    the other tier's model. A subclass of LLMRateLimitedError because it
+    means the same thing to every caller: stop, and try again later."""
+
+
+class LLMProviderError(RuntimeError):
+    """The provider refused the request for a reason retrying won't fix: a
+    rejected key, an unknown model name, or input it can't handle."""
+
+
+# Every exception message raised here is shown to the person using the app
+# as-is (saved as an extraction error, or returned as an HTTP detail), so it
+# says what happened and what to do rather than the provider's raw payload.
+# The raw error still goes to the log.
+
+# Waits before each retry when a provider is overloaded, first for the
+# tier's own model, then for the fallback model. Bounded so a request never
+# hangs for long.
+_RETRY_DELAYS_S = (3.0, 8.0)
+_FALLBACK_RETRY_DELAYS_S = (5.0,)
+_TRANSIENT_STATUS = {500, 502, 503, 504}
+_sleep = time.sleep
+
+
 @dataclass
 class LLMResponse:
     content: str
@@ -74,11 +99,6 @@ class LLMResponse:
     model: str
     tokens_in: int = 0
     tokens_out: int = 0
-
-
-def _model_for_tier(tier: Tier) -> str:
-    settings = get_settings()
-    return settings.llm_bulk_model if tier == "bulk" else settings.llm_quality_model
 
 
 def _prompt_hash(tier: str, model: str, messages: list[dict], schema: dict | None) -> str:
@@ -208,8 +228,8 @@ def complete(
     app/resume_build/orchestrator.py). None means "no account context",
     which only unrestricted keys can serve.
     """
-    settings = get_settings()
-    model = _model_for_tier(tier)
+    settings = get_llm_settings()
+    model = settings.model_for(tier)
     prompt_hash = _prompt_hash(tier, model, messages, schema)
 
     cached_row = _lookup_cache(prompt_hash)
@@ -237,13 +257,15 @@ def complete(
     spent = _month_spend_usd()
     if spent >= settings.monthly_budget_usd:
         detail = (
-            f"monthly budget ${settings.monthly_budget_usd:.2f} reached "
-            f"(spent ${spent:.2f}); call refused before dispatch"
+            f"The monthly budget of ${settings.monthly_budget_usd:.2f} for AI calls is used up "
+            f"(${spent:.2f} spent this month), so this request was not sent. "
+            "Raise the budget on Manage APIs, or wait until next month."
         )
         record_event("llm", "budget_exceeded", detail, context=model, account_id=account_id)
         raise BudgetExceededError(detail)
 
     provider = provider_of_model(model)
+    label = PROVIDER_LABELS.get(provider, provider)
     key_id: int | None = None
     kwargs: dict[str, Any] = {"model": model, "messages": messages}
 
@@ -253,9 +275,9 @@ def complete(
         resolved = resolve_dispatch_key(provider, account_id)
         if resolved is None:
             raise ApiKeyMissingError(
-                f"no {PROVIDER_LABELS.get(provider, provider)} API key available "
-                f"{'for this account ' if account_id is not None else ''}"
-                "(add or enable one from Manage APIs, /apis)"
+                f"No {label} API key is available"
+                f"{' for this account' if account_id is not None else ''}. "
+                "Add one, or turn an existing one on, from Manage APIs."
             )
         key_id, credentials, key_budget = resolved
 
@@ -263,8 +285,9 @@ def complete(
             provider_spent = _provider_month_spend_usd(provider)
             if provider_spent >= key_budget:
                 detail = (
-                    f"{PROVIDER_LABELS.get(provider, provider)} key budget ${key_budget:.2f} "
-                    f"reached (spent ${provider_spent:.2f}); call refused before dispatch"
+                    f"The {label} key budget of ${key_budget:.2f} is used up "
+                    f"(${provider_spent:.2f} spent this month), so this request was not sent. "
+                    "Raise or remove the key's cap on Manage APIs."
                 )
                 record_event("llm", "budget_exceeded", detail, context=model, account_id=account_id)
                 raise BudgetExceededError(detail)
@@ -281,27 +304,35 @@ def complete(
             "json_schema": {"name": "response", "schema": schema, "strict": True},
         }
 
-    start = time.monotonic()
-    try:
-        response = _completion_fn(**kwargs)
-    except Exception as e:
-        import litellm
+    # A model that stays overloaded through its retries hands over to the
+    # other tier's model when that one runs on the same provider, and so
+    # can use the same key. The call is then recorded under the model that
+    # actually answered.
+    candidates = [model]
+    other_model = settings.model_for("quality" if tier == "bulk" else "bulk")
+    if other_model != model and provider_of_model(other_model) == provider:
+        candidates.append(other_model)
 
-        # Only these two exception types say anything about the KEY
-        # itself; anything else (network blip, malformed request, ...)
-        # leaves its stored status untouched rather than guessing.
-        if key_id is not None:
-            from app.core.api_keys_store import record_dispatch_outcome
-
-            if isinstance(e, litellm.AuthenticationError):
-                record_dispatch_outcome(key_id, ok=False, detail=str(e))
-            elif isinstance(e, litellm.RateLimitError):
-                record_dispatch_outcome(key_id, ok=False, rate_limited=True, detail=str(e))
-        if isinstance(e, litellm.RateLimitError):
-            record_event("llm", "rate_limited", str(e), context=model, account_id=account_id)
-            raise LLMRateLimitedError(str(e)) from e
-        raise
-    latency_ms = int((time.monotonic() - start) * 1000)
+    for i, candidate in enumerate(candidates):
+        kwargs["model"] = candidate
+        delays = _RETRY_DELAYS_S if i == 0 else _FALLBACK_RETRY_DELAYS_S
+        try:
+            response, latency_ms = _call_with_retries(_completion_fn, kwargs, delays)
+        except Exception as e:
+            if _is_transient(e) and i + 1 < len(candidates):
+                logger.warning(
+                    "%s still unavailable after retries (%s); falling back to %s",
+                    candidate, type(e).__name__, candidates[i + 1],
+                )
+                continue
+            readable = _readable_provider_error(e, candidate, label, key_id, account_id)
+            if readable is None:
+                raise
+            raise readable from e
+        if candidate != model:
+            model = candidate
+            prompt_hash = _prompt_hash(tier, model, messages, schema)
+        break
 
     content = response.choices[0].message.content or ""
     usage = getattr(response, "usage", None)
@@ -334,6 +365,130 @@ def complete(
         tokens_in=tokens_in,
         tokens_out=tokens_out,
     )
+
+
+def _call_with_retries(
+    completion_fn: Any, kwargs: dict[str, Any], delays: tuple[float, ...]
+) -> tuple[Any, int]:
+    """One model: the call, plus a retry after each of `delays` while the
+    provider is overloaded or unreachable. Returns (response, latency_ms).
+    Any other error, or the last overloaded one, is raised unchanged."""
+    for attempt in range(len(delays) + 1):
+        start = time.monotonic()
+        try:
+            response = completion_fn(**kwargs)
+        except Exception as e:
+            if attempt == len(delays) or not _is_transient(e):
+                raise
+            logger.warning(
+                "%s unavailable (%s); retrying in %.0fs",
+                kwargs["model"], type(e).__name__, delays[attempt],
+            )
+            _sleep(delays[attempt])
+            continue
+        return response, int((time.monotonic() - start) * 1000)
+    raise AssertionError("unreachable")
+
+
+def _is_transient(e: Exception) -> bool:
+    import litellm
+
+    if isinstance(
+        e,
+        (
+            litellm.Timeout,
+            litellm.APIConnectionError,
+            litellm.ServiceUnavailableError,
+            litellm.InternalServerError,
+            litellm.BadGatewayError,
+        ),
+    ):
+        return True
+    return isinstance(e, litellm.APIError) and getattr(e, "status_code", None) in _TRANSIENT_STATUS
+
+
+def _provider_detail(e: Exception) -> str:
+    """The provider's own one-line explanation, pulled out of litellm's
+    'litellm.X: ProviderException - {json}' message when there is one."""
+    text = str(e)
+    match = re.search(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if match:
+        text = match.group(1).replace('\\"', '"').replace("\\n", " ")
+    else:
+        text = re.sub(r"^(litellm\.\w+:\s*)+", "", text)
+        text = re.sub(r"^\w+Exception - ", "", text)
+    text = " ".join(text.split())
+    return text if len(text) <= 240 else text[:237] + "..."
+
+
+def _readable_provider_error(
+    e: Exception, model: str, label: str, key_id: int | None, account_id: int | None
+) -> Exception | None:
+    """A litellm exception as one of this module's exceptions, with a
+    message for the person using the app, recording what it says about the
+    key on the way. Only a rejected key or a rate limit says anything about
+    the key itself; every other error leaves its stored status alone. None
+    for anything that isn't a provider error, which the caller re-raises
+    unchanged."""
+    import litellm
+
+    from app.core.api_keys_store import record_dispatch_outcome
+
+    if not type(e).__module__.startswith("litellm"):
+        return None
+    logger.warning("LLM call to %s failed: %s", model, e)
+    name = model.split("/", 1)[1] if "/" in model else model
+    detail = _provider_detail(e)
+
+    if isinstance(e, litellm.RateLimitError):
+        message = (
+            f"{label} is limiting requests from this key right now: too many requests in a "
+            "short time, or its free quota is used up. Wait a minute and try again, or check "
+            f"the key's limits in your {label} account."
+        )
+        if key_id is not None:
+            record_dispatch_outcome(key_id, ok=False, rate_limited=True, detail=message)
+        record_event("llm", "rate_limited", detail, context=model, account_id=account_id)
+        return LLMRateLimitedError(message)
+    if isinstance(e, (litellm.Timeout, litellm.APIConnectionError)):
+        return LLMUnavailableError(
+            f"Couldn't reach {label}: the connection failed or timed out, even after several "
+            "tries. Check your internet connection and try again."
+        )
+    if _is_transient(e):
+        return LLMUnavailableError(
+            f"{label} is too busy to answer right now (\"{name}\" is getting more requests "
+            "than it can handle), and it still failed after several tries. This is on "
+            f"{label}'s side, not a problem with your key. Try again in a few minutes, or "
+            "pick a different model on Manage APIs."
+        )
+    if isinstance(e, litellm.AuthenticationError):
+        message = f"{label} rejected the API key. Check it, or add a new one, on Manage APIs."
+        if key_id is not None:
+            record_dispatch_outcome(key_id, ok=False, detail=message)
+        return LLMProviderError(message)
+    if isinstance(e, litellm.PermissionDeniedError):
+        return LLMProviderError(
+            f"{label} says this key isn't allowed to use \"{name}\". Pick a different model "
+            f"on Manage APIs, or check the key's permissions. ({detail})"
+        )
+    if isinstance(e, litellm.NotFoundError):
+        return LLMProviderError(
+            f"{label} doesn't recognize the model \"{name}\". Pick a different model on "
+            "Manage APIs."
+        )
+    if isinstance(e, litellm.ContextWindowExceededError):
+        return LLMProviderError(
+            f"This is too long for \"{name}\" to read in one go. Try a shorter file, or pick "
+            "a model with a larger context window on Manage APIs."
+        )
+    if isinstance(e, litellm.ContentPolicyViolationError):
+        return LLMProviderError(
+            f"{label} refused to process this content under its safety rules. ({detail})"
+        )
+    if isinstance(e, (litellm.BadRequestError, litellm.UnprocessableEntityError)):
+        return LLMProviderError(f"{label} couldn't process this request with \"{name}\": {detail}")
+    return LLMProviderError(f"{label} returned an unexpected error: {detail}")
 
 
 def _safe_completion_cost(response: Any) -> float:

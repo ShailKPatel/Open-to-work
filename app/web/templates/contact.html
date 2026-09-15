@@ -11,10 +11,6 @@
     {% include "_portfolio_subnav.html" %}
 
     <h1 class="font-display text-3xl mt-8">Links</h1>
-    <p class="mt-2 text-sm text-[color:var(--muted)]">
-      Resume-header material: who you are, how someone reviewing your
-      profile reaches you, and any public link worth including.
-    </p>
 
     <a
       x-show="githubUsername"
@@ -26,7 +22,7 @@
     ><span x-html="icon('github')" class="otw-icon"></span>GitHub ↗ <span x-text="'@' + githubUsername"></span></a>
 
     <div class="otw-tile p-5 mt-6">
-      <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Name</p>
+      <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Name & Location</p>
       <div class="mt-3 grid gap-3 sm:grid-cols-2">
         <div class="otw-input-icon">
           <span x-html="icon('user')" class="otw-icon"></span>
@@ -35,20 +31,6 @@
         <div class="otw-input-icon">
           <span x-html="icon('user')" class="otw-icon"></span>
           <input x-model="contact.last_name" placeholder="Last name" class="otw-input" />
-        </div>
-      </div>
-    </div>
-
-    <div class="otw-tile p-5 mt-6">
-      <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Direct contact</p>
-      <div class="mt-3 grid gap-3 sm:grid-cols-2">
-        <div class="otw-input-icon">
-          <span x-html="icon('mail')" class="otw-icon"></span>
-          <input x-model="contact.contact_email" type="email" placeholder="Email" class="otw-input" />
-        </div>
-        <div class="otw-input-icon">
-          <span x-html="icon('phone')" class="otw-icon"></span>
-          <input x-model="contact.contact_phone" placeholder="Phone" class="otw-input" />
         </div>
         <div class="otw-input-icon sm:col-span-2">
           <span x-html="icon('map-pin')" class="otw-icon"></span>
@@ -62,10 +44,103 @@
           <span x-show="savingContact" class="otw-working">Saving…</span>
         </button>
       </div>
-      <p class="text-xs text-[color:var(--muted)] mt-2">One save covers name and contact info together.</p>
     </div>
 
+    <!-- Email addresses -->
     <div class="mt-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="font-display text-lg">Contact Emails</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-0.5">
+            Starred email is your default for resumes. You can pick between multiple when creating a resume.
+          </p>
+        </div>
+      </div>
+
+      <div x-cloak class="mt-3 space-y-2">
+        <template x-for="e in emails" :key="e.id">
+          <div class="otw-tile p-3 flex items-center gap-3 flex-wrap">
+            <span x-html="icon('mail')" class="otw-icon shrink-0"></span>
+            <input x-model="e.email" type="email" placeholder="email@example.com" class="otw-input text-sm flex-1 min-w-[12rem]" />
+            <button
+              @click="setPrimaryEmail(e)"
+              type="button"
+              class="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded transition-colors"
+              :class="e.is_primary ? 'bg-amber-500/10 text-amber-500 font-medium' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+              :title="e.is_primary ? 'Default starred email' : 'Set as default email'"
+            >
+              <span x-html="e.is_primary ? icon('star-filled') : icon('star')" class="otw-icon shrink-0"></span>
+              <span x-text="e.is_primary ? 'Primary' : 'Make primary'"></span>
+            </button>
+            <button @click="saveEmail(e)" :disabled="!emailDirty(e) || Boolean(emailBusy[e.id])" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Save</button>
+            <button @click="removeEmail(e)" :disabled="Boolean(emailBusy[e.id])" class="otw-btn-danger-text text-xs shrink-0">Remove</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="otw-tile p-3 mt-3 flex items-center gap-3 flex-wrap">
+        <span x-html="icon('mail')" class="otw-icon shrink-0"></span>
+        <input x-model="newEmail.email" type="email" placeholder="Add new email address…" class="otw-input text-sm flex-1 min-w-[12rem]" />
+        <label class="flex items-center gap-1.5 text-xs text-[color:var(--muted)] cursor-pointer">
+          <input type="checkbox" x-model="newEmail.is_primary" class="otw-checkbox" />
+          <span>Make primary</span>
+        </label>
+        <button @click="addEmail" :disabled="!newEmail.email.trim() || addingEmail" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
+          <span x-show="!addingEmail">Add email</span>
+          <span x-show="addingEmail" class="otw-working">Adding…</span>
+        </button>
+      </div>
+      <p x-show="emailAddError" class="otw-error text-xs mt-2" x-text="emailAddError"></p>
+    </div>
+
+    <!-- Phone numbers -->
+    <div class="mt-6">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="font-display text-lg">Phone Numbers</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-0.5">
+            Starred phone number is your default for resumes. You can pick between multiple when creating a resume.
+          </p>
+        </div>
+      </div>
+
+      <div x-cloak class="mt-3 space-y-2">
+        <template x-for="p in phones" :key="p.id">
+          <div class="otw-tile p-3 flex items-center gap-3 flex-wrap">
+            <span x-html="icon('phone')" class="otw-icon shrink-0"></span>
+            <input x-model="p.phone" placeholder="+1 (555) 000-0000" class="otw-input text-sm flex-1 min-w-[12rem]" />
+            <button
+              @click="setPrimaryPhone(p)"
+              type="button"
+              class="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded transition-colors"
+              :class="p.is_primary ? 'bg-amber-500/10 text-amber-500 font-medium' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+              :title="p.is_primary ? 'Default starred phone' : 'Set as default phone'"
+            >
+              <span x-html="p.is_primary ? icon('star-filled') : icon('star')" class="otw-icon shrink-0"></span>
+              <span x-text="p.is_primary ? 'Primary' : 'Make primary'"></span>
+            </button>
+            <button @click="savePhone(p)" :disabled="!phoneDirty(p) || Boolean(phoneBusy[p.id])" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Save</button>
+            <button @click="removePhone(p)" :disabled="Boolean(phoneBusy[p.id])" class="otw-btn-danger-text text-xs shrink-0">Remove</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="otw-tile p-3 mt-3 flex items-center gap-3 flex-wrap">
+        <span x-html="icon('phone')" class="otw-icon shrink-0"></span>
+        <input x-model="newPhone.phone" placeholder="Add new phone number…" class="otw-input text-sm flex-1 min-w-[12rem]" />
+        <label class="flex items-center gap-1.5 text-xs text-[color:var(--muted)] cursor-pointer">
+          <input type="checkbox" x-model="newPhone.is_primary" class="otw-checkbox" />
+          <span>Make primary</span>
+        </label>
+        <button @click="addPhone" :disabled="!newPhone.phone.trim() || addingPhone" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
+          <span x-show="!addingPhone">Add phone</span>
+          <span x-show="addingPhone" class="otw-working">Adding…</span>
+        </button>
+      </div>
+      <p x-show="phoneAddError" class="otw-error text-xs mt-2" x-text="phoneAddError"></p>
+    </div>
+
+    <div class="mt-8">
       <h2 class="font-display text-lg">Social links</h2>
       <p class="text-xs text-[color:var(--muted)] mt-1">
         LinkedIn, GitHub, Instagram, whatever's relevant. "Other" takes a label.
@@ -131,11 +206,26 @@
     return {
       accountId: null,
       accountName: '',
-      contact: { first_name: '', last_name: '', contact_email: '', contact_phone: '', contact_location: '' },
-      originalContact: { first_name: '', last_name: '', contact_email: '', contact_phone: '', contact_location: '' },
+      contact: { first_name: '', last_name: '', contact_location: '' },
+      originalContact: { first_name: '', last_name: '', contact_location: '' },
       githubUsername: '',
       savingContact: false,
       contactSaveError: '',
+
+      emails: [],
+      originalEmails: {},
+      emailBusy: {},
+      newEmail: { email: '', is_primary: false },
+      addingEmail: false,
+      emailAddError: '',
+
+      phones: [],
+      originalPhones: {},
+      phoneBusy: {},
+      newPhone: { phone: '', is_primary: false },
+      addingPhone: false,
+      phoneAddError: '',
+
       links: [],
       originalLinks: {},
       linkBusy: {},
@@ -165,11 +255,13 @@
           this.contact = {
             first_name: contact.first_name || '',
             last_name: contact.last_name || '',
-            contact_email: contact.contact_email || '',
-            contact_phone: contact.contact_phone || '',
             contact_location: contact.contact_location || '',
           };
           this.originalContact = { ...this.contact };
+          this.emails = contact.emails || [];
+          this.originalEmails = Object.fromEntries(this.emails.map((e) => [e.id, { ...e }]));
+          this.phones = contact.phones || [];
+          this.originalPhones = Object.fromEntries(this.phones.map((p) => [p.id, { ...p }]));
           this.githubUsername = contact.github_username || '';
           this.links = await linksRes.json();
           this.originalLinks = Object.fromEntries(this.links.map((l) => [l.id, { ...l }]));
@@ -181,21 +273,17 @@
       get contactDirty() {
         return this.contact.first_name !== this.originalContact.first_name
           || this.contact.last_name !== this.originalContact.last_name
-          || this.contact.contact_email !== this.originalContact.contact_email
-          || this.contact.contact_phone !== this.originalContact.contact_phone
           || this.contact.contact_location !== this.originalContact.contact_location;
       },
 
-      // Minimal line-style icon set (Feather-style paths) matched to the
-      // platform values social links already use, plus the three direct
-      // contact fields. Returned as markup and injected via x-html rather
-      // than a sprite file, since this template has no static asset step.
       icon(kind) {
         const paths = {
           user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
           mail: '<path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22 6 12 13 2 6"/>',
           phone: '<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>',
           'map-pin': '<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>',
+          star: '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>',
+          'star-filled': '<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" fill="currentColor"/>',
           linkedin: '<path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/><rect x="2" y="9" width="4" height="12"/><circle cx="4" cy="4" r="2"/>',
           github: '<path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>',
           instagram: '<rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" y1="6.5" x2="17.5" y2="6.5"/>',
@@ -204,6 +292,18 @@
         };
         const body = paths[kind] || paths.other;
         return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+      },
+
+      emailDirty(e) {
+        const orig = this.originalEmails[e.id];
+        if (!orig) return false;
+        return e.email !== orig.email || e.is_primary !== orig.is_primary;
+      },
+
+      phoneDirty(p) {
+        const orig = this.originalPhones[p.id];
+        if (!orig) return false;
+        return p.phone !== orig.phone || p.is_primary !== orig.is_primary;
       },
 
       linkDirty(link) {
@@ -236,8 +336,6 @@
           this.contact = {
             first_name: updated.first_name || '',
             last_name: updated.last_name || '',
-            contact_email: updated.contact_email || '',
-            contact_phone: updated.contact_phone || '',
             contact_location: updated.contact_location || '',
           };
           this.originalContact = { ...this.contact };
@@ -245,6 +343,148 @@
           localStorage.setItem('otw_account_name', this.contact.first_name);
         } finally {
           this.savingContact = false;
+        }
+      },
+
+      async addEmail() {
+        if (!this.newEmail.email.trim()) return;
+        this.addingEmail = true;
+        this.emailAddError = '';
+        try {
+          const res = await fetch(`/api/accounts/${this.accountId}/emails`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.newEmail),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.emailAddError = err.detail || 'Could not add email.';
+            return;
+          }
+          const created = await res.json();
+          if (created.is_primary) {
+            this.emails.forEach((e) => { e.is_primary = false; });
+          }
+          this.emails.push(created);
+          this.originalEmails[created.id] = { ...created };
+          this.newEmail = { email: '', is_primary: false };
+        } finally {
+          this.addingEmail = false;
+        }
+      },
+
+      async saveEmail(e) {
+        this.emailBusy[e.id] = true;
+        try {
+          const res = await fetch(`/api/accounts/${this.accountId}/emails/${e.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: e.email, is_primary: e.is_primary }),
+          });
+          if (res.ok) {
+            const updated = await res.json();
+            if (updated.is_primary) {
+              this.emails.forEach((item) => {
+                if (item.id !== updated.id) item.is_primary = false;
+              });
+            }
+            const idx = this.emails.findIndex((item) => item.id === e.id);
+            if (idx !== -1) this.emails[idx] = updated;
+            this.originalEmails[e.id] = { ...updated };
+          }
+        } finally {
+          this.emailBusy[e.id] = false;
+        }
+      },
+
+      async setPrimaryEmail(e) {
+        if (e.is_primary) return;
+        e.is_primary = true;
+        await this.saveEmail(e);
+      },
+
+      async removeEmail(e) {
+        this.emailBusy[e.id] = true;
+        try {
+          await fetch(`/api/accounts/${this.accountId}/emails/${e.id}`, { method: 'DELETE' });
+          this.emails = this.emails.filter((item) => item.id !== e.id);
+          delete this.originalEmails[e.id];
+          if (e.is_primary && this.emails.length > 0) {
+            this.emails[0].is_primary = true;
+          }
+        } finally {
+          this.emailBusy[e.id] = false;
+        }
+      },
+
+      async addPhone() {
+        if (!this.newPhone.phone.trim()) return;
+        this.addingPhone = true;
+        this.phoneAddError = '';
+        try {
+          const res = await fetch(`/api/accounts/${this.accountId}/phones`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(this.newPhone),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.phoneAddError = err.detail || 'Could not add phone number.';
+            return;
+          }
+          const created = await res.json();
+          if (created.is_primary) {
+            this.phones.forEach((p) => { p.is_primary = false; });
+          }
+          this.phones.push(created);
+          this.originalPhones[created.id] = { ...created };
+          this.newPhone = { phone: '', is_primary: false };
+        } finally {
+          this.addingPhone = false;
+        }
+      },
+
+      async savePhone(p) {
+        this.phoneBusy[p.id] = true;
+        try {
+          const res = await fetch(`/api/accounts/${this.accountId}/phones/${p.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: p.phone, is_primary: p.is_primary }),
+          });
+          if (res.ok) {
+            const updated = await res.json();
+            if (updated.is_primary) {
+              this.phones.forEach((item) => {
+                if (item.id !== updated.id) item.is_primary = false;
+              });
+            }
+            const idx = this.phones.findIndex((item) => item.id === p.id);
+            if (idx !== -1) this.phones[idx] = updated;
+            this.originalPhones[p.id] = { ...updated };
+          }
+        } finally {
+          this.phoneBusy[p.id] = false;
+        }
+      },
+
+      async setPrimaryPhone(p) {
+        if (p.is_primary) return;
+        p.is_primary = true;
+        await this.savePhone(p);
+      },
+
+      async removePhone(p) {
+        this.phoneBusy[p.id] = true;
+        try {
+          await fetch(`/api/accounts/${this.accountId}/phones/${p.id}`, { method: 'DELETE' });
+          this.phones = this.phones.filter((item) => item.id !== p.id);
+          delete this.originalPhones[p.id];
+          if (p.is_primary && this.phones.length > 0) {
+            this.phones[0].is_primary = true;
+          }
+        } finally {
+          this.phoneBusy[p.id] = false;
         }
       },
 
@@ -305,3 +545,4 @@
   }
 </script>
 {% endblock %}
+

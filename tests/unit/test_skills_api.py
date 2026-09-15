@@ -210,3 +210,41 @@ def test_delete_unknown_skill_404s(tmp_path):
     _reset_db(tmp_path)
     resp = _client().delete("/api/skills/999")
     assert resp.status_code == 404
+
+
+def test_get_skills_map_empty(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    resp = _client().get(f"/api/skills/map?account_id={account_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["clusters"] == []
+    assert data["nodes"] == []
+
+
+def test_get_skills_map_with_skills(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    _mock_embed(monkeypatch)
+    account_id = _make_account()
+    client = _client()
+
+    client.post("/api/skills", json={"account_id": account_id, "name": "Python"})
+    client.post("/api/skills", json={"account_id": account_id, "name": "FastAPI"})
+    client.post("/api/skills", json={"account_id": account_id, "name": "Docker"})
+    client.post("/api/skills", json={"account_id": account_id, "name": "React"})
+
+    resp = client.get(f"/api/skills/map?account_id={account_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["nodes"]) == 4
+    assert len(data["clusters"]) > 0
+
+    names = {n["name"] for n in data["nodes"]}
+    assert names == {"Python", "FastAPI", "Docker", "React"}
+
+    for node in data["nodes"]:
+        assert "x" in node and isinstance(node["x"], float)
+        assert "y" in node and isinstance(node["y"], float)
+        assert "cluster_id" in node
+        assert "cluster_color" in node
+

@@ -4,10 +4,15 @@ from pathlib import Path
 import pytest
 
 import app.core.db as db_module
-from app.core.db import ProjectLink, Repository, get_db, init_db
+from app.core.db import ProjectLink, Repository, SkillEvidence, get_db, init_db
 from app.core.llm import BudgetExceededError, LLMRateLimitedError
 from app.core.settings import get_settings
-from app.profile.build import build_profile, reprocess_repo, skill_evidence_for_repos
+from app.profile.build import (
+    build_profile,
+    rebuild_manifest_evidence,
+    reprocess_repo,
+    skill_evidence_for_repos,
+)
 from app.profile.claims import LinkClaim, SkillClaim
 from app.profile.extract import NoSourceTextError
 
@@ -100,13 +105,13 @@ def test_build_profile_writes_skill_evidence_from_manifest_and_readme(tmp_path, 
 
     profile = build_profile([repo], now=NOW)
 
-    assert "fastapi" in profile.skills_json
+    assert "FastAPI" in profile.skills_json
     assert "React" in profile.skills_json
-    assert profile.skills_json["fastapi"]["repo_count"] == 1
-    assert profile.skills_json["fastapi"]["evidence_types"] == ["declared_dependency"]
+    assert profile.skills_json["FastAPI"]["repo_count"] == 1
+    assert profile.skills_json["FastAPI"]["evidence_types"] == ["declared_dependency"]
 
     evidence = skill_evidence_for_repos([repo.id])
-    assert {e.skill for e in evidence} == {"fastapi", "React"}
+    assert {e.skill for e in evidence} == {"FastAPI", "React"}
 
 
 def test_build_profile_persists_extracted_status(tmp_path, monkeypatch):
@@ -140,7 +145,7 @@ def test_no_source_text_marks_no_signal_not_failed(tmp_path, monkeypatch):
     assert reloaded.skill_extraction_error is None
     # manifest-based evidence still gets written even with no LLM signal
     evidence = skill_evidence_for_repos([repo.id])
-    assert {e.skill for e in evidence} == {"fastapi"}
+    assert {e.skill for e in evidence} == {"FastAPI"}
 
 
 def test_llm_failure_on_one_repo_does_not_lose_other_repos(tmp_path, monkeypatch):
@@ -167,12 +172,12 @@ def test_llm_failure_on_one_repo_does_not_lose_other_repos(tmp_path, monkeypatch
 
     # good repo's evidence survived despite bad repo's failure
     good_evidence = {e.skill for e in skill_evidence_for_repos([good.id])}
-    assert good_evidence == {"fastapi", "React"}
+    assert good_evidence == {"FastAPI", "React"}
     # bad repo still got its manifest-based (free, no-LLM) evidence
     bad_evidence = {e.skill for e in skill_evidence_for_repos([bad.id])}
-    assert bad_evidence == {"fastapi"}
+    assert bad_evidence == {"FastAPI"}
     # profile aggregation reflects both repos' surviving evidence
-    assert profile.skills_json["fastapi"]["repo_count"] == 2
+    assert profile.skills_json["FastAPI"]["repo_count"] == 2
 
 
 def test_rate_limit_mid_batch_stops_and_leaves_rest_untouched(tmp_path, monkeypatch):
@@ -184,7 +189,7 @@ def test_rate_limit_mid_batch_stops_and_leaves_rest_untouched(tmp_path, monkeypa
     def hits_limit_on_second(repo):
         calls.append(repo.full_name)
         if repo.full_name == "octocat/b":
-            raise LLMRateLimitedError("quota exceeded, retry in 16s")
+            raise LLMRateLimitedError("Gemini is limiting requests from this key right now.")
         return [SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)]
 
     monkeypatch.setattr("app.profile.build.extract_skills_from_repo", hits_limit_on_second)
@@ -201,7 +206,8 @@ def test_rate_limit_mid_batch_stops_and_leaves_rest_untouched(tmp_path, monkeypa
     c_reloaded = _fresh(c.id)
     assert a_reloaded.skill_extraction_status == "extracted"
     assert b_reloaded.skill_extraction_status == "rate_limited"
-    assert "quota exceeded" not in (b_reloaded.skill_extraction_error or "")  # cleaned up
+    # app/core/llm.py's own readable message, plus why the batch stopped
+    assert b_reloaded.skill_extraction_error.startswith("Gemini is limiting requests")
     assert "later" in b_reloaded.skill_extraction_error.lower()
     assert c_reloaded.skill_extraction_status == "pending"  # untouched, not "failed"
 
@@ -337,12 +343,12 @@ def test_reprocess_repo_clears_old_evidence_before_rewriting(tmp_path, monkeypat
     repo = _persist_repo()
 
     build_profile([repo], now=NOW)
-    assert {e.skill for e in skill_evidence_for_repos([repo.id])} == {"fastapi", "React"}
+    assert {e.skill for e in skill_evidence_for_repos([repo.id])} == {"FastAPI", "React"}
 
     reprocess_repo(repo.id, now=NOW)
     # React (from the first run) is gone: reprocess clears before rewriting,
     # doesn't just append
-    assert {e.skill for e in skill_evidence_for_repos([repo.id])} == {"fastapi", "Vue"}
+    assert {e.skill for e in skill_evidence_for_repos([repo.id])} == {"FastAPI", "Vue"}
 
 
 def test_reprocess_repo_unknown_id_raises(tmp_path):
@@ -363,11 +369,11 @@ def test_same_skill_from_two_repos_aggregates_via_noisy_or(tmp_path, monkeypatch
 
     profile = build_profile([repo_a, repo_b], now=NOW)
 
-    fastapi = profile.skills_json["fastapi"]
+    fastapi = profile.skills_json["FastAPI"]
     assert fastapi["repo_count"] == 2
     # noisy-OR of two positive weights must exceed either weight alone
     single_repo_profile = build_profile([repo_a], now=NOW)
-    assert fastapi["weight"] > single_repo_profile.skills_json["fastapi"]["weight"]
+    assert fastapi["weight"] > single_repo_profile.skills_json["FastAPI"]["weight"]
 
 
 def test_profile_skills_property_matches_skills_json(tmp_path, monkeypatch):
@@ -378,7 +384,46 @@ def test_profile_skills_property_matches_skills_json(tmp_path, monkeypatch):
     profile = build_profile([repo], now=NOW)
 
     skills_by_name = {s["skill"]: s for s in profile.skills}
-    assert skills_by_name["fastapi"]["weight"] == profile.skills_json["fastapi"]["weight"]
+    assert skills_by_name["FastAPI"]["weight"] == profile.skills_json["FastAPI"]["weight"]
+
+
+def test_rebuild_manifest_evidence_replaces_only_manifest_rows(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    calls = []
+    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: calls.append(1) or [
+        SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)
+    ])
+    repo = _persist_repo(
+        manifests_json={"requirements.txt": {"ecosystem": "pip", "dependencies": ["blinker", "fastapi"]}}
+    )
+    build_profile([repo], now=NOW)
+
+    db = get_db()
+    db.add(
+        SkillEvidence(
+            skill="blinker", repo_id=repo.id, evidence_type="declared_dependency",
+            weight=0.5, confidence=1.0,
+        )
+    )
+    db.add(
+        SkillEvidence(
+            skill="Docker", repo_id=repo.id, evidence_type="manual", weight=0.5, confidence=1.0
+        )
+    )
+    db.commit()
+    db.close()
+
+    removed, written = rebuild_manifest_evidence(now=NOW)
+
+    assert (removed, written) == (2, 1)
+    assert len(calls) == 1  # no LLM call from the rebuild
+    evidence = {(e.skill, e.evidence_type) for e in skill_evidence_for_repos([repo.id])}
+    assert evidence == {
+        ("FastAPI", "declared_dependency"),
+        ("React", "readme_described"),
+        ("Docker", "manual"),
+    }
+    assert _fresh(repo.id).skill_extraction_status == "extracted"
 
 
 def test_skill_evidence_for_repos_empty_input(tmp_path):

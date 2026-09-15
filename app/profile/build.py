@@ -49,6 +49,7 @@ from app.profile.extract import (
     extract_skills_from_repo,
 )
 from app.profile.manifest_skills import skills_from_manifests
+from app.profile.skill_review import name_key, rejected_keys, review_names
 from app.profile.weighting import compute_weight
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,13 @@ _ERROR_MESSAGE_LIMIT = 2000
 
 
 def _write_claims(db, repo: Repository, claims: list[SkillClaim], now: dt.datetime) -> None:
+    # Names already reviewed and rejected for this account never get written
+    # again; new names are reviewed in one batch after extraction, see
+    # review_skill_evidence.
+    rejected = rejected_keys(db, repo.account_id)
     for claim in claims:
+        if name_key(claim.skill) in rejected:
+            continue
         weight = compute_weight(
             claim.evidence_type,
             claim.confidence,
@@ -146,9 +153,8 @@ def _process_repo(db, repo: Repository, now: dt.datetime) -> bool:
         logger.warning("rate limit / budget hit on %s: %s; stopping batch", repo.full_name, e)
         repo.skill_extraction_status = "rate_limited"
         repo.skill_extraction_error = (
-            "LLM rate limit or budget cap reached. The rest of this batch "
-            "was stopped rather than burning more calls that would fail the "
-            "same way. Try processing again later."
+            f"{e} Processing stopped here so the remaining projects don't fail "
+            "the same way; run it again later to continue."
         )
         llm_claims = []
         stop_batch = True
@@ -263,6 +269,8 @@ def build_profile(
                 )
                 break
 
+        db.commit()  # end any open read before review's nested LLM-call sessions
+        review_skill_evidence([r.account_id for r in repos])
         evidence = list(
             db.execute(
                 select(SkillEvidence).where(
@@ -344,8 +352,12 @@ def build_profile_progress(
             }
             if stop_batch:
                 yield {"stage": "rate_limited", "index": i, "total": total}
+                db.commit()
+                review_skill_evidence([r.account_id for r in repos])
                 return
 
+        db.commit()  # end any open read before review's nested LLM-call sessions
+        review_skill_evidence([r.account_id for r in repos])
         evidence = list(
             db.execute(
                 select(SkillEvidence).where(
@@ -374,8 +386,90 @@ def reprocess_repo(repo_id: int, now: dt.datetime | None = None) -> Repository:
         _process_repo(db, repo, now)
         db.commit()
         _index_repo_evidence(db, repo)
+        db.commit()
+        review_skill_evidence([repo.account_id])
         db.refresh(repo)
         return repo
+    finally:
+        db.close()
+
+
+def _delete_index_points(evidence_ids: list[int]) -> None:
+    """Best-effort Qdrant cleanup for evidence rows this module deleted,
+    same posture as app/api/projects.py's _delete_qdrant_points."""
+    if not evidence_ids:
+        return
+    try:
+        from app.retrieval.index import COLLECTION
+        from app.retrieval.vectorstore import get_client
+
+        client = get_client()
+        if client.collection_exists(COLLECTION):
+            client.delete(collection_name=COLLECTION, points_selector=evidence_ids)
+    except Exception:
+        logger.exception("could not clean up Qdrant points for replaced manifest evidence")
+
+
+def review_skill_evidence(account_ids: list[int | None]) -> int:
+    """Runs every not-yet-reviewed, automatically found skill name for these
+    accounts past the LLM review (app/profile/skill_review.py), then deletes
+    the evidence rows whose name was rejected. Hand-added ("manual") rows are
+    never reviewed or deleted. Never raises; returns rows removed.
+    """
+    removed = 0
+    db = get_db()
+    try:
+        for account_id in {a for a in account_ids if a is not None}:
+            try:
+                rows = db.execute(
+                    select(SkillEvidence.id, SkillEvidence.skill)
+                    .join(Repository, SkillEvidence.repo_id == Repository.id)
+                    .where(
+                        Repository.account_id == account_id,
+                        SkillEvidence.evidence_type != "manual",
+                    )
+                ).all()
+                rejected = review_names(db, account_id, [skill for _, skill in rows])
+                stale_ids = [row_id for row_id, skill in rows if name_key(skill) in rejected]
+                if not stale_ids:
+                    continue
+                db.execute(delete(SkillEvidence).where(SkillEvidence.id.in_(stale_ids)))
+                db.commit()
+                removed += len(stale_ids)
+                _delete_index_points(stale_ids)
+            except Exception:
+                logger.exception("skill review failed for account id=%s", account_id)
+                db.rollback()
+        return removed
+    finally:
+        db.close()
+
+
+def rebuild_manifest_evidence(now: dt.datetime | None = None) -> tuple[int, int]:
+    """Re-derives every repo's declared_dependency rows from the manifests
+    already stored on it, with no LLM call and no GitHub fetch. For when
+    manifest_skills.py's package-to-skill mapping changes: README-derived
+    and manual rows, extraction status, and links are all left alone.
+
+    Returns (rows removed, rows written).
+    """
+    now = now or dt.datetime.now(dt.UTC)
+    db = get_db()
+    removed = written = 0
+    try:
+        repos = list(db.execute(select(Repository)).scalars())
+        for repo in repos:
+            stale = SkillEvidence.repo_id == repo.id, SkillEvidence.evidence_type == "declared_dependency"
+            old_ids = list(db.execute(select(SkillEvidence.id).where(*stale)).scalars())
+            db.execute(delete(SkillEvidence).where(*stale))
+            claims = skills_from_manifests(repo.manifests_json or {})
+            _write_claims(db, repo, claims, now)
+            db.commit()
+            removed += len(old_ids)
+            written += len(claims)
+            _delete_index_points(old_ids)
+            _index_repo_evidence(db, repo)
+        return removed, written
     finally:
         db.close()
 

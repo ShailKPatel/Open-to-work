@@ -17,10 +17,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.core import api_keys_store, rate_limits
+from app.core.app_settings import get_llm_settings
 from app.core.db import Account, LLMCall, get_db
 from app.core.llm import month_spend_usd
 from app.core.llm_providers import PROVIDER_LABELS, provider_of_model
-from app.core.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -235,14 +235,14 @@ def _key_statuses() -> list[KeyStatusOut]:
 
 @router.get("/status", response_model=MonitorStatus)
 def status() -> MonitorStatus:
-    settings = get_settings()
+    settings = get_llm_settings()
     return MonitorStatus(
         github=_github_status(),
         llm=LlmStatus(
             monthly_budget_usd=settings.monthly_budget_usd,
             spent_usd=month_spend_usd(),
-            bulk_model=settings.llm_bulk_model,
-            quality_model=settings.llm_quality_model,
+            bulk_model=settings.bulk_model,
+            quality_model=settings.quality_model,
         ),
         counts_24h=rate_limits.count_events_since(24),
         counts_7d=rate_limits.count_events_since(24 * 7),

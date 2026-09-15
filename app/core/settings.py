@@ -1,8 +1,32 @@
-"""App settings, sourced from environment / .env. No secrets in code."""
+"""App settings. No secrets in code.
+
+This app runs locally, so almost nothing here is deployment config. The
+only value read from `.env` is GITHUB_TOKEN. Everything the user picks
+(LLM models, the monthly budget, provider keys) lives in the database and
+is edited in the app, see app/core/app_settings.py and the /apis page.
+
+The remaining fields are fixed local paths. They can still be overridden
+through the process environment, which is how tests point at a temporary
+database and how Docker Compose points the app at its Qdrant container,
+but a `.env` file never changes them.
+"""
 
 from functools import lru_cache
+from typing import Any
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+_DOTENV_FIELDS = {"github_token"}
+
+
+class _DotEnvAllowlist(DotEnvSettingsSource):
+    def __call__(self) -> dict[str, Any]:
+        return {k: v for k, v in super().__call__().items() if k in _DOTENV_FIELDS}
 
 
 class Settings(BaseSettings):
@@ -14,20 +38,11 @@ class Settings(BaseSettings):
     # per-request input (POST /sync/github body, or a CLI arg), not
     # deployment config.
     github_token: str = ""
+
     database_url: str = "sqlite:///./data/open_to_work.db"
 
-    # LLM model strings in LiteLLM's "<provider>/<model>" form. Change the
-    # tiers here and make sure a key for that provider is active on the
-    # /apis page (llm_providers.provider_of_model() reads the prefix).
-    # API keys are not read from the environment; they are stored encrypted
-    # in the database (app/core/api_keys_store.py).
-    llm_bulk_model: str = "openai/gpt-4o-mini"
-    llm_quality_model: str = "openai/gpt-4o"
-    monthly_budget_usd: float = 20.0
-
-    # Local sentence-transformers embeddings, no external API.
-    embedding_model: str = "BAAI/bge-base-en-v1.5"
-
+    # Docker Compose sets this to the qdrant service. ":memory:" runs an
+    # in-process Qdrant for tests.
     qdrant_url: str = "http://localhost:6333"
 
     # Uploaded resumes, stored on local disk in a per-account subfolder.
@@ -41,6 +56,17 @@ class Settings(BaseSettings):
     # so golden labels and result reports can be committed.
     evals_golden_dir: str = "./evals/golden"
     evals_results_dir: str = "./evals/results"
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return init_settings, env_settings, _DotEnvAllowlist(settings_cls)
 
 
 @lru_cache

@@ -23,6 +23,7 @@ from sqlalchemy import delete, func, select
 
 from app.core.db import Experience, ExperiencePoint, ExperienceSkillEvidence, get_db
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
+from app.profile.skill_review import approve
 
 router = APIRouter(prefix="/api/experience")
 logger = logging.getLogger(__name__)
@@ -448,6 +449,8 @@ def add_skill(experience_id: int, body: SkillEvidenceCreate) -> ExperienceDetail
             weight=body.weight,
             confidence=body.confidence,
         )
+        # Adding it by hand overrules an earlier "not a skill" review verdict.
+        approve(db, exp.account_id, row.skill)
         try:
             from app.retrieval.index import index_experience_skill_evidence
 
@@ -472,9 +475,11 @@ def update_skill(experience_id: int, skill_id: int, body: SkillEvidenceUpdate) -
         exp = db.get(Experience, experience_id)
         if exp is None:
             raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        update_evidence(
+        row = update_evidence(
             db, ExperienceSkillEvidence, "experience_id", experience_id, skill_id, fields
         )
+        if fields.get("skill"):
+            approve(db, exp.account_id, row.skill)
         db.refresh(exp)
         return _detail_for(db, exp)
     finally:

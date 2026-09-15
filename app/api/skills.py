@@ -26,8 +26,10 @@ from app.core.db import (
     Skill,
     SkillEvidence,
     SkillStar,
+    SkillVerdict,
     get_db,
 )
+from app.profile.skill_review import approve
 
 router = APIRouter(prefix="/api/skills")
 
@@ -127,6 +129,143 @@ def list_skills(account_id: int) -> list[SkillGroup]:
         db.close()
 
 
+class SkillMapNode(BaseModel):
+    name: str
+    x: float
+    y: float
+    cluster_id: int
+    cluster_label: str
+    cluster_color: str
+    starred: bool
+    manual_skill_id: int | None = None
+    sources: list[SkillSource] = []
+
+
+class SkillClusterInfo(BaseModel):
+    id: int
+    label: str
+    color: str
+    count: int
+
+
+class SkillMapResponse(BaseModel):
+    clusters: list[SkillClusterInfo]
+    nodes: list[SkillMapNode]
+
+
+CLUSTER_COLORS = [
+    "#6366f1",  # Indigo
+    "#ec4899",  # Pink
+    "#10b981",  # Emerald
+    "#f59e0b",  # Amber
+    "#3b82f6",  # Blue
+    "#8b5cf6",  # Purple
+    "#06b6d4",  # Cyan
+    "#f97316",  # Orange
+]
+
+
+@router.get("/map", response_model=SkillMapResponse)
+def get_skills_map(account_id: int) -> SkillMapResponse:
+    """Returns 2D projected coordinates and semantic clusters for an account's skills.
+    Uses sentence-transformers embeddings + 2D PCA & KMeans to place semantically
+    similar skills closer together on a 2D map view.
+    """
+    db = get_db()
+    try:
+        groups_map = _load_groups(db, account_id)
+        groups = list(groups_map.values())
+        if not groups:
+            return SkillMapResponse(clusters=[], nodes=[])
+
+        from app.core.embeddings import embed
+
+        texts = [f"Skill: {g.name}" for g in groups]
+        vectors = embed(texts)
+
+        n_items = len(groups)
+        import numpy as np
+
+        vec_arr = np.array(vectors)
+
+        # 2D Projection
+        if n_items == 1:
+            coords = np.array([[0.0, 0.0]])
+        elif n_items == 2:
+            coords = np.array([[-250.0, 0.0], [250.0, 0.0]])
+        else:
+            from sklearn.decomposition import PCA
+
+            pca = PCA(n_components=2, random_state=42)
+            coords = pca.fit_transform(vec_arr)
+            # Scale coordinates into an explicit canvas space (~ [-400, 400])
+            std = np.std(coords, axis=0)
+            std = np.where(std == 0, 1.0, std)
+            coords = (coords / std) * 200.0
+
+        # Semantic Clustering
+        if n_items < 3:
+            cluster_labels_arr = np.zeros(n_items, dtype=int)
+            n_clusters = 1
+        else:
+            n_clusters = min(max(2, n_items // 3), len(CLUSTER_COLORS))
+            from sklearn.cluster import KMeans
+
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+            cluster_labels_arr = kmeans.fit_predict(vec_arr)
+
+        # Build cluster labels and infos
+        cluster_nodes_map: dict[int, list[str]] = {}
+        for idx, cid in enumerate(cluster_labels_arr):
+            cluster_nodes_map.setdefault(int(cid), []).append(groups[idx].name)
+
+        clusters: list[SkillClusterInfo] = []
+        cluster_display_labels: dict[int, str] = {}
+
+        for cid in range(n_clusters):
+            members = cluster_nodes_map.get(cid, [])
+            if not members:
+                continue
+            color = CLUSTER_COLORS[cid % len(CLUSTER_COLORS)]
+            # Label cluster by top 2-3 skill names
+            top_members = members[:3]
+            label = ", ".join(top_members)
+            if len(members) > 3:
+                label += f" (+{len(members) - 3})"
+            cluster_display_labels[cid] = label
+            clusters.append(
+                SkillClusterInfo(
+                    id=cid,
+                    label=label,
+                    color=color,
+                    count=len(members),
+                )
+            )
+
+        nodes: list[SkillMapNode] = []
+        for idx, g in enumerate(groups):
+            cid = int(cluster_labels_arr[idx])
+            color = CLUSTER_COLORS[cid % len(CLUSTER_COLORS)]
+            nodes.append(
+                SkillMapNode(
+                    name=g.name,
+                    x=round(float(coords[idx][0]), 2),
+                    y=round(float(coords[idx][1]), 2),
+                    cluster_id=cid,
+                    cluster_label=cluster_display_labels.get(cid, f"Group {cid + 1}"),
+                    cluster_color=color,
+                    starred=g.starred,
+                    manual_skill_id=g.manual_skill_id,
+                    sources=g.sources,
+                )
+            )
+
+        return SkillMapResponse(clusters=clusters, nodes=nodes)
+    finally:
+        db.close()
+
+
+
 class SkillStarUpdate(BaseModel):
     account_id: int
     name: str
@@ -209,8 +348,34 @@ def create_skill(body: SkillCreate) -> SkillItem:
             raise HTTPException(
                 status_code=409, detail="this account already has a manual skill by that name"
             ) from e
+        # Adding it by hand overrules an earlier "not a skill" review verdict.
+        approve(db, body.account_id, name)
         db.refresh(row)
         return SkillItem(id=row.id, name=row.name)
+    finally:
+        db.close()
+
+
+class RejectedSkill(BaseModel):
+    name: str
+    decided_by: str
+
+
+@router.get("/rejected", response_model=list[RejectedSkill])
+def list_rejected_skills(account_id: int) -> list[RejectedSkill]:
+    """Names review filtered out (app/profile/skill_review.py), for the
+    Skills page's "filtered out" list, where any can be added back."""
+    db = get_db()
+    try:
+        rows = db.execute(
+            select(SkillVerdict).where(
+                SkillVerdict.account_id == account_id, SkillVerdict.verdict == "rejected"
+            )
+        ).scalars()
+        return sorted(
+            (RejectedSkill(name=r.name, decided_by=r.decided_by) for r in rows),
+            key=lambda r: r.name.casefold(),
+        )
     finally:
         db.close()
 

@@ -7,20 +7,15 @@
   {% include "_header.html" %}
 
   <main class="flex-1 px-10 pb-24 max-w-5xl mx-auto w-full">
-    <div class="flex items-center justify-between gap-4">
-      <div>
-        <h1 class="font-display text-3xl">Monitor</h1>
-        <p class="mt-2 text-sm text-[color:var(--muted)]">
-          Live headroom on GitHub and every LLM provider, spend and call
-          volume broken down by API key, profile, provider and tier, and
-          every time any of it got rate-limited or hit a budget cap.
-          Add or edit keys on <a href="/apis" class="underline hover:text-[color:var(--ink)]">Manage APIs</a>.
-        </p>
+    <div class="mt-8 flex items-center justify-between gap-4 flex-wrap">
+      <h1 class="font-display text-3xl">Monitor</h1>
+      <div class="flex items-center gap-2.5 shrink-0">
+        <a href="/apis" class="otw-btn-ghost text-sm px-4 py-2">Manage APIs</a>
+        <button type="button" @click="refresh" :disabled="loading" class="otw-btn-ghost text-sm px-4 py-2">
+          <span x-show="!loading">Refresh</span>
+          <span x-show="loading" class="otw-working">Loading…</span>
+        </button>
       </div>
-      <button type="button" @click="refresh" :disabled="loading" class="otw-btn-ghost px-3 py-2 text-sm shrink-0">
-        <span x-show="!loading">Refresh</span>
-        <span x-show="loading" class="otw-working">Loading…</span>
-      </button>
     </div>
 
     <!-- Live status -->

@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import (
     JSON,
@@ -231,6 +232,37 @@ class SocialLink(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
+class ContactEmail(Base):
+    """Direct contact email address for an account. An account can have
+    multiple contact emails; `is_primary` indicates the primary/starred
+    email used by default in resume building.
+    """
+
+    __tablename__ = "contact_emails"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    email: Mapped[str] = mapped_column(String)
+    is_primary: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class ContactPhone(Base):
+    """Direct contact phone number for an account. An account can have
+    multiple contact phone numbers; `is_primary` indicates the primary/starred
+    phone number used by default in resume building.
+    """
+
+    __tablename__ = "contact_phones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    phone: Mapped[str] = mapped_column(String)
+    is_primary: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+
 class Experience(Base):
     """A job/role, entered manually, there's no GitHub-shaped source to
     sync this from, so unlike Repository there's no is_manual flag or
@@ -383,6 +415,29 @@ class SkillStar(Base):
 
     __table_args__ = (
         UniqueConstraint("account_id", "name_key", name="uq_skill_stars_account_name_key"),
+    )
+
+
+class SkillVerdict(Base):
+    """Whether a skill name belongs on this account's skills list, decided
+    once and remembered (see app/profile/skill_review.py). verdict is
+    "approved" or "rejected"; decided_by is "llm" (batch review of names
+    found automatically) or "user" (adding the skill by hand, which always
+    approves). Keyed like SkillStar: account + casefolded name.
+    """
+
+    __tablename__ = "skill_verdicts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    name_key: Mapped[str] = mapped_column(String)
+    name: Mapped[str] = mapped_column(String)
+    verdict: Mapped[str] = mapped_column(String)
+    decided_by: Mapped[str] = mapped_column(String)
+    decided_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "name_key", name="uq_skill_verdicts_account_name_key"),
     )
 
 
@@ -721,7 +776,7 @@ class ApiKey(Base):
     computed once at save time so listing keys never decrypts anything.
 
     `budget_cap_usd` is optional and per-key, separate from (and checked
-    in addition to) Settings.monthly_budget_usd's existing global cap.
+    in addition to) the global monthly budget in AppSetting.
 
     `enabled` is a manual on/off switch, distinct from `is_active`:
     disabling a key takes it out of dispatch consideration entirely (even
@@ -759,6 +814,22 @@ class ApiKey(Base):
     last_check_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     budget_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class AppSetting(Base):
+    """Device-wide user choices, one row per setting: the model for each
+    LLM tier and the global monthly budget. Read and written only through
+    app/core/app_settings.py, which owns the keys and their defaults. A
+    missing row means "use the default", so a fresh database needs no
+    seeding."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, onupdate=_now
+    )
 
 
 class AuthSource(Base):
@@ -1094,6 +1165,44 @@ def _migrate_job_postings_tracking_columns(engine) -> None:
         conn.commit()
 
 
+def _migrate_contact_items(engine) -> None:
+    """Ensures contact_emails and contact_phones tables exist and populates
+    them from existing accounts.contact_email / contact_phone if present.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        try:
+            accounts = conn.execute(text("SELECT id, contact_email, contact_phone FROM accounts")).fetchall()
+            for acc_id, email, phone in accounts:
+                if email:
+                    existing_email = conn.execute(
+                        text("SELECT id FROM contact_emails WHERE account_id = :acc_id"),
+                        {"acc_id": acc_id},
+                    ).fetchone()
+                    if not existing_email:
+                        conn.execute(
+                            text("INSERT INTO contact_emails (account_id, email, is_primary) VALUES (:acc_id, :email, 1)"),
+                            {"acc_id": acc_id, "email": email},
+                        )
+                if phone:
+                    existing_phone = conn.execute(
+                        text("SELECT id FROM contact_phones WHERE account_id = :acc_id"),
+                        {"acc_id": acc_id},
+                    ).fetchone()
+                    if not existing_phone:
+                        conn.execute(
+                            text("INSERT INTO contact_phones (account_id, phone, is_primary) VALUES (:acc_id, :phone, 1)"),
+                            {"acc_id": acc_id, "phone": phone},
+                        )
+            conn.commit()
+        except Exception:
+            logger.exception("Error during contact items migration; continuing")
+
+
 def init_db() -> None:
     _backup_sqlite_file(get_settings().database_url)
     engine = get_engine()
@@ -1107,6 +1216,7 @@ def init_db() -> None:
     _migrate_llm_calls_attribution_columns(engine)
     _migrate_rate_limit_events_account_column(engine)
     _migrate_job_postings_tracking_columns(engine)
+    _migrate_contact_items(engine)
 
 
 def get_db() -> Session:
@@ -1114,3 +1224,4 @@ def get_db() -> Session:
     if _SessionLocal is None:
         _SessionLocal = sessionmaker(bind=get_engine())
     return _SessionLocal()
+

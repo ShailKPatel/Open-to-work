@@ -22,7 +22,7 @@ either fail outright or silently misread.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.core.llm import complete, file_part, image_part, system_message
 
@@ -41,6 +41,10 @@ _SCHEMA = {
                     "title": {"type": "string"},
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
+                    "points": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
                 },
                 "required": ["company", "title", "start_date", "end_date"],
             },
@@ -61,9 +65,11 @@ _SYSTEM_PROMPT = (
     "recent title; `summary`, two or three sentences describing what this "
     "resume is strong at and who it's a good fit for; and `experiences`, "
     "one entry per work-history role the resume lists, each with the "
-    "exact company name, the exact job title, and start_date/end_date as "
+    "exact company name, the exact job title, start_date/end_date as "
     "\"YYYY-MM-DD\" (use \"01\" for a day or month the resume doesn't "
-    "give, e.g. a resume saying only \"2021\" becomes \"2021-01-01\"). "
+    "give, e.g. a resume saying only \"2021\" becomes \"2021-01-01\"), "
+    "and `points`, a list of key bullet points, accomplishments, or responsibility "
+    "statements listed under that role. "
     "Leave end_date as an empty string for a role stated as current/"
     "ongoing, and leave either date as an empty string if it truly can't "
     "be determined at all. Do not include education, only paid or "
@@ -88,6 +94,7 @@ class ExperienceClaim:
     title: str
     start_date: dt.date | None
     end_date: dt.date | None
+    points: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -148,12 +155,15 @@ def extract_resume(
         title = str(item.get("title", "")).strip()
         if not company or not title:
             continue
+        raw_points = item.get("points", [])
+        points = [str(p).strip() for p in raw_points if str(p).strip()]
         experiences.append(
             ExperienceClaim(
                 company=company,
                 title=title,
                 start_date=_parse_date(item.get("start_date")),
                 end_date=_parse_date(item.get("end_date")),
+                points=points,
             )
         )
 

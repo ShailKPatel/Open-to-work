@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.db import ProjectLink, Repository, SkillEvidence, get_db
 from app.profile.build import build_profile, reprocess_repo, skill_evidence_for_repos
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
+from app.profile.skill_review import approve
 from app.profile.jobs import extraction_stream, start_extraction
 
 # /api prefix, not just style: a JSON endpoint at the same path as an HTML
@@ -403,6 +404,9 @@ def add_skill(repo_id: int, body: SkillEvidenceCreate) -> ProjectDetail:
             weight=body.weight,
             confidence=body.confidence,
         )
+        if repo.account_id is not None:
+            # Adding it by hand overrules an earlier "not a skill" review verdict.
+            approve(db, repo.account_id, row.skill)
         try:
             from app.retrieval.index import index_skill_evidence
 
@@ -424,7 +428,9 @@ def update_skill(repo_id: int, skill_id: int, body: SkillEvidenceUpdate) -> Proj
         repo = db.get(Repository, repo_id)
         if repo is None:
             raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        update_evidence(db, SkillEvidence, "repo_id", repo_id, skill_id, fields)
+        row = update_evidence(db, SkillEvidence, "repo_id", repo_id, skill_id, fields)
+        if fields.get("skill") and repo.account_id is not None:
+            approve(db, repo.account_id, row.skill)
         db.refresh(repo)
         return _detail_for(db, repo)
     finally:

@@ -8,14 +8,15 @@ One FastAPI process serves both the JSON API and server-rendered pages. SQLite h
 
 | File | Responsibility |
 | --- | --- |
-| `settings.py` | pydantic-settings, read from `.env`. |
+| `settings.py` | Fixed local paths and URLs. Only `GITHUB_TOKEN` is read from `.env`; tests and Docker Compose override the rest through the process environment. |
+| `app_settings.py` | Settings picked in the app, stored in `app_settings`: the bulk and quality models (Gemini by default) and the global monthly budget. |
 | `db.py` | SQLAlchemy models, engine, `get_db()`, `init_db()`. |
 | `llm.py` | The only module that calls an LLM provider. |
 | `llm_providers.py` | Provider registry: credential fields, which fields are secret, a cheap validation request, and the extra LiteLLM arguments. |
 | `api_keys_store.py` | Encrypted provider credentials and dispatch key resolution. |
 | `auth_sources_store.py` | Encrypted login profiles for authenticated job fetching. |
 | `crypto.py` | Fernet encryption. The key comes from `APP_SECRET_KEY`, or from `data/.secret_key` (created with 0600 permissions). |
-| `embeddings.py` | Local sentence-transformers embeddings, cached by content hash in `embedding_cache`. |
+| `embeddings.py` | Local sentence-transformers embeddings (`EMBEDDING_MODEL`, fixed in code), cached by content hash in `embedding_cache`. |
 | `jobs.py` | In-process registry of background jobs (daemon threads with pollable state). |
 | `rate_limits.py` | Append-only log of rate-limit and budget events. Writes are best-effort. |
 
@@ -29,8 +30,8 @@ To restore a snapshot, run `cp data/backups/<snapshot>.db data/open_to_work.db`.
 
 **LLM client.** `complete(tier, messages, schema=None, account_id=None) -> LLMResponse` handles each call in this order:
 
-1. Look up the cache by a hash of tier, model, messages, and schema.
-2. Check the global monthly budget.
+1. Look up the cache by a hash of tier, model (the one picked for that tier in `app_settings`), messages, and schema.
+2. Check the global monthly budget from `app_settings`.
 3. Resolve a key for the tier's provider and the account.
 4. Check that key's own budget, if it has one.
 5. Dispatch through LiteLLM.
@@ -113,7 +114,7 @@ Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts`, `/
 | `/portfolio/resume/build` | Resume generation for a posting |
 | `/jobs`, `/jobs/analytics` | Job postings and skill-demand analytics |
 | `/monitor` | Rate limits and LLM usage |
-| `/settings`, `/settings/sources`, `/settings/auth-sources`, `/apis` | Settings, GitHub sources, login profiles, API keys |
+| `/settings`, `/settings/sources`, `/settings/auth-sources`, `/apis` | Settings, GitHub sources, login profiles, API keys with models and budget |
 
 | API prefix | Router |
 | --- | --- |
@@ -131,6 +132,7 @@ Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts`, `/
 | `/api/job-analytics` | `job_analytics.py` |
 | `/api/auth-sources` | `auth_sources.py` |
 | `/api/api-keys` | `api_keys.py` |
+| `/api/app-settings` | `app_settings.py` |
 | `/api/monitor` | `monitor.py` |
 
 Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and Alpine.js. The shared partials are `_header.html` (top navigation) and `_portfolio_subnav.html`. The selected account id is stored in `localStorage`.
@@ -155,6 +157,7 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `role_families` | Canonical job-title clusters. |
 | `auth_sources` | Encrypted login profiles and CSS selectors. |
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |
+| `app_settings` | One row per setting picked in the app: bulk model, quality model, monthly budget. A missing row means the default. |
 | `llm_calls` | Cached responses plus cost, token, and latency records for every call. |
 | `rate_limit_events` | Rate-limit and budget event log. |
 | `embedding_cache` | Embedding vectors by content hash and model. |

@@ -134,7 +134,12 @@ def _format_month_year(d: dt.date) -> str:
     return f"{_MONTH_ABBR[d.month]} {d.year}"
 
 
-def _candidate_projects(db: Session, account_id: int, job_text: str) -> list[dict[str, Any]]:
+def _candidate_projects(
+    db: Session,
+    account_id: int,
+    job_text: str,
+    selected_project_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
     from app.retrieval.search import search_skill_evidence
 
     hits = search_skill_evidence(
@@ -152,8 +157,19 @@ def _candidate_projects(db: Session, account_id: int, job_text: str) -> list[dic
         best_score[repo_id] = max(best_score.get(repo_id, hit.score), hit.score)
     order.sort(key=lambda rid: best_score[rid], reverse=True)
     top_repo_ids = order[:_MAX_CANDIDATE_PROJECTS]
+
+    if selected_project_ids:
+        for sp_id in selected_project_ids:
+            if sp_id not in top_repo_ids:
+                top_repo_ids.append(sp_id)
+
     if not top_repo_ids:
-        return []
+        all_repos = list(
+            db.execute(
+                select(Repository).where(Repository.account_id == account_id).limit(_MAX_CANDIDATE_PROJECTS)
+            ).scalars()
+        )
+        top_repo_ids = [r.id for r in all_repos]
 
     repos_by_id = {
         r.id: r
@@ -188,7 +204,9 @@ def _candidate_projects(db: Session, account_id: int, job_text: str) -> list[dic
     return candidates
 
 
-def _candidate_skills(account_id: int, job_text: str) -> list[str]:
+def _candidate_skills(
+    account_id: int, job_text: str, selected_skills: list[str] | None = None
+) -> list[str]:
     from app.retrieval.search import search_skill_evidence
 
     hits = search_skill_evidence(job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS)
@@ -202,6 +220,15 @@ def _candidate_skills(account_id: int, job_text: str) -> list[str]:
         if key not in seen:
             seen[key] = skill
             order.append(key)
+
+    if selected_skills:
+        for sk in selected_skills:
+            s_clean = sk.strip()
+            if s_clean:
+                key = s_clean.casefold()
+                if key not in seen:
+                    seen[key] = s_clean
+                    order.append(key)
     return [seen[k] for k in order]
 
 
@@ -247,21 +274,30 @@ def _select_experience_points(
 
 
 def _build_candidates_message(
-    candidates: list[dict[str, Any]], candidate_skills: list[str]
+    candidates: list[dict[str, Any]],
+    candidate_skills: list[str],
+    project_instructions: dict[int, str] | None = None,
+    custom_instruction: str | None = None,
 ) -> str:
     lines = ["CANDIDATE PROJECTS (pick zero or more, use only the info given):"]
     if candidates:
         for c in candidates:
             skills_text = ", ".join(c["skills"]) or "none listed"
+            note = ""
+            if project_instructions and c["repo_id"] in project_instructions and project_instructions[c["repo_id"]].strip():
+                note = f" [User Note: {project_instructions[c['repo_id']].strip()}]"
             lines.append(
                 f"- id={c['repo_id']} name={c['name']!r} "
-                f"description={c['description']!r} skills={skills_text}"
+                f"description={c['description']!r} skills={skills_text}{note}"
             )
     else:
         lines.append("(none available)")
     lines.append("")
     lines.append("CANDIDATE SKILLS (pick the most relevant subset, in relevance order):")
     lines.append(", ".join(candidate_skills) if candidate_skills else "(none available)")
+    if custom_instruction and custom_instruction.strip():
+        lines.append("")
+        lines.append(f"USER SPECIFIC REWRITE INSTRUCTION FOR THIS RESUME:\n{custom_instruction.strip()}")
     return "\n".join(lines)
 
 
@@ -329,30 +365,70 @@ class _DeterministicContext:
 
 
 def _build_deterministic_context(
-    db: Session, account: Account, account_id: int, job_text: str
+    db: Session,
+    account: Account,
+    account_id: int,
+    job_text: str,
+    selected_email: str | None = None,
+    selected_phone: str | None = None,
+    selected_project_ids: list[int] | None = None,
+    selected_skills: list[str] | None = None,
 ) -> _DeterministicContext:
     social_links = list(
         db.execute(select(SocialLink).where(SocialLink.account_id == account_id)).scalars()
     )
-    header = build_header_context(account, social_links)
+    header = build_header_context(
+        account, social_links, selected_email=selected_email, selected_phone=selected_phone
+    )
     experience = build_experience_context(db, account_id)
     experience = _select_experience_points(experience, job_text, account_id)
     education = build_education_context(db, account_id)
-    candidates = _candidate_projects(db, account_id, job_text)
-    candidate_skill_names = _candidate_skills(account_id, job_text)
+    candidates = _candidate_projects(db, account_id, job_text, selected_project_ids=selected_project_ids)
+    candidate_skill_names = _candidate_skills(account_id, job_text, selected_skills=selected_skills)
     return _DeterministicContext(header, experience, education, candidates, candidate_skill_names)
 
 
 def _build_resume_data_for_text(
-    db: Session, account: Account, account_id: int, job_text: str, template: str
+    db: Session,
+    account: Account,
+    account_id: int,
+    job_text: str,
+    template: str,
+    selected_email: str | None = None,
+    selected_phone: str | None = None,
+    selected_project_ids: list[int] | None = None,
+    project_instructions: dict[int, str] | None = None,
+    selected_skills: list[str] | None = None,
+    selected_experience_ids: list[int] | None = None,
+    custom_instruction: str | None = None,
 ) -> dict[str, Any]:
-    ctx = _build_deterministic_context(db, account, account_id, job_text)
+    ctx = _build_deterministic_context(
+        db,
+        account,
+        account_id,
+        job_text,
+        selected_email=selected_email,
+        selected_phone=selected_phone,
+        selected_project_ids=selected_project_ids,
+        selected_skills=selected_skills,
+    )
     candidates_by_id = {c["repo_id"]: c for c in ctx.candidates}
+
+    experience = ctx.experience
+    if selected_experience_ids is not None:
+        experience = [e for e in experience if e["id"] in selected_experience_ids]
 
     messages = [
         system_message(_SYSTEM_PROMPT),
         user_message(_JOB_TEXT_PREFIX + job_text),
-        user_message(_build_candidates_message(ctx.candidates, ctx.candidate_skill_names)),
+        user_message(
+            _build_candidates_message(
+                ctx.candidates,
+                ctx.candidate_skill_names,
+                project_instructions=project_instructions,
+                custom_instruction=custom_instruction,
+            )
+        ),
         user_message(_length_guidance(template)),
     ]
     response = complete("quality", messages, schema=_SCHEMA, account_id=account_id)
@@ -361,12 +437,19 @@ def _build_resume_data_for_text(
 
     projects = _assemble_projects(response.parsed.get("projects", []), candidates_by_id)
     skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
+
+    if selected_skills:
+        for sk in selected_skills:
+            s_clean = sk.strip()
+            if s_clean and s_clean not in skills and len(skills) < _MAX_SELECTED_SKILLS:
+                skills.append(s_clean)
+
     summary = str(response.parsed.get("summary", "")).strip() or None
 
     return {
         **ctx.header,
         "summary": summary,
-        "experience": ctx.experience,
+        "experience": experience,
         "projects": projects,
         "education": ctx.education,
         "technologies": [],
@@ -375,18 +458,21 @@ def _build_resume_data_for_text(
 
 
 def build_resume_data(
-    account_id: int, job_posting_id: int, template: str = "onepage"
+    account_id: int,
+    job_posting_id: int,
+    template: str = "onepage",
+    selected_email: str | None = None,
+    selected_phone: str | None = None,
+    selected_project_ids: list[int] | None = None,
+    project_instructions: dict[int, str] | None = None,
+    selected_skills: list[str] | None = None,
+    selected_experience_ids: list[int] | None = None,
+    custom_instruction: str | None = None,
 ) -> dict[str, Any]:
     """Returns the template-ready data dict itself, not a rendered
     string: app/resume_build/pagefit.py needs this shape (it re-renders
     with individual entries removed on each cut, see that module) rather
-    than a starting .tex string it would have to parse back apart. Raises
-    ValueError for an unknown account/job posting id (matches this
-    codebase's convention elsewhere for a module-level function outside
-    app/api/, e.g. app/profile/build.py's reprocess_repo). template only
-    affects the length guidance handed to the LLM below, not this
-    function's own dict shape, the same dict renders against either
-    template.
+    than a starting .tex string it would have to parse back apart.
     """
     db = get_db()
     try:
@@ -397,10 +483,22 @@ def build_resume_data(
         if posting is None:
             raise ValueError(f"no job posting with id={job_posting_id}")
         return _build_resume_data_for_text(
-            db, account, account_id, posting.raw_text_quarantined, template
+            db,
+            account,
+            account_id,
+            posting.raw_text_quarantined,
+            template,
+            selected_email=selected_email,
+            selected_phone=selected_phone,
+            selected_project_ids=selected_project_ids,
+            project_instructions=project_instructions,
+            selected_skills=selected_skills,
+            selected_experience_ids=selected_experience_ids,
+            custom_instruction=custom_instruction,
         )
     finally:
         db.close()
+
 
 
 def build_resume_data_from_seed(

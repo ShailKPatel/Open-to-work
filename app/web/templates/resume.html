@@ -10,18 +10,8 @@
     {% set data_active = 'resume' %}
     {% include "_portfolio_subnav.html" %}
 
-    <div class="flex items-start justify-between gap-4 flex-wrap mt-8">
-      <div>
-        <h1 class="font-display text-4xl">Resume</h1>
-        <p class="mt-3 text-[color:var(--muted)] max-w-xl">
-          Upload any resume you already have. We read it and tag what it's
-          strong at and which roles it reads as written for, so a later job
-          application can pick the right one automatically, or use it as a
-          starting point for one an LLM builds for you. Only PDF and image
-          files get read automatically today; anything else still uploads,
-          it just won't have tags until you add them by hand.
-        </p>
-      </div>
+    <div class="flex items-center justify-between gap-4 flex-wrap mt-8">
+      <h1 class="font-display text-4xl">Resume</h1>
       <a href="/portfolio/resume/build" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">Build a resume →</a>
     </div>
 

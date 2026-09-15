@@ -4,11 +4,14 @@ from pathlib import Path
 import pytest
 
 import app.core.db as db_module
+from app.core.app_settings import update_llm_settings
 from app.core.db import init_db
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
+    LLMProviderError,
     LLMRateLimitedError,
+    LLMUnavailableError,
     complete,
     file_part,
     image_part,
@@ -46,9 +49,9 @@ def _reset_db(tmp_path: Path, monthly_budget_usd: float = 20.0):
     db_module._engine = None
     db_module._SessionLocal = None
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
-    os.environ["MONTHLY_BUDGET_USD"] = str(monthly_budget_usd)
     get_settings.cache_clear()
     init_db()
+    update_llm_settings(monthly_budget_usd=monthly_budget_usd)
 
 
 def _fake_completion_fn(response_text: str, cost: float = 0.01, calls: list | None = None):
@@ -158,7 +161,8 @@ def test_complete_wraps_litellm_rate_limit_error(tmp_path, monkeypatch):
         raised = e
 
     assert raised is not None
-    assert "quota exceeded" in str(raised)
+    assert "limiting requests" in str(raised)
+    assert "litellm" not in str(raised)
 
 
 def test_complete_does_not_wrap_other_errors(tmp_path, monkeypatch):
@@ -178,6 +182,158 @@ def test_complete_does_not_wrap_other_errors(tmp_path, monkeypatch):
 
     assert isinstance(raised, ConnectionError)
     assert not isinstance(raised, LLMRateLimitedError)
+
+
+_GEMINI_503 = (
+    'GeminiException - {\n  "error": {\n    "code": 503,\n    "message": "This model is '
+    'currently experiencing high demand.",\n    "status": "UNAVAILABLE"\n  }\n}'
+)
+
+
+def _overloaded():
+    import litellm
+
+    return litellm.ServiceUnavailableError(
+        message=_GEMINI_503, llm_provider="gemini", model="gemini-flash-latest"
+    )
+
+
+def _ok_response(text: str = "ok") -> FakeResponse:
+    return FakeResponse(choices=[FakeChoice(message=FakeMessage(content=text))])
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr("app.core.llm._sleep", sleeps.append)
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0, raising=False)
+    return sleeps
+
+
+def test_overloaded_provider_is_retried_until_it_answers(tmp_path, no_sleep):
+    _reset_db(tmp_path)
+    calls: list[str] = []
+
+    def flaky(**kwargs):
+        calls.append(kwargs["model"])
+        if len(calls) < 3:
+            raise _overloaded()
+        return _ok_response()
+
+    result = complete("quality", [user_message("hi")], _completion_fn=flaky)
+
+    assert result.content == "ok"
+    assert calls == ["gemini/gemini-flash-latest"] * 3
+    assert len(no_sleep) == 2
+
+
+def test_model_still_overloaded_falls_back_to_the_other_tier_model(tmp_path, no_sleep):
+    from sqlalchemy import select
+
+    from app.core.db import LLMCall, get_db
+
+    _reset_db(tmp_path)
+    calls: list[str] = []
+
+    def primary_down(**kwargs):
+        calls.append(kwargs["model"])
+        if kwargs["model"] == "gemini/gemini-flash-latest":
+            raise _overloaded()
+        return _ok_response("from fallback")
+
+    result = complete("quality", [user_message("hi")], _completion_fn=primary_down)
+
+    assert result.content == "from fallback"
+    assert result.model == "gemini/gemini-flash-lite-latest"
+    assert calls == ["gemini/gemini-flash-latest"] * 3 + ["gemini/gemini-flash-lite-latest"]
+    db = get_db()
+    try:
+        row = db.execute(select(LLMCall).order_by(LLMCall.id.desc())).scalars().first()
+    finally:
+        db.close()
+    assert row.model == "gemini/gemini-flash-lite-latest"
+
+
+def test_overloaded_everywhere_raises_a_readable_error(tmp_path, no_sleep):
+    _reset_db(tmp_path)
+    calls: list[str] = []
+
+    def always_down(**kwargs):
+        calls.append(kwargs["model"])
+        raise _overloaded()
+
+    with pytest.raises(LLMUnavailableError) as info:
+        complete("quality", [user_message("hi")], _completion_fn=always_down)
+
+    message = str(info.value)
+    assert message.startswith("Gemini is too busy to answer right now")
+    assert "not a problem with your key" in message
+    assert "litellm" not in message and "{" not in message
+    # callers that stop a batch on a rate limit stop on this too
+    assert isinstance(info.value, LLMRateLimitedError)
+    assert len(calls) == 5
+
+
+def test_no_fallback_to_a_model_on_a_different_provider(tmp_path, no_sleep):
+    _reset_db(tmp_path)
+    update_llm_settings(bulk_model="openai/gpt-4o-mini")
+    calls: list[str] = []
+
+    def always_down(**kwargs):
+        calls.append(kwargs["model"])
+        raise _overloaded()
+
+    with pytest.raises(LLMUnavailableError):
+        complete("quality", [user_message("hi")], _completion_fn=always_down)
+
+    assert set(calls) == {"gemini/gemini-flash-latest"}
+
+
+def test_connection_failure_is_retried_and_explained(tmp_path, no_sleep):
+    import litellm
+
+    _reset_db(tmp_path)
+
+    def offline(**kwargs):
+        raise litellm.APIConnectionError(
+            message="Connection refused", llm_provider="gemini", model="gemini-flash-latest"
+        )
+
+    with pytest.raises(LLMUnavailableError, match="Couldn't reach Gemini"):
+        complete("quality", [user_message("hi")], _completion_fn=offline)
+
+    assert len(no_sleep) == 3
+
+
+@pytest.mark.parametrize(
+    ("exception_name", "expected"),
+    [
+        ("NotFoundError", 'doesn\'t recognize the model "gemini-flash-lite-latest"'),
+        ("BadRequestError", 'couldn\'t process this request with "gemini-flash-lite-latest": '
+                            'Invalid "model" field.'),
+        ("ContextWindowExceededError", "too long"),
+        ("ContentPolicyViolationError", "safety rules"),
+    ],
+)
+def test_provider_errors_become_readable_messages(tmp_path, no_sleep, exception_name, expected):
+    import litellm
+
+    _reset_db(tmp_path)
+
+    def fails(**kwargs):
+        raise getattr(litellm, exception_name)(
+            message='GeminiException - {"error": {"code": 400, "message": "Invalid \\"model\\" '
+            'field."}}',
+            llm_provider="gemini",
+            model="gemini-flash-lite-latest",
+        )
+
+    with pytest.raises(LLMProviderError) as info:
+        complete("bulk", [user_message("hi")], _completion_fn=fails)
+
+    assert expected in str(info.value)
+    assert "litellm" not in str(info.value)
+    assert no_sleep == []
 
 
 def test_user_message_text_only_is_plain_string_content():
@@ -278,6 +434,7 @@ def test_complete_resolves_and_records_key_id_on_real_dispatch(tmp_path, monkeyp
     from app.core.db import LLMCall, get_db
 
     _reset_db(tmp_path)
+    update_llm_settings(bulk_model="openai/gpt-4o-mini")
     monkeypatch.setattr(
         "app.core.api_keys_store.validate_credentials", lambda provider, creds: ("valid", "ok")
     )
@@ -324,8 +481,8 @@ def test_complete_accepts_multimodal_user_message(tmp_path, monkeypatch):
 def _real_dispatch_env(tmp_path: Path, monkeypatch) -> None:
     """No _completion_fn: complete() resolves a stored key and calls
     litellm.completion itself, which each test replaces."""
-    monkeypatch.setenv("LLM_BULK_MODEL", "openai/gpt-4o-mini")
     _reset_db(tmp_path)
+    update_llm_settings(bulk_model="openai/gpt-4o-mini")
     monkeypatch.setattr(
         "app.core.api_keys_store.validate_credentials", lambda provider, creds: ("valid", "ok")
     )
@@ -411,7 +568,7 @@ def test_provider_auth_error_marks_the_key_invalid_and_propagates(tmp_path, monk
 
     monkeypatch.setattr("litellm.completion", bad_key, raising=False)
 
-    with pytest.raises(litellm.AuthenticationError):
+    with pytest.raises(LLMProviderError, match="rejected the API key"):
         complete("bulk", [user_message("hi")])
 
     assert _key_status(key_id) == "invalid"

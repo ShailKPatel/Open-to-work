@@ -108,7 +108,7 @@
           <div class="flex items-center justify-between gap-4">
             <div>
               <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Skill extraction</p>
-              <p class="mt-1" x-text="statusLabel()"></p>
+              <p class="mt-1" x-show="statusLabel()" x-text="statusLabel()"></p>
             </div>
             <button
               @click="reprocess"
@@ -350,11 +350,11 @@
 
       statusLabel() {
         switch (this.project?.skill_extraction_status) {
-          case 'extracted': return '✓ Skills extracted';
+          case 'extracted': return '';
           case 'failed': return '✗ Extraction failed';
           case 'rate_limited': return '○ Rate limited, retry later';
           case 'no_signal': return '· Nothing to extract';
-          default: return '⋯ Not yet processed';
+          default: return '⋯ Skills not extracted';
         }
       },
 

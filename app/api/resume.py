@@ -22,7 +22,12 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.db import Account, JobPosting, Resume, get_db
-from app.core.llm import ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError
+from app.core.llm import (
+    ApiKeyMissingError,
+    BudgetExceededError,
+    LLMProviderError,
+    LLMRateLimitedError,
+)
 from app.core.settings import get_settings
 from app.profile.resume_ingest import ingest_resume, run_extraction
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
@@ -45,6 +50,8 @@ def _map_llm_error(e: Exception) -> HTTPException:
         return HTTPException(status_code=402, detail=str(e))
     if isinstance(e, LLMRateLimitedError):
         return HTTPException(status_code=503, detail=str(e))
+    if isinstance(e, LLMProviderError):
+        return HTTPException(status_code=502, detail=str(e))
     return HTTPException(status_code=502, detail=f"resume edit failed: {e}")
 
 
@@ -362,7 +369,9 @@ def edit_resume(resume_id: int, body: ResumeEditRequest) -> ResumeItem:
             )
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
-        except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
+        except (
+            ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError
+        ) as e:
             raise _map_llm_error(e) from e
 
         max_pages = _DEFAULT_MAX_PAGES[template]
@@ -376,7 +385,9 @@ def edit_resume(resume_id: int, body: ResumeEditRequest) -> ResumeItem:
             raise HTTPException(status_code=501, detail=str(e)) from e
         except CompileError as e:
             raise HTTPException(status_code=502, detail=str(e)) from e
-        except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
+        except (
+            ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError
+        ) as e:
             raise _map_llm_error(e) from e
 
         account_dir = Path(get_settings().resume_storage_dir) / str(row.account_id)

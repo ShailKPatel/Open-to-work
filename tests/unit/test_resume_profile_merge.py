@@ -7,6 +7,7 @@ import app.core.db as db_module
 from app.core.db import (
     Account,
     Experience,
+    ExperiencePoint,
     ExperienceSkillEvidence,
     Repository,
     Skill,
@@ -256,4 +257,51 @@ def test_duplicate_claims_within_one_resume_only_add_once(tmp_path):
     assert summary.experiences_added == 1
     rows = db.execute(select(Experience).where(Experience.account_id == account_id)).scalars().all()
     assert len(rows) == 1
+    db.close()
+
+
+def test_experience_points_added_and_deduplicated(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "app.retrieval.index.embed", lambda texts: [[1.0, 0.0, 0.0] for _ in texts]
+    )
+    account_id = _make_account()
+    db = get_db()
+
+    claim1 = ExperienceClaim(
+        company="Acme Corp",
+        title="Software Engineer",
+        start_date=None,
+        end_date=None,
+        points=["Built REST APIs", "Wrote unit tests"],
+    )
+    summary1 = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim1]))
+
+    assert summary1.experiences_added == 1
+    assert summary1.experience_points_added == 2
+
+    # Second pass with same role: one duplicate point, one new point ("Led code reviews")
+    claim2 = ExperienceClaim(
+        company="Acme Corp",
+        title="Software Engineer",
+        start_date=None,
+        end_date=None,
+        points=["built rest apis", "Led code reviews"],
+    )
+    summary2 = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim2]))
+
+    assert summary2.experiences_added == 0
+    assert summary2.experience_points_added == 1
+
+    exp = db.execute(select(Experience).where(Experience.account_id == account_id)).scalar_one()
+    points = list(
+        db.execute(
+            select(ExperiencePoint)
+            .where(ExperiencePoint.experience_id == exp.id)
+            .order_by(ExperiencePoint.order_index)
+        ).scalars()
+    )
+
+    assert [p.text for p in points] == ["Built REST APIs", "Wrote unit tests", "Led code reviews"]
+    assert [p.order_index for p in points] == [1, 2, 3]
     db.close()

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from app.api.accounts import router as accounts_router
 from app.api.api_keys import router as api_keys_router
+from app.api.app_settings import router as app_settings_router
 from app.api.auth_sources import router as auth_sources_router
 from app.api.contact import router as contact_router
 from app.api.education import router as education_router
@@ -23,8 +24,9 @@ from app.api.resume import router as resume_router
 from app.api.resume_build import router as resume_build_router
 from app.api.skills import router as skills_router
 from app.api.sources import router as sources_router
+from app.core.app_settings import get_llm_settings
 from app.core.db import init_db
-from app.core.settings import get_settings
+from app.core.embeddings import EMBEDDING_MODEL
 from app.ingest.github.cancellation import request_cancel
 from app.ingest.github.sync import SyncSummary, sync_account, sync_account_progress
 
@@ -38,6 +40,7 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="Open to Work", lifespan=_lifespan)
 app.include_router(accounts_router)
 app.include_router(api_keys_router)
+app.include_router(app_settings_router)
 app.include_router(auth_sources_router)
 app.include_router(contact_router)
 app.include_router(education_router)
@@ -165,16 +168,15 @@ def explanation_page(request: Request) -> HTMLResponse:
     """Presentation page: what the project does and how it is built, meant
     to be shown to someone as-is. Tabbed (what it does, tech stack, how it
     works). No API calls and no account required, so it renders fine
-    logged out. The embedding model and monthly budget are passed in from
-    settings so the page names what this instance actually runs. LLM model
-    names are deliberately not shown: they are whatever LiteLLM model the
-    .env names. Diagram boxes are laid out by CSS grid and the right-angle
+    logged out. The embedding model and monthly budget are passed in so
+    the page names what this instance actually runs. LLM model names are
+    deliberately not shown: they are whatever LiteLLM model is picked on
+    /apis. Diagram boxes are laid out by CSS grid and the right-angle
     connectors between them are drawn client-side from real box positions
     (see the script at the bottom of app/web/templates/explanation.html)."""
-    settings = get_settings()
     models = {
-        "embedding": settings.embedding_model,
-        "budget": settings.monthly_budget_usd,
+        "embedding": EMBEDDING_MODEL,
+        "budget": get_llm_settings().monthly_budget_usd,
     }
     return templates.TemplateResponse(request, "explanation.html", {"models": models})
 

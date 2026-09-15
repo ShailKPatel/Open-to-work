@@ -6,24 +6,16 @@
   {% set top_active = 'portfolio' %}
   {% include "_header.html" %}
 
-  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+  <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
     {% set data_active = 'resume' %}
     {% include "_portfolio_subnav.html" %}
 
-    <div class="mt-8">
+    <div class="mt-8 flex items-center justify-between gap-4 flex-wrap">
       <h1 class="font-display text-4xl">Build a resume</h1>
-      <p class="mt-3 text-[color:var(--muted)] max-w-xl">
-        A tailored resume is generated from your synced projects, your skills, and every
-        one of your experience entries, in full. Only the summary and which projects/skills
-        to include are written for you; your work history is never edited or trimmed.
-      </p>
-      <p class="mt-3 text-sm">
-        <a href="/portfolio/resume" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] underline">Resume library →</a>
-      </p>
+      <a href="/portfolio/resume" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">Resume library →</a>
     </div>
 
-    <!-- No job picked yet: point at /jobs, this page has no posting
-         picker of its own any more (see /jobs). -->
+    <!-- No job picked yet -->
     <section x-cloak x-show="!jobPostingId" class="otw-tile p-6 mt-8 text-center">
       <p class="text-[color:var(--muted)]">Pick a job posting to build a resume for.</p>
       <a href="/jobs" class="otw-btn text-sm px-4 py-2 mt-4 inline-block">Go to Jobs →</a>
@@ -31,85 +23,232 @@
 
     <template x-if="jobPostingId">
       <div>
+        <!-- Job Details Header -->
         <section class="otw-tile p-6 mt-8">
-          <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Building for</p>
+          <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Tailoring Resume For</p>
           <template x-if="posting">
-            <h2 class="font-display text-xl mt-1">
+            <h2 class="font-display text-2xl mt-1">
               <span x-text="posting.title"></span>
               <span class="text-[color:var(--muted)]"> · </span>
               <span class="text-[color:var(--muted)]" x-text="posting.company"></span>
             </h2>
           </template>
-          <p x-show="!posting && !postingError" class="text-sm text-[color:var(--muted)] mt-1">Loading…</p>
+          <p x-show="!posting && !postingError" class="text-sm text-[color:var(--muted)] mt-1">Loading job posting…</p>
           <p x-show="postingError" x-text="postingError" class="text-sm otw-error mt-1"></p>
           <a href="/jobs" class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] underline mt-2 inline-block">Pick a different job →</a>
         </section>
 
-        <!-- Closest existing resumes: a semantic-search shortcut to a
-             resume already in the library, instead of generating a new
-             one. Non-blocking: Generate below always stays available
-             alongside it. -->
-        <section x-cloak x-show="closestResumes.length > 0" class="otw-tile p-6 mt-6">
-          <h2 class="font-display text-xl">Closest existing resumes</h2>
-          <p class="mt-1 text-sm text-[color:var(--muted)]">Already have something close? View it, or generate a new one below.</p>
-          <div class="mt-4 space-y-2">
-            <template x-for="hit in closestResumes" :key="hit.resume.id">
-              <div class="otw-tile w-full p-3 flex items-center justify-between gap-3">
-                <span class="min-w-0">
-                  <span class="font-medium" x-text="hit.resume.name || hit.resume.filename"></span>
-                  <span class="text-xs text-[color:var(--muted)]" x-text="' · ' + Math.round(hit.score * 100) + '% match'"></span>
-                </span>
-                <a href="/portfolio/resume" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">View in library →</a>
+        <p x-show="loadingOptions" class="text-sm text-[color:var(--muted)] mt-6 animate-pulse">Loading recommended skills, projects, and options for this job…</p>
+
+        <div x-cloak x-show="!loadingOptions" class="space-y-6 mt-6">
+
+          <!-- Contact Information Selection -->
+          <section class="otw-tile p-6">
+            <h2 class="font-display text-xl">1. Contact Details</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-1">Pick which email and phone number to show on this resume.</p>
+
+            <div class="mt-4 grid gap-6 sm:grid-cols-2">
+              <!-- Email picker -->
+              <div>
+                <p class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)] mb-2">Email Address</p>
+                <template x-if="options.emails.length === 0">
+                  <p class="text-xs text-[color:var(--muted)] italic">No email saved. <a href="/portfolio/contact" class="underline">Add one in links</a></p>
+                </template>
+                <div class="space-y-2">
+                  <template x-for="e in options.emails" :key="e.id">
+                    <label class="otw-tile p-3 flex items-center gap-3 cursor-pointer hover:border-[color:var(--line-strong)]">
+                      <input type="radio" name="selected_email" :value="e.email" x-model="selectedEmail" class="otw-checkbox shrink-0" />
+                      <span class="text-sm font-medium text-[color:var(--ink)] truncate" x-text="e.email"></span>
+                      <span x-show="e.is_primary" class="text-[10px] bg-amber-500/15 text-amber-600 px-2 py-0.5 rounded font-medium ml-auto shrink-0">Starred Primary</span>
+                    </label>
+                  </template>
+                </div>
               </div>
-            </template>
-          </div>
-        </section>
 
-        <section class="otw-tile p-6 mt-6">
-          <h2 class="font-display text-xl">Template</h2>
-          <div class="mt-3 flex gap-4">
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="radio" x-model="template" value="onepage" class="otw-checkbox" />
-              <span>One page</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="radio" x-model="template" value="twopage" class="otw-checkbox" />
-              <span>Two pages</span>
-            </label>
-          </div>
-        </section>
+              <!-- Phone picker -->
+              <div>
+                <p class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)] mb-2">Phone Number</p>
+                <template x-if="options.phones.length === 0">
+                  <p class="text-xs text-[color:var(--muted)] italic">No phone saved. <a href="/portfolio/contact" class="underline">Add one in links</a></p>
+                </template>
+                <div class="space-y-2">
+                  <template x-for="p in options.phones" :key="p.id">
+                    <label class="otw-tile p-3 flex items-center gap-3 cursor-pointer hover:border-[color:var(--line-strong)]">
+                      <input type="radio" name="selected_phone" :value="p.phone" x-model="selectedPhone" class="otw-checkbox shrink-0" />
+                      <span class="text-sm font-medium text-[color:var(--ink)] truncate" x-text="p.phone"></span>
+                      <span x-show="p.is_primary" class="text-[10px] bg-amber-500/15 text-amber-600 px-2 py-0.5 rounded font-medium ml-auto shrink-0">Starred Primary</span>
+                    </label>
+                  </template>
+                </div>
+              </div>
+            </div>
+          </section>
 
-        <div class="mt-6">
-          <button
-            type="button"
-            class="otw-btn px-6 py-3"
-            :disabled="generating"
-            @click="generate()"
-          >
-            <span x-show="!generating">Generate resume from scratch</span>
-            <span x-show="generating" class="otw-working">Generating… this can take a minute</span>
-          </button>
+          <!-- Pickable Projects & Custom Project Notes -->
+          <section class="otw-tile p-6">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <h2 class="font-display text-xl">2. Projects & Custom Notes</h2>
+                <p class="text-xs text-[color:var(--muted)] mt-1">
+                  Select which projects to feature. Add custom comments to instruct how a specific project should be written or emphasized.
+                </p>
+              </div>
+              <span class="text-xs text-[color:var(--muted)]" x-text="selectedProjectIds.length + ' selected'"></span>
+            </div>
+
+            <div class="mt-4 space-y-3">
+              <template x-for="proj in options.projects" :key="proj.repo_id">
+                <div class="otw-tile p-4 transition-colors" :class="isProjectSelected(proj.repo_id) ? 'border-[color:var(--line-strong)]' : 'opacity-70'">
+                  <div class="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      :checked="isProjectSelected(proj.repo_id)"
+                      @change="toggleProject(proj.repo_id)"
+                      class="otw-checkbox mt-1 shrink-0"
+                    />
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-medium text-base text-[color:var(--ink)]" x-text="proj.name"></span>
+                        <span x-show="proj.recommended" class="text-[10px] bg-emerald-500/15 text-emerald-600 px-2 py-0.5 rounded font-medium">Recommended match</span>
+                        <span x-show="proj.starred" class="text-[10px] bg-amber-500/15 text-amber-600 px-2 py-0.5 rounded font-medium">Starred</span>
+                      </div>
+                      <p class="text-xs text-[color:var(--muted)] mt-1" x-text="proj.description || 'No description'"></p>
+
+                      <!-- Custom note input for selected project -->
+                      <div x-show="isProjectSelected(proj.repo_id)" class="mt-3">
+                        <input
+                          type="text"
+                          x-model="projectInstructions[proj.repo_id]"
+                          placeholder="Custom note: e.g., 'Just highlight scaling', 'Rewrite bullets to emphasize API design'"
+                          class="otw-input text-xs w-full py-1.5"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </section>
+
+          <!-- Pickable Skills -->
+          <section class="otw-tile p-6">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <h2 class="font-display text-xl">3. Skills</h2>
+                <p class="text-xs text-[color:var(--muted)] mt-1">Select the skills to highlight on this resume.</p>
+              </div>
+              <span class="text-xs text-[color:var(--muted)]" x-text="selectedSkills.length + ' selected'"></span>
+            </div>
+
+            <div class="mt-4 flex flex-wrap gap-2">
+              <template x-for="sk in options.skills" :key="sk.name">
+                <button
+                  type="button"
+                  @click="toggleSkill(sk.name)"
+                  class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-all border"
+                  :class="isSkillSelected(sk.name) ? 'bg-[color:var(--ink)] text-white border-transparent font-medium' : 'bg-transparent text-[color:var(--muted)] border-[color:var(--line)] hover:border-[color:var(--line-strong)]'"
+                >
+                  <span x-text="sk.name"></span>
+                  <span x-show="sk.recommended && !isSkillSelected(sk.name)" class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                </button>
+              </template>
+            </div>
+
+            <!-- Add custom skill -->
+            <div class="mt-4 flex items-center gap-2 max-w-sm">
+              <input x-model="customSkillInput" placeholder="Add custom skill tag…" class="otw-input text-xs py-1.5 flex-1" @keyup.enter="addCustomSkill()" />
+              <button type="button" @click="addCustomSkill()" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Add</button>
+            </div>
+          </section>
+
+          <!-- Work Experience Selection -->
+          <section class="otw-tile p-6">
+            <h2 class="font-display text-xl">4. Experience Roles</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-1">Include or exclude specific roles from your history.</p>
+
+            <div class="mt-4 space-y-2">
+              <template x-for="exp in options.experience" :key="exp.id">
+                <label class="otw-tile p-3 flex items-center gap-3 cursor-pointer hover:border-[color:var(--line-strong)]">
+                  <input
+                    type="checkbox"
+                    :checked="isExperienceSelected(exp.id)"
+                    @change="toggleExperience(exp.id)"
+                    class="otw-checkbox shrink-0"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <span class="font-medium text-sm text-[color:var(--ink)]" x-text="exp.title + ' · ' + exp.company"></span>
+                    <span class="text-xs text-[color:var(--muted)] ml-2" x-text="exp.date_range"></span>
+                  </div>
+                </label>
+              </template>
+            </div>
+          </section>
+
+          <!-- Custom Instruction / Comments -->
+          <section class="otw-tile p-6">
+            <h2 class="font-display text-xl">5. Custom Generator Instructions</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-1">
+              Add any overall comments or instructions for the AI resume writer (e.g. "Focus summary on senior tech lead roles", "Emphasize cloud infrastructure experience").
+            </p>
+
+            <textarea
+              x-model="customInstruction"
+              rows="3"
+              placeholder="Type custom prompt comments or guidance for this resume generation…"
+              class="otw-input text-sm w-full mt-3 p-2"
+            ></textarea>
+          </section>
+
+          <!-- Template Selection & Action -->
+          <section class="otw-tile p-6 flex items-center justify-between flex-wrap gap-4">
+            <div>
+              <p class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)]">Template Layout</p>
+              <div class="mt-2 flex gap-4">
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" x-model="template" value="onepage" class="otw-checkbox" />
+                  <span class="text-sm">One page</span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input type="radio" x-model="template" value="twopage" class="otw-checkbox" />
+                  <span class="text-sm">Two pages</span>
+                </label>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              class="otw-btn px-6 py-3 text-base"
+              :disabled="generating"
+              @click="generate()"
+            >
+              <span x-show="!generating">Generate Tailored Resume →</span>
+              <span x-show="generating" class="otw-working">Generating resume… this can take a minute</span>
+            </button>
+          </section>
+
           <p x-show="generateError" x-text="generateError" class="text-sm otw-error mt-2"></p>
         </div>
 
-        <section x-cloak x-show="resultUrl" class="otw-tile p-6 mt-6">
+        <!-- Compiled PDF Result Section -->
+        <section x-cloak x-show="resultUrl" class="otw-tile p-6 mt-8">
           <div class="flex items-center justify-between flex-wrap gap-3">
-            <h2 class="font-display text-xl">Your resume</h2>
+            <div>
+              <h2 class="font-display text-xl">Tailored Resume Result</h2>
+              <p class="text-xs text-[color:var(--muted)] mt-0.5">Your customized resume PDF has been compiled and saved.</p>
+            </div>
             <div class="flex items-center gap-3">
               <a :href="resultUrl" target="_blank" class="otw-btn-ghost text-sm px-4 py-2">Open in new tab</a>
-              <a :href="resultUrl" download="resume.pdf" class="otw-btn text-sm px-4 py-2">Download</a>
+              <a :href="resultUrl" download="resume.pdf" class="otw-btn text-sm px-4 py-2">Download PDF</a>
             </div>
           </div>
           <p x-show="pageFitAchieved === false" class="text-sm otw-error mt-3">
-            Could not trim this down to the target page count automatically
-            (<span x-text="pageCount"></span> page<span x-show="pageCount !== 1">s</span> instead). This is
-            still the best version reached; edit it with a prompt on the resume library, or
-            switch templates and try again.
+            Could not fit this down to the target page count automatically
+            (<span x-text="pageCount"></span> page<span x-show="pageCount !== 1">s</span> instead). You can edit project selections or instructions above and try again.
           </p>
           <p x-show="resultResumeId" class="text-sm mt-3">
             Saved to your <a href="/portfolio/resume" class="underline hover:text-[color:var(--ink)]">resume library</a>; edit it there with a prompt any time.
           </p>
-          <iframe x-show="resultUrl" :src="resultUrl" class="w-full mt-4" style="height: 70vh; border: 1px solid var(--line);"></iframe>
+          <iframe x-show="resultUrl" :src="resultUrl" class="w-full mt-4" style="height: 75vh; border: 1px solid var(--line);"></iframe>
         </section>
       </div>
     </template>
@@ -124,7 +263,19 @@
       jobPostingId: null,
       posting: null,
       postingError: '',
-      closestResumes: [],
+
+      loadingOptions: true,
+      options: { emails: [], phones: [], projects: [], skills: [], experience: [] },
+
+      selectedEmail: '',
+      selectedPhone: '',
+      selectedProjectIds: [],
+      projectInstructions: {},
+      selectedSkills: [],
+      customSkillInput: '',
+      selectedExperienceIds: [],
+      customInstruction: '',
+
       template: 'onepage',
       generating: false,
       generateError: '',
@@ -145,7 +296,7 @@
         if (id) {
           this.jobPostingId = Number(id);
           await this.loadPosting();
-          await this.loadClosestResumes();
+          await this.loadOptions();
         }
       },
 
@@ -162,12 +313,84 @@
         }
       },
 
-      async loadClosestResumes() {
+      async loadOptions() {
+        this.loadingOptions = true;
         try {
-          const res = await fetch(`/api/resume/search?account_id=${this.accountId}&job_posting_id=${this.jobPostingId}`);
-          if (res.ok) this.closestResumes = await res.json();
+          const res = await fetch(`/api/resume-build/options?account_id=${this.accountId}&job_posting_id=${this.jobPostingId}`);
+          if (res.ok) {
+            const data = await res.json();
+            this.options = data;
+
+            // Pre-select primary or first email
+            const primaryEmailObj = data.emails.find((e) => e.is_primary) || data.emails[0];
+            if (primaryEmailObj) this.selectedEmail = primaryEmailObj.email;
+
+            // Pre-select primary or first phone
+            const primaryPhoneObj = data.phones.find((p) => p.is_primary) || data.phones[0];
+            if (primaryPhoneObj) this.selectedPhone = primaryPhoneObj.phone;
+
+            // Pre-select recommended projects (or top 3)
+            const recProjects = data.projects.filter((p) => p.recommended).map((p) => p.repo_id);
+            this.selectedProjectIds = recProjects.length > 0 ? recProjects : data.projects.slice(0, 3).map((p) => p.repo_id);
+
+            // Initialize empty notes for projects
+            data.projects.forEach((p) => { this.projectInstructions[p.repo_id] = ''; });
+
+            // Pre-select recommended skills
+            this.selectedSkills = data.skills.filter((s) => s.recommended).map((s) => s.name);
+
+            // Pre-select all experiences
+            this.selectedExperienceIds = data.experience.map((e) => e.id);
+          }
         } catch (e) {
-          // best-effort suggestion panel, generating from scratch stays available either way
+          console.error('Failed to load resume options:', e);
+        } finally {
+          this.loadingOptions = false;
+        }
+      },
+
+      isProjectSelected(id) {
+        return this.selectedProjectIds.includes(id);
+      },
+
+      toggleProject(id) {
+        if (this.isProjectSelected(id)) {
+          this.selectedProjectIds = this.selectedProjectIds.filter((pId) => pId !== id);
+        } else {
+          this.selectedProjectIds.push(id);
+        }
+      },
+
+      isSkillSelected(name) {
+        return this.selectedSkills.some((s) => (s.casefold ? s.casefold() : s.toLowerCase()) === (name.casefold ? name.casefold() : name.toLowerCase()));
+      },
+
+      toggleSkill(name) {
+        if (this.isSkillSelected(name)) {
+          this.selectedSkills = this.selectedSkills.filter((s) => (s.casefold ? s.casefold() : s.toLowerCase()) !== (name.casefold ? name.casefold() : name.toLowerCase()));
+        } else {
+          this.selectedSkills.push(name);
+        }
+      },
+
+      addCustomSkill() {
+        const sk = this.customSkillInput.trim();
+        if (sk && !this.isSkillSelected(sk)) {
+          this.options.skills.push({ name: sk, recommended: true });
+          this.selectedSkills.push(sk);
+          this.customSkillInput = '';
+        }
+      },
+
+      isExperienceSelected(id) {
+        return this.selectedExperienceIds.includes(id);
+      },
+
+      toggleExperience(id) {
+        if (this.isExperienceSelected(id)) {
+          this.selectedExperienceIds = this.selectedExperienceIds.filter((eId) => eId !== id);
+        } else {
+          this.selectedExperienceIds.push(id);
         }
       },
 
@@ -177,6 +400,15 @@
         this.generateError = '';
         this.resultUrl = null;
         this.resultResumeId = null;
+
+        // Clean project instructions to only send non-empty notes for selected projects
+        const cleanProjInstructions = {};
+        this.selectedProjectIds.forEach((id) => {
+          if (this.projectInstructions[id] && this.projectInstructions[id].trim()) {
+            cleanProjInstructions[id] = this.projectInstructions[id].trim();
+          }
+        });
+
         try {
           const res = await fetch('/api/resume-build/generate', {
             method: 'POST',
@@ -185,6 +417,13 @@
               account_id: Number(this.accountId),
               job_posting_id: this.jobPostingId,
               template: this.template,
+              selected_email: this.selectedEmail || null,
+              selected_phone: this.selectedPhone || null,
+              selected_project_ids: this.selectedProjectIds,
+              project_instructions: cleanProjInstructions,
+              selected_skills: this.selectedSkills,
+              selected_experience_ids: this.selectedExperienceIds,
+              custom_instruction: this.customInstruction.trim() || null,
             }),
           });
           if (!res.ok) {

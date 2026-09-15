@@ -17,11 +17,6 @@
         <div class="max-w-xl mx-auto flex flex-col" style="min-height: 60vh;">
           <div class="flex-1">
             <h1 class="font-display text-5xl">Open to Work</h1>
-            <p class="mt-4 text-[color:var(--muted)]">
-              This is a free, open-source project. Read more on the
-              <!-- TODO: real repo URL -->
-              <a href="#" class="underline hover:text-[color:var(--ink)]">GitHub repo</a>.
-            </p>
 
             <h2 class="mt-12 text-xs uppercase tracking-wide text-[color:var(--muted)]">What we do</h2>
             <ul class="mt-4 space-y-3">
@@ -47,8 +42,8 @@
       </template>
 
       <!-- apikey: default-provider key entry + verification, gates
-           onboarding. Which provider is "the" one here follows
-           Settings.llm_bulk_model (GET /api/api-keys/default-provider),
+           onboarding. Which provider is "the" one here follows the bulk
+           model picked on /apis (GET /api/api-keys/default-provider),
            not a hardcoded provider: /apis is where every provider,
            including this one afterward, lives. -->
       <template x-if="view === 'apikey'">
@@ -59,10 +54,9 @@
 
           <div class="flex-1">
             <h1 class="font-display text-4xl">Connect <span x-text="defaultProviderLabel"></span></h1>
-            <p class="mt-3 text-[color:var(--muted)]">
-              This is what builds your profile and tailors resumes. Every
-              provider's key setup, and swapping which one is active,
-              lives on <a href="/apis" class="underline hover:text-[color:var(--ink)]">Manage APIs</a> too.
+            <p x-show="defaultProvider === 'gemini'" class="mt-3 text-sm text-[color:var(--muted)]">
+              No key yet? Create one for free at
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="underline hover:text-[color:var(--ink)]">Google AI Studio</a>.
             </p>
 
             <div class="mt-10" x-show="!keyAdded">
@@ -105,9 +99,6 @@
       <template x-if="view === 'picker'">
         <div class="text-center">
           <h1 class="font-display text-5xl">Who's working?</h1>
-          <p class="mt-3 text-[color:var(--muted)]">
-            Pick a profile to continue, or set up a new one on this device.
-          </p>
 
           <div class="mt-14 flex flex-wrap justify-center gap-6">
             <template x-for="account in accounts" :key="account.id">
@@ -160,11 +151,6 @@
           </template>
 
           <h1 class="font-display text-4xl">Set up your profile</h1>
-          <p class="mt-3 text-[color:var(--muted)]">
-            Add a GitHub username and we'll build an evidence-backed skill
-            profile from your public repos. No GitHub? Leave it blank,
-            you can add everything by hand instead.
-          </p>
 
           <form @submit.prevent="submitCreate" class="mt-10 space-y-6">
             <div class="grid grid-cols-2 gap-4">
@@ -235,11 +221,11 @@
       // a key verifies and stays true for the rest of this page load
       // (going back via Previous shows the tick again instead of an empty
       // input), same idea as accounts staying loaded across view
-      // switches. Which provider "the" onboarding key is for follows
-      // Settings.llm_bulk_model (GET /api/api-keys/default-provider):
-      // OpenAI by default now, but whatever it's configured as.
-      defaultProvider: 'openai',
-      defaultProviderLabel: 'OpenAI',
+      // switches. Which provider "the" onboarding key is for follows the
+      // bulk model picked on /apis (GET /api/api-keys/default-provider):
+      // Gemini by default, but whatever it's set to.
+      defaultProvider: 'gemini',
+      defaultProviderLabel: 'Gemini',
       keyInput: '',
       keyAdded: false,
       verifyingKey: false,

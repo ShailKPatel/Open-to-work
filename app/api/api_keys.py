@@ -11,8 +11,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.core import api_keys_store
+from app.core.app_settings import get_llm_settings
 from app.core.llm_providers import PROVIDER_LABELS, PROVIDERS, provider_of_model
-from app.core.settings import get_settings
 
 router = APIRouter(prefix="/api/api-keys")
 
@@ -89,13 +89,13 @@ def list_providers() -> list[ProviderOut]:
 
 @router.get("/default-provider", response_model=DefaultProviderOut)
 def default_provider() -> DefaultProviderOut:
-    """Which provider the bulk/quality tiers currently point at (from
-    Settings.llm_bulk_model / llm_quality_model). Drives onboarding's
+    """Which provider the bulk/quality tiers currently point at (the models
+    picked on /apis, app/core/app_settings.py). Drives onboarding's
     "connect your key" step so its wording and target provider follow
-    whatever is configured."""
-    settings = get_settings()
-    bulk = provider_of_model(settings.llm_bulk_model)
-    quality = provider_of_model(settings.llm_quality_model)
+    whatever is picked."""
+    settings = get_llm_settings()
+    bulk = provider_of_model(settings.bulk_model)
+    quality = provider_of_model(settings.quality_model)
     return DefaultProviderOut(
         bulk=bulk,
         quality=quality,

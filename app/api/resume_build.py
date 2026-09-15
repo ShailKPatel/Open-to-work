@@ -13,12 +13,18 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
 from app.core.db import JobPosting, Resume, get_db
-from app.core.llm import ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError
+from app.core.llm import (
+    ApiKeyMissingError,
+    BudgetExceededError,
+    LLMProviderError,
+    LLMRateLimitedError,
+)
 from app.core.settings import get_settings
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
 from app.resume_build.orchestrator import build_resume_data, generate_resume
@@ -111,7 +117,111 @@ def _map_llm_error(e: Exception) -> HTTPException:
         return HTTPException(status_code=402, detail=str(e))
     if isinstance(e, LLMRateLimitedError):
         return HTTPException(status_code=503, detail=str(e))
+    if isinstance(e, LLMProviderError):
+        return HTTPException(status_code=502, detail=str(e))
     return HTTPException(status_code=502, detail=f"resume generation failed: {e}")
+
+
+class ResumeBuildOptionsResponse(BaseModel):
+    emails: list[dict[str, Any]]
+    phones: list[dict[str, Any]]
+    projects: list[dict[str, Any]]
+    skills: list[dict[str, Any]]
+    experience: list[dict[str, Any]]
+
+
+@router.get("/options", response_model=ResumeBuildOptionsResponse)
+def get_resume_build_options(account_id: int, job_posting_id: int | None = None) -> ResumeBuildOptionsResponse:
+    from sqlalchemy import select
+    from app.core.db import Account, ContactEmail, ContactPhone, JobPosting, Repository, get_db
+    from app.resume_build.context import build_experience_context
+    from app.resume_build.orchestrator import _candidate_projects, _candidate_skills
+
+    db = get_db()
+    try:
+        account = db.get(Account, account_id)
+        if account is None:
+            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+        
+        posting = db.get(JobPosting, job_posting_id) if job_posting_id is not None else None
+
+        emails_rows = list(
+            db.execute(
+                select(ContactEmail)
+                .where(ContactEmail.account_id == account_id)
+                .order_by(ContactEmail.created_at)
+            ).scalars()
+        )
+        emails = [{"id": e.id, "email": e.email, "is_primary": e.is_primary} for e in emails_rows]
+        if not emails and account.contact_email:
+            emails = [{"id": 0, "email": account.contact_email, "is_primary": True}]
+
+        phones_rows = list(
+            db.execute(
+                select(ContactPhone)
+                .where(ContactPhone.account_id == account_id)
+                .order_by(ContactPhone.created_at)
+            ).scalars()
+        )
+        phones = [{"id": p.id, "phone": p.phone, "is_primary": p.is_primary} for p in phones_rows]
+        if not phones and account.contact_phone:
+            phones = [{"id": 0, "phone": account.contact_phone, "is_primary": True}]
+
+        cand_projects = _candidate_projects(db, account_id, posting.raw_text_quarantined) if posting else []
+        recommended_repo_ids = {c["repo_id"] for c in cand_projects[:4]}
+
+        all_repos = list(
+            db.execute(
+                select(Repository).where(Repository.account_id == account_id).order_by(Repository.starred.desc(), Repository.name)
+            ).scalars()
+        )
+        projects = []
+        for r in all_repos:
+            is_rec = r.id in recommended_repo_ids
+            projects.append({
+                "repo_id": r.id,
+                "name": r.name,
+                "description": r.description or "",
+                "url": r.url,
+                "starred": r.starred,
+                "recommended": is_rec,
+            })
+
+        cand_skills = _candidate_skills(account_id, posting.raw_text_quarantined) if posting else []
+        rec_skills_set = set(cand_skills[:12])
+
+        from app.api.skills import list_skills
+        all_skills_data = list_skills(account_id)
+        skills = []
+        seen_skill_names = set()
+        for sk_obj in all_skills_data:
+            sk_name = sk_obj.get("name") if isinstance(sk_obj, dict) else getattr(sk_obj, "name", "")
+            if sk_name and sk_name.casefold() not in seen_skill_names:
+                seen_skill_names.add(sk_name.casefold())
+                skills.append({
+                    "name": sk_name,
+                    "recommended": sk_name in rec_skills_set or sk_name.casefold() in {s.casefold() for s in cand_skills},
+                })
+        for c_sk in cand_skills:
+            if c_sk.casefold() not in seen_skill_names:
+                seen_skill_names.add(c_sk.casefold())
+                skills.append({
+                    "name": c_sk,
+                    "recommended": True,
+                })
+
+        experience = build_experience_context(db, account_id)
+
+        return ResumeBuildOptionsResponse(
+            emails=emails,
+            phones=phones,
+            projects=projects,
+            skills=skills,
+            experience=experience,
+        )
+    finally:
+        db.close()
+
 
 
 class PreviewRequest(BaseModel):
@@ -136,7 +246,7 @@ def preview(body: PreviewRequest) -> PreviewResponse:
         tex = generate_resume(body.account_id, body.job_posting_id, template=body.template)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
+    except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError) as e:
         raise _map_llm_error(e) from e
     return PreviewResponse(tex=tex)
 
@@ -146,6 +256,13 @@ class GenerateRequest(BaseModel):
     job_posting_id: int
     template: str = "onepage"
     max_pages: int | None = None
+    selected_email: str | None = None
+    selected_phone: str | None = None
+    selected_project_ids: list[int] | None = None
+    project_instructions: dict[int, str] | None = None
+    selected_skills: list[str] | None = None
+    selected_experience_ids: list[int] | None = None
+    custom_instruction: str | None = None
 
 
 @router.post("/generate")
@@ -153,23 +270,27 @@ def generate(body: GenerateRequest) -> Response:
     """Full pipeline: orchestrator content, then compile + the page-fit
     loop, returns the PDF bytes directly (Content-Type: application/pdf),
     same "serve the raw file" convention app/api/resume.py's
-    GET /{id}/file already uses. If the page-fit loop runs out of safe
-    cuts before hitting the target, the best PDF actually reached is
-    still returned, flagged
-    via the X-Page-Fit-Achieved/X-Page-Count response headers rather than
-    a hard error. The result is also saved into the shared resume library
-    (app/api/resume.py) so it shows up on /resume like an uploaded file
-    would; its new Resume id comes back via X-Resume-Id (empty string if
-    that save failed; best-effort, never blocks the PDF response).
+    GET /{id}/file already uses.
     """
     _validate_template(body.template)
     max_pages = body.max_pages or _DEFAULT_MAX_PAGES[body.template]
 
     try:
-        data = build_resume_data(body.account_id, body.job_posting_id, template=body.template)
+        data = build_resume_data(
+            body.account_id,
+            body.job_posting_id,
+            template=body.template,
+            selected_email=body.selected_email,
+            selected_phone=body.selected_phone,
+            selected_project_ids=body.selected_project_ids,
+            project_instructions=body.project_instructions,
+            selected_skills=body.selected_skills,
+            selected_experience_ids=body.selected_experience_ids,
+            custom_instruction=body.custom_instruction,
+        )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
-    except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
+    except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError) as e:
         raise _map_llm_error(e) from e
 
     try:
@@ -186,7 +307,7 @@ def generate(body: GenerateRequest) -> Response:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except CompileError as e:
         raise HTTPException(status_code=502, detail=str(e)) from e
-    except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
+    except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError) as e:
         raise _map_llm_error(e) from e
 
     resume_id = _save_generated_resume(
@@ -203,3 +324,4 @@ def generate(body: GenerateRequest) -> Response:
             "X-Resume-Id": str(resume_id) if resume_id is not None else "",
         },
     )
+
