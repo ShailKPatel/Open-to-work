@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,7 +41,11 @@ def _fake_review(monkeypatch, remove=(), fail_with=None):
     def fake_complete(tier, messages, schema=None, account_id=None, purpose=None):
         if fail_with is not None:
             raise fail_with
-        names = messages[-1]["content"].split("\n")[1:]
+        # The names travel as a JSON array, so that a name containing
+        # newlines or quotes stays one name (see _names_to_remove). Parsed
+        # back the same way a model would read it, rather than by splitting
+        # on newlines, which would make this fake disagree with the prompt.
+        names = json.loads(messages[-1]["content"].split("\n\n", 1)[1])
         batches.append(names)
         return SimpleNamespace(parsed={"remove": [n for n in names if n in remove]})
 
