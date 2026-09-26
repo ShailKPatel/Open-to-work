@@ -5,7 +5,7 @@ description = "Evidence-backed skill profile from GitHub history, matched agains
 requires-python = ">=3.12"
 dependencies = [
     "pydantic-settings>=2.4",
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.1",  # Select[Model] row typing; 2.0 spells it Select[tuple[Model]]
     "pygithub>=2.3",
     "tenacity>=8.5",
     "fastapi>=0.115",

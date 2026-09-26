@@ -1,4 +1,4 @@
-.PHONY: test coverage test-live lint ingest eval dev up down start
+.PHONY: test coverage test-live lint ingest eval eval-fixture dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
@@ -39,6 +39,30 @@ ingest:
 # dense-vs-BM25 retrieval comparison.
 eval:
 	.venv/bin/python -m app.evals $(ACCOUNT) $(if $(NO_GROUNDEDNESS),--no-groundedness,)
+
+# The eval gate CI runs on every pull request, reproduced locally so a red
+# gate can be debugged without pushing. Seeds the synthetic fixture account
+# (scripts/seed_eval_fixture.py), scores it against the committed golden
+# pairs, and compares the result to evals/ci_baseline.json. Also the command
+# to run when a change legitimately moves the numbers and the baseline needs
+# updating.
+#
+# Needs a Qdrant server: `make up`, or set QDRANT_URL at any running one.
+# Everything it writes goes to .eval-fixture/ (gitignored), so neither your
+# real database nor evals/results/ is touched.
+EVAL_FIXTURE_DIR := .eval-fixture
+EVAL_FIXTURE_ENV := DATABASE_URL="sqlite:///$(CURDIR)/$(EVAL_FIXTURE_DIR)/fixture.db" \
+	EVALS_GOLDEN_DIR="$(EVAL_FIXTURE_DIR)/golden" \
+	EVALS_RESULTS_DIR="$(EVAL_FIXTURE_DIR)/results"
+
+eval-fixture:
+	@mkdir -p $(EVAL_FIXTURE_DIR)/golden $(EVAL_FIXTURE_DIR)/results
+	@cp evals/golden/ci_fixture.yaml $(EVAL_FIXTURE_DIR)/golden/golden_set.yaml
+	$(EVAL_FIXTURE_ENV) .venv/bin/python -m scripts.seed_eval_fixture
+	@REPORT=$$($(EVAL_FIXTURE_ENV) .venv/bin/python -m app.evals 9001 --no-groundedness \
+		| tee /dev/stderr | sed -n 's/^Written to //p'); \
+	.venv/bin/python -m scripts.check_eval_baseline \
+		--report "$$REPORT" --baseline evals/ci_baseline.json
 
 # Docker (one command, no host Python setup).
 up:

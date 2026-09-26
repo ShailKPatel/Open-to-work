@@ -104,16 +104,16 @@ def _load_groups(db: Session, account_id: int) -> dict[str, SkillGroup]:
         .join(Experience, ExperienceSkillEvidence.experience_id == Experience.id)
         .where(Experience.account_id == account_id)
     ).all()
-    for evidence, exp in experience_rows:
-        _group_for(evidence.skill).sources.append(
+    for exp_evidence, exp in experience_rows:
+        _group_for(exp_evidence.skill).sources.append(
             SkillSource(
                 type="experience",
-                evidence_id=evidence.id,
+                evidence_id=exp_evidence.id,
                 ref_id=exp.id,
                 name=f"{exp.title} @ {exp.company}",
-                evidence_type=evidence.evidence_type,
-                weight=evidence.weight,
-                confidence=evidence.confidence,
+                evidence_type=exp_evidence.evidence_type,
+                weight=exp_evidence.weight,
+                confidence=exp_evidence.confidence,
             )
         )
 

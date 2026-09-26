@@ -1,0 +1,158 @@
+# Golden pairs for the synthetic CI fixture (scripts/seed_eval_fixture.py,
+# account 9001). This is a canary, not a measurement of retrieval quality.
+#
+# The thirteen pairs below are labeled against invented repositories and
+# invented roles, so the numbers they produce say nothing about how well
+# this system retrieves anything real. What they catch is a change that
+# breaks retrieval outright: an embedding model swap, a change to the text
+# index.py embeds, a filter that stops matching, an id space that shifts.
+# Their value is that they move when something breaks and stay still
+# otherwise, which is why CI gates on them.
+#
+# The real golden set app/evals/golden.py's docstring targets is fifty
+# hand-labeled job-to-profile pairs against a person's own data, built
+# with scripts/label_golden_set.py and scored with `make eval`. That set
+# measures quality. This one does not, and no size increase here would
+# change that, because the underlying data is made up.
+#
+# Point ids above 1_000_000_000 are experience-linked skill evidence, which
+# shares the skill_evidence collection at an offset (see index.py's
+# _EXPERIENCE_EVIDENCE_ID_OFFSET).
+
+- id: ci-backend-streaming
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    Senior Backend Engineer at a payments company.
+    Skills: Apache Kafka, Python, PostgreSQL.
+  relevant_ids: [9201, 9202, 9212, 1000009501, 1000009502]
+  job_posting_id: null
+  notes: Named skills only; Airflow is adjacent but not asked for.
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-platform-kubernetes
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    Platform Engineer, internal developer platform.
+    Skills: Kubernetes, Docker, Terraform, AWS.
+  relevant_ids: [9208, 9209, 9214, 9215, 1000009504, 1000009505]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-graphql-api
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    API Engineer owning a public GraphQL API.
+    Skills: GraphQL, TypeScript, Node.js.
+  relevant_ids: [9204, 9205, 9206, 1000009503]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-machine-learning
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    Machine Learning Engineer, ranking and recommendations.
+    Skills: PyTorch, pandas, Python.
+  relevant_ids: [9201, 9210, 9211]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-site-reliability
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    Site Reliability Engineer, on-call for a multi-tenant cluster.
+    Skills: Prometheus, Kubernetes, Docker.
+  relevant_ids: [9208, 9209, 1000009504, 1000009506]
+  job_posting_id: null
+  notes: Prometheus exists only as experience-linked evidence, no repo carries it.
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-data-engineering
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    Data Engineer building batch and streaming pipelines.
+    Skills: Apache Airflow, Apache Kafka, SQL.
+  relevant_ids: [9202, 9203, 9213, 1000009501]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-go-services
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    Backend Engineer writing services in Go.
+    Skills: Go, Kubernetes, Docker.
+  relevant_ids: [9207, 9208, 9209, 1000009504]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-database
+  account_id: 9001
+  collection: skill_evidence
+  query_text: |-
+    Database Engineer, query tuning and schema migrations.
+    Skills: PostgreSQL, SQL.
+  relevant_ids: [9212, 9213, 1000009502]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-points-streaming
+  account_id: 9001
+  collection: experience_points
+  query_text: |-
+    Backend Engineer for high-volume event streaming and data pipelines.
+  relevant_ids: [9401, 9405]
+  job_posting_id: null
+  notes: Kafka ingestion and the nightly feature extraction job.
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-points-platform
+  account_id: 9001
+  collection: experience_points
+  query_text: |-
+    Platform Engineer: Kubernetes operators, Terraform modules, container builds.
+  relevant_ids: [9406, 9407, 9408]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-points-performance
+  account_id: 9001
+  collection: experience_points
+  query_text: |-
+    Backend role focused on API latency and scaling a large relational database.
+  relevant_ids: [9402, 9403]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-points-developer-experience
+  account_id: 9001
+  collection: experience_points
+  query_text: |-
+    Developer experience work: CI gates, linting, type checking, alert tuning.
+  relevant_ids: [9409, 9410]
+  job_posting_id: null
+  notes: ''
+  labeled_at: '2026-09-27T00:00:00+00:00'
+
+- id: ci-points-graphql
+  account_id: 9001
+  collection: experience_points
+  query_text: |-
+    Designing a GraphQL schema for many client applications.
+  relevant_ids: [9404]
+  job_posting_id: null
+  notes: One point only; precision@5 for this pair tops out at 0.2 by construction.
+  labeled_at: '2026-09-27T00:00:00+00:00'

@@ -1,0 +1,213 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here writes to the repository, opens a pull request or publishes
+# anything, so the token gets read access and no more: a compromised action
+# in the tree below cannot push with it.
+permissions:
+  contents: read
+
+# A second push to a branch makes the first run's answer stale before it
+# finishes. Cancel it rather than pay for both and wait behind the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The unit suite needs no Qdrant server: app/retrieval/vectorstore.py hands
+  # back an in-process client for ":memory:". Set explicitly rather than left
+  # to the application default, so the workflow states what the tests run
+  # against instead of inheriting it silently.
+  QDRANT_URL: ":memory:"
+  # No test loads a real embedding model; the ones that would are faked. These
+  # two turn a future accidental download (400MB, once per run, uncached) into
+  # an immediate failure instead of a slow green run that nobody questions.
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.12 is what the Dockerfile ships. CI checks the version that runs
+          # in production, not whatever the runner defaults to this month.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          # CPU-only torch first, for the reason the Dockerfile spells out:
+          # PyPI's default torch wheel pulls the entire CUDA stack (cudnn,
+          # cublas, nccl, triton) in behind sentence-transformers, several GB
+          # that nothing in this project uses. Installing the CPU build first
+          # satisfies the dependency before pip can reach for the GPU one.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+
+      - name: ruff
+        run: ruff check .
+
+      - name: mypy
+        # Runs even when ruff failed, so one run reports every problem in the
+        # tree instead of one tool's worth. continue-on-error would surface
+        # the same output but leave the job green, which defeats the gate.
+        if: ${{ !cancelled() }}
+        run: mypy app
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          # Same CPU-only torch reasoning as the lint job above.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+
+      - name: pytest
+        shell: bash
+        run: |
+          # testpaths in pyproject.toml already limits this to tests/unit, so
+          # tests/live (real network, real billed LLM calls) cannot be reached
+          # from here even by accident. The 90% branch-coverage threshold also
+          # lives in pyproject.toml: one number, enforced identically by
+          # `make coverage` on a laptop and by this step.
+          # pipefail keeps pytest's exit status rather than tee's.
+          set -o pipefail
+          pytest --cov --cov-report=term --cov-report=xml | tee coverage.txt
+
+      - name: Coverage summary
+        # Runs on failure too: a run that fell below the threshold is exactly
+        # when the number is worth reading off the run page.
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          {
+            echo "### Coverage"
+            echo '```'
+            grep -E '^(TOTAL|Required test coverage|Coverage failure)' coverage.txt || \
+              echo "no coverage summary produced"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage XML
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  # Not on push: the eval job pulls a service container and a 400MB embedding
+  # model, and the retrieval numbers only need to be defended at the point a
+  # change would land. Keeping it off the push path keeps the inner loop at
+  # the three minutes the two jobs above take.
+  eval:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    services:
+      # The real server, not qdrant-client's local mode. Seeding and scoring
+      # are two separate processes (the same shape as `make ingest` then
+      # `make eval`), and an in-process client cannot carry an index between
+      # them. Same image docker-compose.yml runs, so the gate measures what a
+      # developer measures. The floating tag is deliberate for that reason;
+      # it also means a Qdrant release can move these numbers, which the
+      # baseline's tolerance is not there to absorb. Read a failure here
+      # before assuming the code caused it.
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+
+    env:
+      QDRANT_URL: http://localhost:6333
+      # The eval runs the real embedding model, unlike the unit suite, so the
+      # offline flags set at the workflow level have to come back off here.
+      HF_HUB_OFFLINE: "0"
+      TRANSFORMERS_OFFLINE: "0"
+      DATABASE_URL: sqlite:///${{ github.workspace }}/ci-eval.db
+      EVALS_RESULTS_DIR: ${{ github.workspace }}/ci-eval-results
+      # app/evals/run.py loads "golden_set.yaml" from this directory. The
+      # committed fixture has a name of its own so it cannot be confused with
+      # a real golden set, so it is copied into place below.
+      EVALS_GOLDEN_DIR: ${{ github.workspace }}/ci-eval-golden
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          # EMBEDDING_MODEL is a constant in embeddings.py, and changing it
+          # invalidates every stored vector, so keying on that file means the
+          # cache is dropped exactly when the model changes.
+          key: hf-${{ runner.os }}-${{ hashFiles('app/core/embeddings.py') }}
+
+      - name: Install dependencies
+        run: |
+          # Same CPU-only torch reasoning as the jobs above.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+
+      - name: Wait for Qdrant
+        run: |
+          # The service container is started before the job, but readiness is
+          # not the same as started, and seeding fails confusingly if it wins
+          # the race.
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:6333/readyz > /dev/null && exit 0
+            sleep 2
+          done
+          echo "qdrant did not become ready" >&2
+          exit 1
+
+      - name: Seed the synthetic fixture
+        run: |
+          mkdir -p "$EVALS_GOLDEN_DIR"
+          cp evals/golden/ci_fixture.yaml "$EVALS_GOLDEN_DIR/golden_set.yaml"
+          python -m scripts.seed_eval_fixture
+
+      - name: Run the eval
+        shell: bash
+        run: |
+          # --no-groundedness skips the LLM-judge pass: it needs a key and
+          # spends money, while the retrieval comparison this gate is built on
+          # is free. The account id is the fixture's, see the constant in
+          # scripts/seed_eval_fixture.py.
+          set -o pipefail
+          python -m app.evals 9001 --no-groundedness | tee eval.txt
+          echo "EVAL_REPORT=$(sed -n 's/^Written to //p' eval.txt)" >> "$GITHUB_ENV"
+
+      - name: Check against the committed baseline
+        run: python -m scripts.check_eval_baseline --report "$EVAL_REPORT" --baseline evals/ci_baseline.json
+
+      - name: Upload the eval report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: ci-eval-results/
