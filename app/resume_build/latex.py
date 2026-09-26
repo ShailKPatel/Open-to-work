@@ -49,15 +49,32 @@ _LATEX_SPECIAL_CHARS = {
 }
 _LATEX_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _LATEX_SPECIAL_CHARS))
 
-# Narrower than escape_latex(): a URL is going into \href's *target*
-# argument, not typeset as regular text. `_`, `~`, `-`, `.`, `/`, `:` are
-# all common and structurally meaningful in real URLs and don't need
-# escaping there; `%`, `#`, `&` do, they're the ones LaTeX's tokenizer
-# still treats specially even inside an href target. The templates apply
-# this as the `latex_url` filter on every href, checked by
-# test_render_resume_escapes_href_targets; still not exercised by a real
+# Narrower than escape_latex(), and for a different reason: a URL goes into
+# \href's *target* argument, not typeset as body text. `_`, `~`, `-`, `.`,
+# `/`, `:` are common and structurally meaningful in real URLs, so escaping
+# them there would change the link.
+#
+# Two groups need handling, not one. `%`, `#` and `&` are legal in a URL and
+# meaningful in one (an encoded byte, a fragment, a query separator), so they
+# are escaped to survive LaTeX's tokenizer with their meaning intact. `{`,
+# `}` and `\` are different: they are not legal in a URL at all (RFC 3986
+# requires them percent-encoded) and they are exactly the characters that end
+# \href's argument early, so a stored URL containing one either breaks the
+# compile or runs whatever follows it as LaTeX. They are percent-encoded into
+# the form a URL should have carried in the first place, and the `%` that
+# introduces is escaped in the same pass, never rescanned.
+#
+# The templates apply this as the `latex_url` filter on every href, checked
+# by test_render_resume_escapes_href_targets; still not exercised by a real
 # Tectonic compile.
-_URL_ESCAPE_CHARS = {"%": r"\%", "#": r"\#", "&": r"\&"}
+_URL_ESCAPE_CHARS = {
+    "%": r"\%",
+    "#": r"\#",
+    "&": r"\&",
+    "{": r"\%7B",
+    "}": r"\%7D",
+    "\\": r"\%5C",
+}
 _URL_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _URL_ESCAPE_CHARS))
 
 
@@ -71,8 +88,9 @@ def escape_latex(text: str) -> str:
 
 
 def escape_latex_url(url: str) -> str:
-    """Escapes a URL for use as \\href's target argument. See the module
-    comment above for why this differs from escape_latex().
+    """Escapes a URL for use as \\href's target argument, so that no stored
+    URL can end that argument early and have what follows read as LaTeX. See
+    the comment above for why this differs from escape_latex().
     """
     return _URL_ESCAPE_RE.sub(lambda m: _URL_ESCAPE_CHARS[m.group()], url)
 

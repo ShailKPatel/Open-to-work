@@ -4,6 +4,11 @@ Fetches repos, README, manifests, and authorship stats; upserts into SQLite
 by github_id. Skips README/manifest/stats refetch when pushed_at is
 unchanged since the last sync (cache hit); the cheap repo-list call still runs
 every time to detect what changed.
+
+A repo is owned by the first account to sync it, and a later sync from a
+different account leaves it alone rather than taking it over: one stored
+row carries one account_id, and two profiles that both worked on a repo
+both have a claim to it. See _belongs_to_another_account.
 """
 
 from __future__ import annotations
@@ -73,13 +78,53 @@ def _fetch_manifests(client: GitHubClient, gh_repo: Any) -> dict:
     return manifests
 
 
+def _belongs_to_another_account(existing: Repository, account_id: int | None) -> bool:
+    """Whether this stored repo is held by an account other than the one
+    this sync is running for.
+
+    Repository.github_id and full_name are globally unique, so one stored
+    row can only carry one account_id, and two profiles that both worked on
+    the same repo both have a real claim to it. The first one to sync it
+    keeps it: the same first-writer-wins rule JobPosting.content_hash
+    already documents for the same reason, rather than a third answer to
+    the same question. Taking it over instead would move the row out of the
+    first account's project list, re-credit its commit counts to the second
+    account's username, and reset skill_extraction_status, whose next
+    extraction pass deletes the first account's evidence rows.
+
+    A row with no account at all is not another account's: it came from a
+    sync that had no account context (the CLI, or POST /sync/github without
+    one), and claiming it is how those rows are meant to be adopted.
+
+    account_id=None means this sync has no account of its own, so every
+    owned row is another account's. That is the "look up someone else's
+    public profile out of curiosity" path in sync_account's docstring, and
+    it has no business rewriting a profile's stored evidence.
+    """
+    if existing.account_id is None:
+        return False
+    return existing.account_id != account_id
+
+
 def _upsert(
     db: Session, gh_repo: Any, client: GitHubClient, username: str, account_id: int | None
 ) -> bool:
-    """Returns True if this repo was a cache hit (no refetch of readme/manifests/stats)."""
+    """Returns True if this repo was a cache hit (no refetch of readme/manifests/stats).
+
+    A repo already held by a different account is left exactly as it is,
+    and counts as a cache hit here because nothing was fetched for it. See
+    _belongs_to_another_account below for why it is not taken over.
+    """
     existing = db.execute(
         select(Repository).where(Repository.github_id == gh_repo.id)
     ).scalar_one_or_none()
+
+    if existing is not None and _belongs_to_another_account(existing, account_id):
+        logger.info(
+            "%s already belongs to account %s; leaving it untouched for this sync (account %s)",
+            gh_repo.full_name, existing.account_id, account_id,
+        )
+        return True
 
     pushed_at = gh_repo.pushed_at
     if pushed_at and pushed_at.tzinfo is None:
@@ -109,6 +154,9 @@ def _upsert(
         existing = Repository(github_id=gh_repo.id, account_id=account_id)
         db.add(existing)
     elif account_id is not None:
+        # Only ever an adoption now: a row held by a different account
+        # returned above, so this either fills in a row that had no account
+        # or rewrites the same id with itself.
         existing.account_id = account_id
 
     existing.name = gh_repo.name
@@ -317,8 +365,10 @@ def sync_account(
 ) -> SyncSummary:
     """account_id is optional: a sync isn't required to belong to an
     account (e.g. looking up someone else's public profile out of
-    curiosity). When given, every repo this run touches gets stamped with
-    it, so the projects page can filter to "my repos" only.
+    curiosity). When given, a repo this run fetches is stamped with it
+    unless another account already holds that repo, in which case the
+    stored row is left as it is (see _belongs_to_another_account); the
+    projects page filters on that stamp to show "my repos" only.
     """
     client = client or GitHubClient()
     db = get_db()

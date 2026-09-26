@@ -124,7 +124,8 @@ def _process_repo(
     now: dt.datetime,
     prefetched: dict[int, RepoFacts] | None = None,
 ) -> bool:
-    """Mutates repo's status and this repo's SkillEvidence rows in place.
+    """Mutates repo's status and this repo's SkillEvidence rows in place,
+    and drops the Qdrant points belonging to the evidence rows it replaces.
     Never raises: every failure mode ends in a status, not an exception,
     so the caller can commit unconditionally after this returns.
 
@@ -150,11 +151,9 @@ def _process_repo(
     # Manual evidence_type rows are hand-added on the project detail page
     # (app/api/projects.py add_skill): a person's own claim, not something
     # extraction produced, so Reprocess must not wipe it out from under them.
-    db.execute(
-        delete(SkillEvidence).where(
-            SkillEvidence.repo_id == repo.id, SkillEvidence.evidence_type != "manual"
-        )
-    )
+    stale = (SkillEvidence.repo_id == repo.id, SkillEvidence.evidence_type != "manual")
+    stale_evidence_ids = list(db.execute(select(SkillEvidence.id).where(*stale)).scalars())
+    db.execute(delete(SkillEvidence).where(*stale))
     # Same manual-vs-derived split as SkillEvidence above: a link someone
     # typed in by hand (or edited, see app/api/projects.py update_link) is
     # "manual" and survives Reprocess; only "readme_extracted" rows get
@@ -165,6 +164,15 @@ def _process_repo(
     manifest_claims = skills_from_manifests(repo.manifests_json)  # never raises
     _write_claims(db, repo, manifest_claims, now)
     db.commit()  # release the write lock before the nested LLM-call session runs
+
+    # The Qdrant points for the rows just deleted, dropped after the commit
+    # above (this reaches the network, and holding the write lock across it
+    # is the thing that commit exists to avoid) and before the caller's
+    # _index_repo_evidence re-indexes what replaces them. That order is
+    # load-bearing: SkillEvidence.id has no AUTOINCREMENT, so SQLite hands
+    # a deleted id straight back to the next insert, and deleting these
+    # points after the re-index would delete the new rows' points instead.
+    _delete_index_points(stale_evidence_ids)
 
     stop_batch = False
     facts = (prefetched or {}).get(repo.id)

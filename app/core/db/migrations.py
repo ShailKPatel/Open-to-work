@@ -3,6 +3,15 @@
 Deliberately not Alembic: this is a local single-file SQLite app, and each
 function here adds a column (or backfills a table) only if it is missing,
 so startup is idempotent and an older database upgrades itself in place.
+Each function reads the current shape with PRAGMA table_info rather than
+trusting a recorded version, which is why skipping releases is safe and why
+running them twice costs nothing.
+
+What that buys in idempotence it gives up in coverage: a column added to a
+model with no matching function here is never created, because create_all()
+only ever adds whole tables. _verify_schema() at the end of init_db() is
+the backstop, and turns that omission into a startup failure naming the
+column instead of a 500 on whichever page queries it first.
 """
 
 from __future__ import annotations
@@ -271,6 +280,57 @@ def _migrate_api_keys_exhaustion_columns(engine: Engine) -> None:
         conn.commit()
 
 
+class SchemaOutOfDateError(RuntimeError):
+    """A table exists but is missing a column the models declare, so some
+    migration above does not cover it. Raised at startup rather than left
+    for the first query that touches the column."""
+
+
+def _verify_schema(engine: Engine) -> None:
+    """Every column the models declare exists on every table that exists.
+
+    create_all() creates missing tables and never alters an existing one, so
+    a column added to a model without a matching migration above is simply
+    absent, and nothing notices until a query selects it. That failure is
+    invisible at startup: /health answers 200, the container healthcheck
+    passes, and then one page 500s. Worse, a missing column on api_keys
+    takes every LLM call in the app with it, because resolve_dispatch_keys
+    selects them.
+
+    So the check is the whole point rather than a version number: a stored
+    version says where a database is believed to be, this says whether it
+    actually matches what the code will ask for. Runs after the migrations,
+    against the tables as they now are.
+
+    Only missing columns are an error. A column the database has and the
+    models no longer declare is fine and expected: SQLite cannot drop a
+    column without rebuilding the table, so retired ones are left in place
+    and unread (see Repository.starred's note about the old `rating`).
+    """
+    if engine.dialect.name != "sqlite":
+        return  # PRAGMA table_info is SQLite-specific, the only dialect here
+
+    missing: dict[str, list[str]] = {}
+    with engine.connect() as conn:
+        for table_name, table in Base.metadata.tables.items():
+            rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+            if not rows:
+                continue  # table does not exist at all; create_all owns that
+            present = {row[1] for row in rows}
+            absent = [c.name for c in table.columns if c.name not in present]
+            if absent:
+                missing[table_name] = absent
+
+    if missing:
+        detail = "; ".join(f"{table}: {', '.join(cols)}" for table, cols in sorted(missing.items()))
+        raise SchemaOutOfDateError(
+            "This database is missing columns the code expects, so some queries would "
+            f"fail at the moment they run: {detail}. A column added to a model needs a "
+            "matching migration in app/core/db/migrations.py; add one (or restore a "
+            "backup from data/backups/) and start again."
+        )
+
+
 def init_db() -> None:
     _backup_sqlite_file(get_settings().database_url)
     engine = get_engine()
@@ -286,3 +346,4 @@ def init_db() -> None:
     _migrate_job_postings_tracking_columns(engine)
     _migrate_contact_items(engine)
     _migrate_api_keys_exhaustion_columns(engine)
+    _verify_schema(engine)

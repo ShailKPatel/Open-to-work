@@ -39,15 +39,31 @@ class Job:
     thread: threading.Thread | None = None
     _state: dict = field(default_factory=lambda: {"stage": "starting"})
     _state_lock: threading.Lock = field(default_factory=threading.Lock)
+    # True from the moment start() registers this job until its thread is
+    # either running or known to have failed to start. `thread.is_alive()`
+    # alone cannot cover that gap: the job is in the registry before the
+    # thread object exists, so a second start() for the same key would read
+    # "not running" and launch a duplicate worker. Counted as running, so
+    # that window answers the same way the rest of the job's life does.
+    _starting: bool = True
 
     def set_state(self, **kwargs: Any) -> None:
         with self._state_lock:
             self._state = {**self._state, **kwargs}
 
+    def _thread_handed_off(self) -> None:
+        """Called by start() once the thread is running, or once starting it
+        has definitively failed. Either way this job no longer occupies the
+        pre-thread window, and `thread.is_alive()` is the whole answer from
+        here on."""
+        with self._state_lock:
+            self._starting = False
+
     def snapshot(self) -> dict:
         with self._state_lock:
             state = dict(self._state)
-        state["running"] = self.thread is not None and self.thread.is_alive()
+            starting = self._starting
+        state["running"] = starting or (self.thread is not None and self.thread.is_alive())
         return state
 
 
@@ -57,6 +73,13 @@ def start(key: str, worker: Callable[[Job], None]) -> bool:
     True if a new thread was started, False if one was already in flight.
     The expected pattern is to call start() to make sure a job is running,
     then stream or poll its state separately; False is not an error.
+
+    Two concurrent calls for one key start one worker, not two. The job is
+    marked running (Job._starting) inside the registry lock, before the
+    thread it will run on exists, so the second caller sees a live job
+    rather than a half-registered one. The thread is then built and started
+    outside the lock, which keeps a caller-supplied worker from ever
+    running while this module holds the registry lock.
     """
     with _registry_lock:
         existing = _jobs.get(key)
@@ -72,8 +95,15 @@ def start(key: str, worker: Callable[[Job], None]) -> bool:
             logger.exception("background job %r crashed", key)
             job.set_state(stage="error", detail="Internal error, see server logs.")
 
-    job.thread = threading.Thread(target=run, daemon=True, name=f"job:{key}")
-    job.thread.start()
+    # try/finally, not a plain call afterwards: if building or starting the
+    # thread raises, the job must stop counting as running, or this key is
+    # permanently occupied by a job with nothing behind it and no later
+    # start() can replace it until the process restarts.
+    try:
+        job.thread = threading.Thread(target=run, daemon=True, name=f"job:{key}")
+        job.thread.start()
+    finally:
+        job._thread_handed_off()
     return True
 
 

@@ -171,8 +171,24 @@ def _candidate_projects(
     top_repo_ids = order[:_MAX_CANDIDATE_PROJECTS]
 
     if selected_project_ids:
+        # Checked against this account before being added, not after. These
+        # ids come from the request body, and the UI only ever offers this
+        # account's own projects, so an id from outside it is not a
+        # selection. Checked here rather than at the hydration query below
+        # so that dropping one still leaves top_repo_ids empty when nothing
+        # else matched, and the fallback to this account's own projects
+        # still runs; a bad id should cost the resume nothing, not cost it
+        # every project.
+        owned_selections = set(
+            db.execute(
+                select(Repository.id).where(
+                    Repository.id.in_(selected_project_ids),
+                    Repository.account_id == account_id,
+                )
+            ).scalars()
+        )
         for sp_id in selected_project_ids:
-            if sp_id not in top_repo_ids:
+            if sp_id in owned_selections and sp_id not in top_repo_ids:
                 top_repo_ids.append(sp_id)
 
     if not top_repo_ids:
@@ -185,10 +201,22 @@ def _candidate_projects(
         )
         top_repo_ids = [r.id for r in all_repos]
 
+    # Scoped again here, so "every candidate belongs to this account" is a
+    # property of the query that reads them and not only of the three
+    # places that build the id list. Each source is already scoped on its
+    # own (retrieval by the account_id in each Qdrant payload, selections
+    # by the check above, the fallback by its own where clause); this is
+    # what keeps that true for a fourth source added later. It matters
+    # because _assemble_projects treats presence in this dict as proof a
+    # project was legitimately offered, so this is the query that decides
+    # what the model is allowed to put on a resume.
     repos_by_id = {
         r.id: r
         for r in db.execute(
-            select(Repository).where(Repository.id.in_(top_repo_ids))
+            select(Repository).where(
+                Repository.id.in_(top_repo_ids),
+                Repository.account_id == account_id,
+            )
         ).scalars()
     }
     skills_by_repo: dict[int, list[str]] = {}
