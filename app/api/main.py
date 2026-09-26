@@ -1,4 +1,6 @@
 import json
+import threading
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,17 +25,33 @@ from app.api.projects import router as projects_router
 from app.api.resume import router as resume_router
 from app.api.resume_build import router as resume_build_router
 from app.api.skills import router as skills_router
+from app.api.skills import warm_skill_maps
 from app.api.sources import router as sources_router
 from app.core.app_settings import get_llm_settings
 from app.core.db import init_db
 from app.core.embeddings import EMBEDDING_MODEL
+from app.core.key_refresh import start_key_refresh
+from app.core.settings import get_settings
 from app.ingest.github.cancellation import request_cancel
 from app.ingest.github.sync import SyncSummary, sync_account, sync_account_progress
 
 
 @asynccontextmanager
-async def _lifespan(app: FastAPI):
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
+    # The skill map needs an embedding model in memory, which takes a few
+    # seconds to load. Doing it here, off the request path, means the
+    # first person to open the map gets a cached layout instead of a
+    # spinner (see app/profile/skill_map.py). Daemon so it never holds up
+    # shutdown, and started only if the layout is actually stale.
+    if get_settings().skill_map_warm_start:
+        threading.Thread(target=warm_skill_maps, name="skill-map-warm", daemon=True).start()
+    # A key that ran out of quota yesterday is usually fine today, so the
+    # keys waiting on a reset are rechecked here and then on an interval
+    # (app/core/key_refresh.py). Restarting the app is the moment a person
+    # most expects that to have happened.
+    if get_settings().key_refresh_on_start:
+        start_key_refresh()
     yield
 
 
@@ -65,7 +83,7 @@ def health() -> dict:
 def index(request: Request) -> HTMLResponse:
     """First page: who's using this device. Picks an existing local
     account or creates a new one, no password, client-side selection
-    only (see app/core/db.py's Account docstring)."""
+    only (see app/core/db/models.py's Account docstring)."""
     return templates.TemplateResponse(request, "accounts.html")
 
 
@@ -266,7 +284,7 @@ def sources_page(request: Request) -> HTMLResponse:
 def auth_sources_page(request: Request) -> HTMLResponse:
     """Authenticated job-source login profiles: real automated-browser
     logins used to fetch a posting from a site that requires being signed
-    in. See app/core/db.py's AuthSource docstring and
+    in. See app/core/db/models.py's AuthSource docstring and
     app/ingest/jobs/auth_fetch.py's module docstring for the risks. Data from GET/POST/PATCH/DELETE
     /api/auth-sources and POST /api/auth-sources/{id}/test-login
     (app/api/auth_sources.py)."""
@@ -277,14 +295,20 @@ def auth_sources_page(request: Request) -> HTMLResponse:
 def apis_page(request: Request) -> HTMLResponse:
     """API key management for every supported LLM provider
     (app/core/llm_providers.py), any number of labeled keys per provider, one
-    marked active per provider (app/core/db.py's ApiKey model). Device-
+    marked active per provider (app/core/db/models.py's ApiKey model). Device-
     wide, not per-profile, so this page is reachable from two
     entry points rather than duplicating the widget in each: the top of
     the pre-login account picker (app/web/templates/accounts.html) and a
     link on the post-login Settings page. One page, one bit of JS, one
     backend (app/api/api_keys.py, app/core/api_keys_store.py); a new
     provider is a registry entry in app/core/llm_providers.py, not a
-    second copy of this page."""
+    second copy of this page.
+
+    The stored keys show up in three groups, which is the difference the
+    page exists to make plain: the ones working, the ones waiting on a
+    quota that resets by itself (rechecked automatically, see
+    app/core/key_refresh.py), and the ones the provider rejected or
+    blocked, which nothing rechecks until someone asks."""
     return templates.TemplateResponse(request, "apis.html")
 
 
@@ -353,7 +377,7 @@ def sync_github_stream(
     if not username:
         raise HTTPException(status_code=422, detail="username is required")
 
-    def events():
+    def events() -> Iterator[str]:
         try:
             for event in sync_account_progress(
                 username, account_id=account_id, run_id=run_id

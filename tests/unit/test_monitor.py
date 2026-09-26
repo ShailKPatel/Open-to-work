@@ -1,6 +1,6 @@
 """Tests for app/api/monitor.py, the /monitor page's backend: the per-key,
 per-account, per-provider, and per-tier LLM usage breakdown
-(LLMCall.account_id/key_id, see app/core/db.py), plus the event log and
+(LLMCall.account_id/key_id, see app/core/db/models.py), plus the event log and
 live-status endpoints.
 """
 
@@ -16,8 +16,7 @@ from app.core.settings import get_settings
 def _reset_db(tmp_path: Path):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()
@@ -301,3 +300,58 @@ def test_events_endpoint_filters_by_account_id(tmp_path):
     assert len(acc1_events) == 1
     assert acc1_events[0]["detail"] == "for acc1"
     assert acc1_events[0]["account_id"] == acc1
+
+
+def test_llm_usage_breaks_down_by_purpose(tmp_path):
+    """Which feature the money went to, which a model name and a tier do not
+    say on their own."""
+    _reset_db(tmp_path)
+    _make_call(purpose="repo_facts", cost_usd=1.0)
+    _make_call(purpose="repo_facts", cost_usd=2.0, cached=True)
+    _make_call(purpose="pagefit_trim", cost_usd=0.5)
+    _make_call(purpose=None, cost_usd=0.25)  # a row from before the column existed
+
+    body = _client().get("/api/monitor/llm/usage").json()
+
+    by_purpose = {b["key"]: b for b in body["by_purpose"]}
+    assert by_purpose["repo_facts"]["label"] == "Project extraction (skills + links)"
+    assert by_purpose["repo_facts"]["calls"] == 2
+    assert by_purpose["repo_facts"]["cached_calls"] == 1
+    assert by_purpose["repo_facts"]["cost_usd"] == pytest.approx(3.0)
+    assert by_purpose["pagefit_trim"]["label"] == "Page-fit trimming"
+    assert by_purpose["none"]["label"] == "(unattributed)"
+    assert by_purpose["none"]["cost_usd"] == pytest.approx(0.25)
+
+
+def test_an_unlabelled_purpose_shows_its_own_name(tmp_path):
+    """A call site that ships before anyone adds a readable label still
+    appears in the breakdown, under its raw purpose."""
+    _reset_db(tmp_path)
+    _make_call(purpose="something_new", cost_usd=1.0)
+
+    body = _client().get("/api/monitor/llm/usage").json()
+
+    by_purpose = {b["key"]: b for b in body["by_purpose"]}
+    assert by_purpose["something_new"]["label"] == "something_new"
+
+
+def test_llm_usage_purpose_filter_narrows_every_breakdown(tmp_path):
+    _reset_db(tmp_path)
+    _make_call(purpose="repo_facts", tier="bulk", cost_usd=1.0)
+    _make_call(purpose="resume_build", tier="quality", cost_usd=4.0)
+
+    body = _client().get("/api/monitor/llm/usage?purpose=repo_facts").json()
+
+    assert body["totals"]["cost_usd"] == pytest.approx(1.0)
+    assert [b["key"] for b in body["by_tier"]] == ["bulk"]
+
+
+def test_llm_calls_carry_and_filter_by_purpose(tmp_path):
+    _reset_db(tmp_path)
+    facts_call = _make_call(purpose="repo_facts")
+    _make_call(purpose="resume_build")
+
+    rows = _client().get("/api/monitor/llm/calls?purpose=repo_facts").json()
+
+    assert [r["id"] for r in rows] == [facts_call]
+    assert rows[0]["purpose"] == "repo_facts"

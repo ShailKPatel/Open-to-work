@@ -1,7 +1,7 @@
 """Multi-provider LLM key management, backing the /apis page. A raw key
 only ever flows IN here (add); GET responses always carry `masked`
 previews from app/core/api_keys_store.py, never the real value.
-See app/core/db.py's ApiKey docstring for the multi-provider/multi-key/
+See app/core/db/models.py's ApiKey docstring for the multi-provider/multi-key/
 per-account data model this backs.
 """
 
@@ -38,6 +38,17 @@ class ApiKeyOut(BaseModel):
     status: str
     last_checked_at: str | None
     last_check_detail: str | None
+    # Quota bookkeeping, set only while `status` is "rate_limited": when
+    # the key ran out, which limit it hit, and when it is worth looking at
+    # again. See app/core/key_cooldown.py.
+    exhausted_at: str | None
+    retry_at: str | None
+    exhaustion_kind: str | None
+    # Whether this key is in the automatic recheck pass at all (quota
+    # exhaustion is; a rejected or blocked key is not), and whether its
+    # wait is already over.
+    auto_rechecked: bool
+    recheck_due: bool
     budget_cap_usd: float | None
     is_active: bool
     enabled: bool
@@ -59,6 +70,21 @@ class UpdateKeyRequest(BaseModel):
     budget_cap_usd: float | None = None
     has_budget_cap: bool = True  # false clears budget_cap_usd to None
     allowed_account_ids: list[int] = []
+
+
+class RecheckRequest(BaseModel):
+    # "due"       exhausted keys whose cooldown has elapsed (what the
+    #             background pass does, app/core/key_refresh.py)
+    # "exhausted" every exhausted key, cooldown elapsed or not
+    # "blocked"   the rejected/blocked keys, which nothing checks on its own
+    scope: str = "due"
+
+
+class RecheckOut(BaseModel):
+    scope: str
+    checked: int
+    recovered: int
+    keys: list[ApiKeyOut]
 
 
 class DefaultProviderOut(BaseModel):
@@ -144,6 +170,29 @@ def check_key(key_id: int) -> ApiKeyOut:
     if row is None:
         raise HTTPException(status_code=404, detail="no such key")
     return ApiKeyOut(**row)
+
+
+@router.post("/recheck", response_model=RecheckOut)
+def recheck_keys(payload: RecheckRequest | None = None) -> RecheckOut:
+    """Runs the recheck pass now, for one group of unhappy keys. Same code
+    the background refresh runs (app/core/key_refresh.py), so the buttons
+    on /apis and the startup pass cannot drift apart.
+
+    `scope` is the whole point: "due" and "exhausted" are about quotas,
+    which come back on their own, while "blocked" is the explicit ask for
+    keys the provider has shut off, which are never touched otherwise.
+    """
+    scope = (payload or RecheckRequest()).scope
+    try:
+        rows = api_keys_store.recheck_keys(scope)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return RecheckOut(
+        scope=scope,
+        checked=len(rows),
+        recovered=sum(1 for row in rows if row["status"] == "valid"),
+        keys=[ApiKeyOut(**row) for row in rows],
+    )
 
 
 @router.post("/{key_id}/activate", response_model=ApiKeyOut)

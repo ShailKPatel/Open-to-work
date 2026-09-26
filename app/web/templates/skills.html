@@ -117,7 +117,7 @@
             x-transition:leave="transition ease-in duration-100"
             x-transition:leave-start="opacity-100 scale-100"
             x-transition:leave-end="opacity-0 scale-95"
-            class="absolute top-full mt-2 z-40 w-72 p-4 otw-tile shadow-2xl bg-[color:var(--tile)] border border-[color:var(--line-strong)]"
+            class="absolute top-full mt-2 z-40 w-72 p-4 otw-tile bg-[color:var(--tile)] border border-[color:var(--line-strong)]"
             :class="index % 3 === 2 ? 'right-0' : (index % 3 === 1 ? 'left-1/2 -translate-x-1/2' : 'left-0')"
           >
             <div class="flex items-center justify-between pb-2 border-b border-[color:var(--line)] mb-2">
@@ -191,12 +191,12 @@
     <!-- Fixed Header Control Bar -->
     <div class="absolute top-4 left-4 right-4 z-50 flex items-center justify-between gap-4 pointer-events-none">
       <!-- Left Controls Card -->
-      <div class="pointer-events-auto flex items-center gap-3 otw-tile p-2.5 shadow-2xl backdrop-blur">
+      <div class="pointer-events-auto flex items-center gap-3 otw-tile p-2.5 backdrop-blur">
         <div class="flex items-center gap-2 px-2 border-r border-[color:var(--line)] pr-3">
           <svg class="w-5 h-5 text-[color:var(--ink)] shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>
           <div>
-            <h2 class="text-sm font-semibold text-[color:var(--ink)] leading-none font-display">2D Skill Cluster Map</h2>
-            <p class="text-[10px] text-[color:var(--muted)] mt-0.5" x-text="mapData.nodes ? mapData.nodes.length + ' skills mapped by embedding distance' : 'Loading map...'"></p>
+            <h2 class="text-sm font-semibold text-[color:var(--ink)] leading-none font-display">Skill map</h2>
+            <p class="text-[10px] text-[color:var(--muted)] mt-0.5" x-text="mapData.nodes && mapData.nodes.length ? mapData.nodes.length + ' skills, ' + mapData.clusters.length + ' groups' : 'Building layout'"></p>
           </div>
         </div>
 
@@ -224,7 +224,7 @@
         <button
           @click="resetMapTransform()"
           title="Reset Map Center"
-          class="otw-btn-ghost text-xs px-3 py-2 flex items-center gap-1.5 border border-[color:var(--line-strong)] hover:border-[color:var(--ink)] font-medium shadow-2xl"
+          class="otw-btn-ghost text-xs px-3 py-2 flex items-center gap-1.5 border border-[color:var(--line-strong)] hover:border-[color:var(--ink)] font-medium"
         >
           <svg class="w-4 h-4 text-[color:var(--ink)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
           <span>Center</span>
@@ -234,7 +234,7 @@
         <button
           @click="closeMapView()"
           title="Close Map View (Esc)"
-          class="otw-tile hover:border-[color:var(--ink)] w-10 h-10 rounded-xl shadow-2xl flex items-center justify-center shrink-0 cursor-pointer text-[color:var(--ink)] transition-all"
+          class="otw-tile hover:border-[color:var(--ink)] w-10 h-10 rounded-xl flex items-center justify-center shrink-0 cursor-pointer text-[color:var(--ink)] transition-all"
         >
           <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
@@ -253,15 +253,15 @@
     >
       <!-- Background Infinite Radial Grid Lines -->
       <div
-        class="absolute inset-0 pointer-events-none opacity-25"
-        :style="'background-image: radial-gradient(var(--line-strong) 1px, transparent 1px); background-size: ' + (30 * mapZoom) + 'px ' + (30 * mapZoom) + 'px; background-position: ' + (mapPanX) + 'px ' + (mapPanY) + 'px;'"
+        class="absolute inset-0 pointer-events-none opacity-10"
+        style="background-image: radial-gradient(var(--line-strong) 1px, transparent 1px); background-size: 32px 32px;"
       ></div>
 
       <!-- Map Loading Spinner -->
       <div x-show="mapLoading" class="absolute inset-0 z-30 flex items-center justify-center bg-[color:var(--bg)]/80 backdrop-blur-sm">
         <div class="flex flex-col items-center gap-3">
           <div class="w-10 h-10 border-4 border-[color:var(--line)] border-t-[color:var(--accent)] rounded-full animate-spin"></div>
-          <p class="text-sm font-medium text-[color:var(--muted)]">Embedding & projecting 2D skill map...</p>
+          <p class="text-sm font-medium text-[color:var(--muted)]">Building layout</p>
         </div>
       </div>
 
@@ -272,15 +272,19 @@
 
       <!-- Pannable & Zoomable Map Stage -->
       <div
-        class="absolute left-1/2 top-1/2 w-0 h-0 transition-transform duration-75 ease-out"
+        class="absolute left-1/2 top-1/2 w-0 h-0"
+        style="will-change: transform;"
         :style="'transform: translate3d(' + mapPanX + 'px, ' + mapPanY + 'px, 0) scale(' + mapZoom + ');'"
       >
-        <!-- Cluster Background Glowing Hulls -->
-        <template x-for="c in mapData.clusters" :key="'hull-' + c.id">
+        <!-- Cluster Headings. No drawn region: nine outlines over a
+             t-SNE layout overlap into noise, and the dots already show
+             where a group is. -->
+        <template x-for="c in mapData.clusters" :key="'label-' + c.id">
           <div
-            x-show="shouldShowClusterHull(c.id)"
-            class="absolute rounded-full pointer-events-none transition-all duration-300 blur-3xl opacity-20"
-            :style="getClusterHullStyle(c.id)"
+            x-show="isClusterVisible(c.id)"
+            class="absolute pointer-events-none whitespace-nowrap text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]"
+            :style="getClusterLabelStyle(c.id)"
+            x-text="c.label"
           ></div>
         </template>
 
@@ -288,35 +292,34 @@
         <template x-for="node in mapData.nodes" :key="node.name">
           <div
             @click.stop="selectMapNode(node)"
-            class="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-all duration-150 group"
-            :class="isNodeVisible(node) ? 'opacity-100 scale-100 z-20' : 'opacity-20 scale-90 z-0 pointer-events-none'"
+            class="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer group"
+            :class="isNodeVisible(node) ? 'opacity-100 z-20' : 'opacity-15 z-0 pointer-events-none'"
             :style="'left: ' + node.x + 'px; top: ' + node.y + 'px;'"
           >
-            <!-- Node Colored Circle Dot -->
+            <!-- Node Dot -->
             <div class="relative flex items-center justify-center">
               <div
-                class="w-6 h-6 rounded-full flex items-center justify-center shadow-xl transition-transform duration-200 group-hover:scale-125 border border-white/40"
-                :style="'background-color: ' + node.cluster_color + '; box-shadow: 0 0 18px ' + node.cluster_color + '99;'"
+                class="w-2.5 h-2.5 rounded-full flex items-center justify-center group-hover:w-3.5 group-hover:h-3.5"
+                :style="'background-color: ' + node.cluster_color + ';'"
               >
-                <svg x-show="node.starred" class="w-3 h-3 text-amber-300 fill-current" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                <span
+                  x-show="node.starred"
+                  class="absolute -inset-1 rounded-full border border-[color:var(--ink)]"
+                ></span>
               </div>
-              <!-- Selected Pulse Ring -->
+              <!-- Selection Ring -->
               <div
                 x-show="selectedNode && selectedNode.name === node.name"
-                class="absolute -inset-2.5 rounded-full border-2 border-[color:var(--ink)] animate-pulse"
+                class="absolute -inset-2 rounded-full border border-[color:var(--ink)]"
               ></div>
             </div>
 
-            <!-- Node Label Chip -->
-            <div
-              class="mt-1.5 px-2.5 py-1 rounded-lg otw-tile backdrop-blur text-center transition-all whitespace-nowrap shadow-xl flex items-center gap-1.5"
-              :class="selectedNode && selectedNode.name === node.name ? 'border-[color:var(--ink)] ring-2 ring-[color:var(--accent)] scale-105' : 'border-[color:var(--line)] group-hover:border-[color:var(--line-strong)]'"
-            >
-              <span class="text-xs font-semibold text-[color:var(--ink)]" x-text="node.name"></span>
+            <!-- Node Label -->
+            <div class="mt-1 text-center whitespace-nowrap">
               <span
-                x-show="node.sources && node.sources.length > 0"
-                class="text-[9px] font-mono px-1 rounded bg-[color:var(--surface)] text-[color:var(--muted)]"
-                x-text="node.sources.length"
+                class="text-[11px]"
+                :class="selectedNode && selectedNode.name === node.name ? 'text-[color:var(--ink)] font-semibold' : 'text-[color:var(--muted)] group-hover:text-[color:var(--ink)]'"
+                x-text="node.name"
               ></span>
             </div>
           </div>
@@ -325,7 +328,7 @@
 
       <!-- Zoom Controls (Bottom Left) -->
       <div class="absolute bottom-6 left-6 z-40 flex flex-col gap-2 pointer-events-auto">
-        <div class="otw-tile p-1 shadow-2xl flex flex-col gap-1 backdrop-blur">
+        <div class="otw-tile p-1 flex flex-col gap-1 backdrop-blur">
           <button @click="zoomIn()" title="Zoom In" class="w-8 h-8 flex items-center justify-center text-base font-bold text-[color:var(--ink)] hover:bg-[color:var(--surface)] rounded-lg transition-colors">+</button>
           <button @click="zoomOut()" title="Zoom Out" class="w-8 h-8 flex items-center justify-center text-base font-bold text-[color:var(--ink)] hover:bg-[color:var(--surface)] rounded-lg transition-colors">−</button>
           <button @click="resetMapTransform()" title="Reset Zoom (100%)" class="w-8 h-8 flex items-center justify-center text-[10px] font-medium text-[color:var(--muted)] hover:text-[color:var(--ink)] hover:bg-[color:var(--surface)] rounded-lg transition-colors">100%</button>
@@ -336,16 +339,20 @@
       <div
         x-show="selectedNode"
         x-transition
-        class="absolute bottom-6 right-6 z-40 w-80 otw-tile p-5 shadow-2xl text-[color:var(--ink)] pointer-events-auto backdrop-blur"
+        class="absolute bottom-6 right-6 z-40 w-80 otw-tile p-5 text-[color:var(--ink)] pointer-events-auto backdrop-blur"
       >
         <div class="flex items-start justify-between gap-3">
           <div>
-            <span class="text-[10px] font-mono uppercase px-2 py-0.5 rounded-full font-semibold border" :style="'background-color: ' + selectedNode?.cluster_color + '22; color: ' + selectedNode?.cluster_color + '; border-color: ' + selectedNode?.cluster_color" x-text="selectedNode?.cluster_label"></span>
+            <span class="text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)] flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full inline-block" :style="'background-color: ' + selectedNode?.cluster_color"></span>
+              <span x-text="selectedNode?.cluster_label"></span>
+            </span>
             <h3 class="text-xl font-bold text-[color:var(--ink)] mt-2 flex items-center gap-2 font-display">
               <span x-text="selectedNode?.name"></span>
-              <span x-show="selectedNode?.starred" class="text-amber-500 text-sm">
-                <svg class="w-4 h-4 fill-current inline" viewBox="0 0 24 24"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
-              </span>
+              <span
+                x-show="selectedNode?.starred"
+                class="text-[10px] uppercase tracking-[0.18em] text-[color:var(--muted)]"
+              >starred</span>
             </h3>
           </div>
           <button @click="selectedNode = null" class="text-[color:var(--muted)] hover:text-[color:var(--ink)]">
@@ -594,28 +601,25 @@
         return true;
       },
 
-      shouldShowClusterHull(clusterId) {
+      isClusterVisible(clusterId) {
         if (this.selectedClusterId !== null && this.selectedClusterId !== clusterId) {
           return false;
         }
         return true;
       },
 
-      getClusterHullStyle(clusterId) {
+      getClusterLabelStyle(clusterId) {
         if (!this.mapData.nodes) return 'display: none;';
-        const nodes = this.mapData.nodes.filter(n => n.cluster_id === clusterId);
-        if (!nodes || nodes.length === 0) return 'display: none;';
+        const nodes = this.mapData.nodes.filter((n) => n.cluster_id === clusterId);
+        if (nodes.length === 0) return 'display: none;';
         const avgX = nodes.reduce((acc, n) => acc + n.x, 0) / nodes.length;
         const avgY = nodes.reduce((acc, n) => acc + n.y, 0) / nodes.length;
         let maxDist = 100;
         for (const n of nodes) {
-          const dist = Math.hypot(n.x - avgX, n.y - avgY);
-          if (dist > maxDist) maxDist = dist;
+          maxDist = Math.max(maxDist, Math.hypot(n.x - avgX, n.y - avgY));
         }
         const radius = Math.max(140, maxDist + 90);
-        const cluster = this.mapData.clusters.find(c => c.id === clusterId);
-        const color = cluster ? cluster.color : '#6366f1';
-        return `left: ${avgX}px; top: ${avgY}px; width: ${radius * 2}px; height: ${radius * 2}px; margin-left: -${radius}px; margin-top: -${radius}px; background-color: ${color};`;
+        return `left: ${avgX}px; top: ${avgY - radius - 18}px; transform: translateX(-50%);`;
       },
 
       logout() {

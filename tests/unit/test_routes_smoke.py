@@ -63,8 +63,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/test.db")
     monkeypatch.setenv("QDRANT_URL", ":memory:")
     monkeypatch.setenv("RESUME_STORAGE_DIR", str(tmp_path / "resumes"))
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     vectorstore_module.get_client.cache_clear()
     get_settings.cache_clear()
     with TestClient(app) as test_client:  # runs the lifespan, which creates the schema

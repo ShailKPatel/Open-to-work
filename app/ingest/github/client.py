@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from github import Auth, Github, GithubException, RateLimitExceededException
@@ -79,7 +79,7 @@ class GitHubClient:
         stop=stop_after_attempt(5),
         reraise=True,
     )
-    def _call(self, fn, *args, **kwargs):
+    def _call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
         except RateLimitExceededException as e:

@@ -112,7 +112,7 @@ def search_resumes(query_text: str, account_id: int, top_k: int = 5) -> list[Hit
 
 def search_role_families(title_text: str, top_k: int = 3) -> list[Hit]:
     """The one search in this module that is not account-scoped in this module: role
-    families are a global taxonomy (see app/core/db.py's RoleFamily
+    families are a global taxonomy (see app/core/db/models.py's RoleFamily
     docstring), not per-account data, so account_id is omitted entirely
     rather than passed as None-meaning-unrestricted by accident; _search
     only skips its account filter when explicitly asked to.

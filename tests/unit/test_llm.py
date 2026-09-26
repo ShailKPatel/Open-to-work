@@ -12,6 +12,7 @@ from app.core.llm import (
     LLMProviderError,
     LLMRateLimitedError,
     LLMUnavailableError,
+    _with_prompt_caching,
     complete,
     file_part,
     image_part,
@@ -46,8 +47,7 @@ class FakeResponse:
 def _reset_db(tmp_path: Path, monthly_budget_usd: float = 20.0):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()
@@ -101,7 +101,9 @@ def test_complete_second_identical_call_hits_cache(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_complete_different_tier_is_not_a_cache_hit(tmp_path, monkeypatch):
+def test_complete_different_model_per_tier_is_not_a_cache_hit(tmp_path, monkeypatch):
+    """The tiers default to different models, and a different model can
+    answer differently, so its answer is not this one's."""
     _reset_db(tmp_path)
     monkeypatch.setattr(
         "litellm.completion_cost", lambda completion_response: 0.01, raising=False
@@ -113,6 +115,139 @@ def test_complete_different_tier_is_not_a_cache_hit(tmp_path, monkeypatch):
     complete("quality", messages, _completion_fn=_fake_completion_fn("b", calls=calls))
 
     assert len(calls) == 2
+
+
+def test_one_model_on_both_tiers_is_one_prompt(tmp_path, monkeypatch):
+    """Keyed on the model, not the tier: with the same model set for both,
+    the second call is the first call's prompt and is served from it rather
+    than billed again."""
+    _reset_db(tmp_path)
+    update_llm_settings(bulk_model="gemini/x", quality_model="gemini/x")
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    complete("bulk", messages, _completion_fn=_fake_completion_fn("a", calls=calls))
+    second = complete("quality", messages, _completion_fn=_fake_completion_fn("b", calls=calls))
+
+    assert len(calls) == 1
+    assert second.cached is True
+    assert second.cost_usd == 0.0
+
+
+def test_whitespace_only_difference_is_the_same_prompt(tmp_path, monkeypatch):
+    """A README refetched or a job posting repasted routinely differs by
+    trailing spaces, CRLF line endings and blank lines, and by nothing
+    else. Same answer, so same prompt."""
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.02, raising=False
+    )
+    calls: list = []
+
+    complete(
+        "bulk",
+        [{"role": "user", "content": "line one\nline two"}],
+        _completion_fn=_fake_completion_fn("hi", calls=calls),
+    )
+    second = complete(
+        "bulk",
+        [{"role": "user", "content": "  line one   \r\n\n\n\nline two  \n"}],
+        _completion_fn=_fake_completion_fn("hi", calls=calls),
+    )
+
+    assert len(calls) == 1
+    assert second.cached is True
+
+
+def test_different_wording_is_still_a_different_prompt(tmp_path, monkeypatch):
+    """The whitespace normalization above must not collapse prompts that
+    actually differ."""
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.02, raising=False
+    )
+    calls: list = []
+
+    complete(
+        "bulk",
+        [{"role": "user", "content": "line one"}],
+        _completion_fn=_fake_completion_fn("a", calls=calls),
+    )
+    complete(
+        "bulk",
+        [{"role": "user", "content": "line  one"}],
+        _completion_fn=_fake_completion_fn("b", calls=calls),
+    )
+
+    assert len(calls) == 2
+
+
+def test_purpose_is_recorded_on_the_call_row(tmp_path, monkeypatch):
+    from sqlalchemy import select
+
+    from app.core.db import LLMCall, get_db
+
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    messages = [{"role": "user", "content": "hello"}]
+
+    complete("bulk", messages, purpose="repo_facts", _completion_fn=_fake_completion_fn("hi"))
+    # Same prompt from another feature: still one dispatch, and the cached
+    # row carries its own caller's purpose rather than the first one's.
+    complete("bulk", messages, purpose="resume_build", _completion_fn=_fake_completion_fn("hi"))
+
+    db = get_db()
+    try:
+        rows = list(db.execute(select(LLMCall).order_by(LLMCall.id)).scalars())
+    finally:
+        db.close()
+    assert [(r.purpose, r.cached) for r in rows] == [
+        ("repo_facts", False),
+        ("resume_build", True),
+    ]
+
+
+def test_purpose_is_not_part_of_the_cache_key(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    complete("bulk", messages, purpose="a", _completion_fn=_fake_completion_fn("x", calls=calls))
+    complete("bulk", messages, purpose="b", _completion_fn=_fake_completion_fn("x", calls=calls))
+
+    assert len(calls) == 1
+
+
+def test_anthropic_system_prompt_is_marked_for_prompt_caching():
+    messages = [system_message("fixed instructions"), user_message("per-item text")]
+
+    marked = _with_prompt_caching("anthropic", messages)
+
+    assert marked[0]["content"] == [
+        {
+            "type": "text",
+            "text": "fixed instructions",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    assert marked[1] == messages[1]
+    # the caller's own list is untouched
+    assert messages[0]["content"] == "fixed instructions"
+
+
+def test_providers_that_cache_by_themselves_get_the_messages_unchanged():
+    messages = [system_message("fixed instructions"), user_message("per-item text")]
+
+    for provider in ("gemini", "openai", "mistral", "ollama"):
+        assert _with_prompt_caching(provider, messages) == messages
 
 
 def test_complete_refuses_dispatch_over_budget(tmp_path, monkeypatch):
@@ -401,7 +536,7 @@ def test_complete_response_carries_token_counts(tmp_path, monkeypatch):
 def test_complete_records_account_id_even_via_injected_completion_fn(tmp_path, monkeypatch):
     """account_id is a plain parameter to complete(), independent of the
     key-resolution branch a test's _completion_fn bypasses (see LLMCall's
-    docstring in app/core/db.py); it should land on the row either way."""
+    docstring in app/core/db/models.py); it should land on the row either way."""
     from sqlalchemy import select
 
     from app.core.db import LLMCall, get_db
@@ -488,11 +623,15 @@ def _real_dispatch_env(tmp_path: Path, monkeypatch) -> None:
     )
 
 
-def _add_openai_key(budget_cap_usd: float | None = None) -> int:
+def _add_openai_key(
+    budget_cap_usd: float | None = None,
+    label: str = "Test key",
+    api_key: str = "sk-test",
+) -> int:
     from app.core import api_keys_store
 
     added, detail = api_keys_store.add_key(
-        "openai", "Test key", {"api_key": "sk-test"}, budget_cap_usd
+        "openai", label, {"api_key": api_key}, budget_cap_usd
     )
     assert added is not None, detail
     return added["id"]
@@ -593,6 +732,87 @@ def test_provider_rate_limit_marks_the_key_rate_limited_and_wraps(tmp_path, monk
     assert _key_status(key_id) == "rate_limited"
 
 
+def _permission_denied(message: str) -> Exception:
+    """litellm's 403 exception, which unlike its siblings insists on a real
+    response object."""
+    import httpx
+    import litellm
+
+    return litellm.PermissionDeniedError(
+        message=message,
+        llm_provider="openai",
+        model="gpt-4o-mini",
+        response=httpx.Response(
+            403, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        ),
+    )
+
+
+def test_a_suspended_key_is_marked_blocked_not_just_invalid(tmp_path, monkeypatch):
+    """A provider shutting the key off is kept apart from a rejected key
+    and from a quota, because it is the one failure no waiting fixes: it
+    lands in its own group on /apis and nothing rechecks it on a timer."""
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def suspended(**kwargs):
+        raise _permission_denied("Your account has been suspended")
+
+    monkeypatch.setattr("litellm.completion", suspended, raising=False)
+
+    with pytest.raises(LLMProviderError, match="has blocked this key"):
+        complete("bulk", [user_message("hi")])
+
+    assert _key_status(key_id) == "blocked"
+
+
+def test_a_model_this_key_may_not_use_leaves_the_key_alone(tmp_path, monkeypatch):
+    """The other side of the same error class: the key is healthy, it just
+    isn't allowed near that model, so its status must not be touched."""
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def not_allowed(**kwargs):
+        raise _permission_denied("Project does not have access to model gpt-4o-mini")
+
+    monkeypatch.setattr("litellm.completion", not_allowed, raising=False)
+
+    with pytest.raises(LLMProviderError, match="isn't allowed to use"):
+        complete("bulk", [user_message("hi")])
+
+    assert _key_status(key_id) == "valid"
+
+
+def test_a_rate_limited_key_gets_a_wait_planned_from_what_the_provider_said(tmp_path, monkeypatch):
+    """The 429 path hands the provider's own text to
+    app/core/key_cooldown.py, which is the only place the reset window is
+    written down."""
+    import litellm
+
+    from app.core import api_keys_store
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def out_of_quota(**kwargs):
+        raise litellm.RateLimitError(
+            message='quota exceeded, "retryDelay":"300s"',
+            llm_provider="openai",
+            model="gpt-4o-mini",
+        )
+
+    monkeypatch.setattr("litellm.completion", out_of_quota, raising=False)
+
+    with pytest.raises(LLMRateLimitedError):
+        complete("bulk", [user_message("hi")])
+
+    row = next(k for k in api_keys_store.list_keys() if k["id"] == key_id)
+    assert row["status"] == "rate_limited"
+    assert row["retry_at"] is not None
+    assert row["recheck_due"] is False
+
+
 def test_unrelated_dispatch_error_leaves_the_key_status_alone(tmp_path, monkeypatch):
     _real_dispatch_env(tmp_path, monkeypatch)
     key_id = _add_openai_key()
@@ -651,3 +871,322 @@ def test_embed_delegates_to_the_local_embedding_model(monkeypatch):
     )
 
     assert embed(["ab", "c"]) == [[2.0], [1.0]]
+
+
+# ---------------------------------------------------------------------------
+# Key failover: app/core/llm.py's _dispatch_over_keys()
+#
+# What these pin down is the point of the whole mechanism: a key dying is
+# not the end of the request, and so not the end of whatever multi-step
+# job the request is one call of. The caller never learns a swap happened
+# (it gets a normal LLMResponse), the key that gave out is marked, and the
+# key that answered is the one billed.
+# ---------------------------------------------------------------------------
+
+
+def _keyed_completion_fn(behaviour: dict, calls: list | None = None):
+    """A fake litellm.completion that answers differently per credential.
+    `behaviour` maps api_key -> either an exception to raise or the text
+    to answer with, so a test says "sk-1 is out of quota, sk-2 works"
+    without caring how complete() got there."""
+
+    def _fn(**kwargs):
+        if calls is not None:
+            calls.append(kwargs)
+        outcome = behaviour[kwargs["api_key"]]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return FakeResponse(choices=[FakeChoice(FakeMessage(outcome))])
+
+    return _fn
+
+
+def _rate_limited() -> Exception:
+    import litellm
+
+    return litellm.RateLimitError(
+        message="quota exceeded", llm_provider="openai", model="gpt-4o-mini"
+    )
+
+
+def _rejected() -> Exception:
+    import litellm
+
+    return litellm.AuthenticationError(
+        message="invalid api key", llm_provider="openai", model="gpt-4o-mini"
+    )
+
+
+def test_a_dead_key_hands_the_same_request_to_the_next_one(tmp_path, monkeypatch):
+    """The heart of it: key one is out of quota, key two answers, and the
+    caller sees an ordinary successful response. A job halfway through its
+    steps keeps going instead of stopping with two steps done."""
+    from sqlalchemy import select
+
+    from app.core.db import LLMCall, get_db
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    first = _add_openai_key(label="First", api_key="sk-1")
+    second = _add_openai_key(label="Second", api_key="sk-2")
+    calls: list = []
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-1": _rate_limited(), "sk-2": "answered"}, calls=calls),
+        raising=False,
+    )
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.02)
+
+    result = complete("bulk", [user_message("hi")])
+
+    assert result.content == "answered"
+    assert [c["api_key"] for c in calls] == ["sk-1", "sk-2"]
+    assert _key_status(first) == "rate_limited"
+    assert _key_status(second) == "valid"
+
+    db = get_db()
+    row = db.execute(select(LLMCall).order_by(LLMCall.id.desc())).scalars().first()
+    db.close()
+    assert row.key_id == second  # the key that actually paid, not the first one tried
+
+
+def test_a_rejected_key_also_hands_over(tmp_path, monkeypatch):
+    """Not just quotas: a credential the provider refuses outright is the
+    other everyday way a key dies mid-run."""
+    _real_dispatch_env(tmp_path, monkeypatch)
+    first = _add_openai_key(label="First", api_key="sk-1")
+    _add_openai_key(label="Second", api_key="sk-2")
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-1": _rejected(), "sk-2": "answered"}),
+        raising=False,
+    )
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0)
+
+    assert complete("bulk", [user_message("hi")]).content == "answered"
+    assert _key_status(first) == "invalid"
+
+
+def test_a_key_past_its_own_cap_is_skipped_without_spending_a_call(tmp_path, monkeypatch):
+    """A cap is checked before dispatch, so the capped key costs nothing
+    to skip, and the next key takes the request."""
+    from app.core.llm import _record
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    capped = _add_openai_key(budget_cap_usd=0.05, label="Capped", api_key="sk-1")
+    _add_openai_key(label="Spare", api_key="sk-2")
+    _record(
+        tier="bulk", model="openai/gpt-4o-mini", prompt_hash="earlier-call",
+        response_json={"content": "x"}, tokens_in=0, tokens_out=0,
+        cost_usd=0.50, latency_ms=0, cached=False, key_id=capped,
+    )
+    calls: list = []
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-2": "answered"}, calls=calls),
+        raising=False,
+    )
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0)
+
+    assert complete("bulk", [user_message("hi")]).content == "answered"
+    assert [c["api_key"] for c in calls] == ["sk-2"]
+
+
+def test_one_key_s_spending_does_not_count_against_another_s_cap(tmp_path, monkeypatch):
+    """Caps are per key, read off LLMCall.key_id. A provider-wide total
+    would retire every key on that provider as soon as the smallest cap
+    was reached, which is exactly the failure this whole feature exists
+    to avoid."""
+    from app.core.llm import _key_month_spend_usd, _record
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    other = _add_openai_key(label="Other", api_key="sk-1")
+    mine = _add_openai_key(budget_cap_usd=1.00, label="Mine", api_key="sk-2")
+    _record(
+        tier="bulk", model="openai/gpt-4o-mini", prompt_hash="other-key-call",
+        response_json={"content": "x"}, tokens_in=0, tokens_out=0,
+        cost_usd=5.00, latency_ms=0, cached=False, key_id=other,
+    )
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-1": _rate_limited(), "sk-2": "answered"}),
+        raising=False,
+    )
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0)
+
+    assert complete("bulk", [user_message("hi")]).content == "answered"
+    assert _key_month_spend_usd(mine) == 0.0
+
+
+def test_an_overloaded_provider_does_not_burn_the_other_keys(tmp_path, monkeypatch):
+    """A 503 is the provider's own health, identical for every key. Trying
+    them all would spend the spare keys' quota on a request that cannot
+    succeed and delay the real error by however long the retries take."""
+    import litellm
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(label="First", api_key="sk-1")
+    _add_openai_key(label="Second", api_key="sk-2")
+    monkeypatch.setattr("app.core.llm._sleep", lambda s: None)
+    calls: list = []
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn(
+            {
+                "sk-1": litellm.ServiceUnavailableError(
+                    message="overloaded", llm_provider="openai", model="gpt-4o-mini"
+                ),
+                "sk-2": "never reached",
+            },
+            calls=calls,
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(LLMUnavailableError):
+        complete("bulk", [user_message("hi")])
+
+    assert {c["api_key"] for c in calls} == {"sk-1"}
+
+
+def test_a_prompt_the_model_cannot_take_fails_once_not_once_per_key(tmp_path, monkeypatch):
+    """Same reasoning for a request-shaped error: no key makes an
+    over-long prompt fit."""
+    import litellm
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(label="First", api_key="sk-1")
+    _add_openai_key(label="Second", api_key="sk-2")
+    calls: list = []
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn(
+            {
+                "sk-1": litellm.ContextWindowExceededError(
+                    message="too long", llm_provider="openai", model="gpt-4o-mini"
+                ),
+                "sk-2": "never reached",
+            },
+            calls=calls,
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(LLMProviderError, match="too long"):
+        complete("bulk", [user_message("hi")])
+
+    assert len(calls) == 1
+
+
+def test_only_once_every_key_is_spent_does_the_request_fail(tmp_path, monkeypatch):
+    """And the error then names each key and its own reason, because "why
+    did this stop?" is answered by the whole list, not by whichever key
+    happened to be tried last."""
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(label="Personal", api_key="sk-1")
+    _add_openai_key(label="Work", api_key="sk-2")
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-1": _rate_limited(), "sk-2": _rejected()}),
+        raising=False,
+    )
+
+    with pytest.raises(LLMProviderError) as excinfo:
+        complete("bulk", [user_message("hi")])
+
+    message = str(excinfo.value)
+    assert "All 2 OpenAI keys failed" in message
+    assert "Personal: " in message and "limiting requests" in message
+    assert "Work: " in message and "rejected the API key" in message
+
+
+def test_a_single_key_keeps_its_own_message_verbatim(tmp_path, monkeypatch):
+    """Nothing to fall back to means there is no failover to explain, so
+    the message stays the one that says what to do about that key."""
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(label="Only", api_key="sk-1")
+    monkeypatch.setattr(
+        "litellm.completion", _keyed_completion_fn({"sk-1": _rejected()}), raising=False
+    )
+
+    with pytest.raises(LLMProviderError, match="^OpenAI rejected the API key"):
+        complete("bulk", [user_message("hi")])
+
+
+def test_a_key_marked_dead_earlier_is_tried_last_and_revived_if_it_works(tmp_path, monkeypatch):
+    """Quotas reset. A key marked rate_limited an hour ago is worth
+    keeping in rotation, just not first, and a run where it answers
+    clears the mark so /apis stops showing a dead key that works."""
+    from app.core import api_keys_store
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    stale = _add_openai_key(label="Yesterday's", api_key="sk-1")
+    healthy = _add_openai_key(label="Healthy", api_key="sk-2")
+    api_keys_store.record_dispatch_outcome(stale, ok=False, rate_limited=True, detail="429")
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0)
+
+    # Healthy key first, although the stale one is the active one.
+    calls: list = []
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-1": "stale", "sk-2": "healthy"}, calls=calls),
+        raising=False,
+    )
+    assert complete("bulk", [user_message("hi")]).content == "healthy"
+    assert [c["api_key"] for c in calls] == ["sk-2"]
+
+    # And when the healthy one dies, the stale one answers and is cleared.
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-1": "stale", "sk-2": _rate_limited()}),
+        raising=False,
+    )
+    assert complete("bulk", [user_message("second prompt")]).content == "stale"
+    assert _key_status(stale) == "valid"
+    assert _key_status(healthy) == "rate_limited"
+
+
+def test_a_key_swap_is_written_to_the_event_log(tmp_path, monkeypatch):
+    """The request succeeded, so nothing else in the app would record
+    that a key gave out. /monitor's event log is the trail."""
+    from app.core.rate_limits import list_events
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(label="Personal", api_key="sk-1")
+    _add_openai_key(label="Work", api_key="sk-2")
+    monkeypatch.setattr(
+        "litellm.completion",
+        _keyed_completion_fn({"sk-1": _rate_limited(), "sk-2": "answered"}),
+        raising=False,
+    )
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0)
+
+    complete("bulk", [user_message("hi")], account_id=4)
+
+    failovers = [e for e in list_events(source="llm") if e.kind == "key_failover"]
+    assert len(failovers) == 1
+    assert failovers[0].detail.startswith("Personal: ")
+    assert failovers[0].account_id == 4
+
+
+def test_is_out_of_keys_tells_batches_when_to_stop(tmp_path, monkeypatch):
+    """The signal a batch caller (app/profile/build.py) uses to stop
+    instead of spending one doomed call per remaining item."""
+    from app.core.llm import LLMDispatchError, is_out_of_keys
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    _add_openai_key(label="Only", api_key="sk-1")
+    monkeypatch.setattr(
+        "litellm.completion", _keyed_completion_fn({"sk-1": _rate_limited()}), raising=False
+    )
+
+    with pytest.raises(LLMRateLimitedError) as excinfo:
+        complete("bulk", [user_message("hi")])
+
+    assert is_out_of_keys(excinfo.value)
+    assert is_out_of_keys(ApiKeyMissingError("none stored"))
+    assert is_out_of_keys(BudgetExceededError("cap reached"))
+    # This one item's own problem, and the next item might be fine.
+    assert not is_out_of_keys(LLMProviderError("prompt too long"))
+    assert not is_out_of_keys(LLMUnavailableError("provider down"))
+    assert not is_out_of_keys(LLMDispatchError("something else"))
+    assert not is_out_of_keys(ValueError("not an LLM problem at all"))

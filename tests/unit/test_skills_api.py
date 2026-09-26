@@ -9,8 +9,7 @@ from app.core.settings import get_settings
 def _reset_db(tmp_path: Path):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     vectorstore_module.get_client.cache_clear()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     os.environ["QDRANT_URL"] = ":memory:"
@@ -30,6 +29,21 @@ def _mock_embed(monkeypatch):
     monkeypatch.setattr(
         "app.retrieval.index.embed", lambda texts: [[1.0, 0.0, 0.0] for _ in texts]
     )
+
+
+def _mock_map_embed(monkeypatch):
+    """The skill map embeds through app/profile/skill_map.py, not the
+    retrieval index. Vectors are spread over a circle so the projection
+    and the clustering both have something to separate; identical
+    vectors would make t-SNE's neighbour graph degenerate."""
+    import math
+
+    def fake(texts, **kwargs):
+        return [
+            [math.cos(i * 1.1), math.sin(i * 1.1), (i % 3) * 0.1] for i, _ in enumerate(texts)
+        ]
+
+    monkeypatch.setattr("app.profile.skill_map.embed", fake)
 
 
 def _make_account(**overrides) -> int:
@@ -225,6 +239,7 @@ def test_get_skills_map_empty(tmp_path):
 def test_get_skills_map_with_skills(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     _mock_embed(monkeypatch)
+    _mock_map_embed(monkeypatch)
     account_id = _make_account()
     client = _client()
 

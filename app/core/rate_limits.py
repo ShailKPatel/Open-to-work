@@ -1,6 +1,13 @@
-"""Append-only log of rate-limit / budget-cap hits, written from
-app/ingest/github/client.py (GitHub) and app/core/llm.py (provider rate
-limits and the monthly budget cap). Backs the /monitor page (app/api/monitor.py).
+"""Append-only log of the moments a provider, a budget, or a key got in
+the way, written from app/ingest/github/client.py (GitHub) and
+app/core/llm.py (provider rate limits, the monthly budget cap, and keys
+dropping out of rotation). Backs the /monitor page (app/api/monitor.py).
+
+Key rotation is why this log matters beyond a counter: a request that
+switched keys still succeeded, so nothing else in the app records that it
+nearly did not. The `key_failover` rows are the trail of which key gave
+out and when, and `keys_exhausted` / `stage_failed` say where a run
+finally stopped.
 
 record_event() is best-effort: it must never be the reason a
 real request fails, so any DB error here is swallowed and logged, not
@@ -20,7 +27,12 @@ from app.core.db import RateLimitEvent, get_db
 logger = logging.getLogger(__name__)
 
 Source = str  # "github" | "llm"
-Kind = str  # "rate_limited" | "budget_exceeded"
+# "rate_limited"    provider throttled us (either source)
+# "budget_exceeded" our own monthly cap, or one key's cap, would be passed
+# "key_failover"    a key gave out and the next one took the request over
+# "keys_exhausted"  every key for that provider was spent; the call failed
+# "stage_failed"    a multi-step run stopped, and at which step
+Kind = str
 
 
 def record_event(

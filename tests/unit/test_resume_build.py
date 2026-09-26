@@ -9,6 +9,7 @@ manual review.
 """
 
 import datetime as dt
+import re
 from pathlib import Path
 
 import pytest
@@ -60,8 +61,7 @@ def _reset_db(tmp_path: Path):
     import app.core.db as db_module
     from app.core.settings import get_settings
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()
@@ -280,3 +280,47 @@ def test_build_education_context_empty_when_none(tmp_path):
     account = _make_account()
 
     assert build_education_context(get_db(), account.id) == []
+
+
+@pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
+def test_render_resume_escapes_href_targets(template_name):
+    """Every href in a resume comes from account data (a social link's
+    URL, a repo URL, the contact email/phone), so it can carry the three
+    characters LaTeX still tokenizes inside \\href's target: `%`, `#` and
+    `&`. An unescaped `%` comments out the rest of the line and silently
+    drops the link; `#` and `&` fail the compile outright. The templates
+    must route every href through the latex_url filter, not just the
+    visible link text through latex.
+    """
+    data = {
+        "full_name": "Ada Lovelace",
+        "contact_items": [
+            {"icon": r"\faEnvelope", "text": "a%b@example.com", "href": "mailto:a%b@example.com"}
+        ],
+        "social_items": [
+            {"icon": r"\faGithub", "text": "ada", "href": "https://example.com/u?a=1&b=2#frag"}
+        ],
+        "summary": "",
+        "experience": [],
+        "projects": [
+            {
+                "name": "Proj",
+                "tagline": "",
+                "date_range": "2026",
+                "href": "https://example.com/r%20d?x=1&y=2#top",
+                "url_display": "example.com/r d",
+                "points": [],
+            }
+        ],
+        "education": [],
+        "technologies": [],
+        "skills": [],
+    }
+    rendered = render_resume(template_name, data)
+
+    assert r"mailto:a\%b@example.com" in rendered
+    assert r"https://example.com/u?a=1\&b=2\#frag" in rendered
+    assert r"https://example.com/r\%20d?x=1\&y=2\#top" in rendered
+    # No bare breaking char survives inside an href target.
+    for target in re.findall(r"\\href(?:WithoutArrow)?\{(.*?)\}", rendered):
+        assert not re.search(r"(?<!\\)[%#&]", target), f"unescaped href target: {target!r}"

@@ -2,7 +2,7 @@
 login profiles for fetching a posting from a login-walled site via a real
 automated browser login (app/ingest/jobs/auth_fetch.py, Playwright).
 
-Read app/core/db.py's AuthSource docstring and
+Read app/core/db/models.py's AuthSource docstring and
 app/ingest/jobs/auth_fetch.py's module docstring before touching this
 file. Automated login is opt-in and intended for a person's own job
 search with their own credentials. Every create requires acknowledged_risk=True, checked here

@@ -8,8 +8,7 @@ from app.core.settings import get_settings
 def _reset_db(tmp_path: Path):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()
@@ -154,11 +153,15 @@ def test_multiple_emails_and_phones_with_primary(tmp_path):
     client = _client()
 
     # Add email 1 (becomes primary by default)
-    e1 = client.post(f"/api/accounts/{account_id}/emails", json={"email": "primary@example.com"}).json()
+    e1 = client.post(
+        f"/api/accounts/{account_id}/emails", json={"email": "primary@example.com"}
+    ).json()
     assert e1["is_primary"] is True
 
     # Add email 2 (not primary)
-    e2 = client.post(f"/api/accounts/{account_id}/emails", json={"email": "secondary@example.com"}).json()
+    e2 = client.post(
+        f"/api/accounts/{account_id}/emails", json={"email": "secondary@example.com"}
+    ).json()
     assert e2["is_primary"] is False
 
     # Check contact endpoint return
@@ -167,15 +170,22 @@ def test_multiple_emails_and_phones_with_primary(tmp_path):
     assert len(c["emails"]) == 2
 
     # Switch primary to e2
-    up = client.patch(f"/api/accounts/{account_id}/emails/{e2['id']}", json={"is_primary": True}).json()
+    up = client.patch(
+        f"/api/accounts/{account_id}/emails/{e2['id']}", json={"is_primary": True}
+    ).json()
     assert up["is_primary"] is True
 
     c2 = client.get(f"/api/accounts/{account_id}/contact").json()
     assert c2["contact_email"] == "secondary@example.com"
 
-    # Add phone 1 and phone 2
+    # Add phone 1 (primary by default), then phone 2 asking for primary,
+    # which has to demote phone 1.
     p1 = client.post(f"/api/accounts/{account_id}/phones", json={"phone": "+1-555-0100"}).json()
-    p2 = client.post(f"/api/accounts/{account_id}/phones", json={"phone": "+1-555-0200", "is_primary": True}).json()
+    assert p1["is_primary"] is True
+    p2 = client.post(
+        f"/api/accounts/{account_id}/phones",
+        json={"phone": "+1-555-0200", "is_primary": True},
+    ).json()
     assert p2["is_primary"] is True
 
     c3 = client.get(f"/api/accounts/{account_id}/contact").json()

@@ -35,8 +35,7 @@ def _reset_db(tmp_path: Path):
     import app.retrieval.vectorstore as vectorstore_module
     from app.core.settings import get_settings
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     vectorstore_module.get_client.cache_clear()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     # build_resume_data() now calls search_experience_points() for every
@@ -382,3 +381,146 @@ def test_edit_resume_content_grounds_out_invented_repo_id(tmp_path, monkeypatch)
 
     assert data["projects"] == []
     assert data["skills"] == []
+
+
+def _seed_with_leftovers(tmp_path: Path) -> tuple[int, int, int, int]:
+    """Same shape as _seed(), plus a second repository and a second
+    experience point, so there is real content left over for the reserve
+    to hold once the model has picked. Returns account, posting and both
+    repo ids.
+    """
+    account_id, posting_id = _seed(tmp_path)
+    db = get_db()
+    picked_repo = db.query(Repository).filter_by(account_id=account_id).first()
+    spare = Repository(
+        account_id=account_id, github_id=2, name="spare-project",
+        full_name="janedoe/spare-project", url="https://github.com/janedoe/spare-project",
+        is_fork=False, description="A spare project nobody picked",
+    )
+    db.add(spare)
+    role = db.query(Experience).filter_by(account_id=account_id).first()
+    db.add(ExperiencePoint(experience_id=role.id, text="Also did a spare thing", order_index=2))
+    db.commit()
+    db.refresh(spare)
+    ids = (account_id, posting_id, picked_repo.id, spare.id)
+    db.close()
+    return ids
+
+
+def _stub_reserve_searches(monkeypatch, picked_repo_id: int, spare_repo_id: int):
+    from app.retrieval.search import Hit
+
+    skill_hits = [
+        Hit(id=1, score=0.9, payload={"repo_id": picked_repo_id, "skill": "Python"}),
+        Hit(id=2, score=0.5, payload={"repo_id": spare_repo_id, "skill": "Spare Skill"}),
+    ]
+    monkeypatch.setattr(
+        "app.retrieval.search.search_skill_evidence",
+        lambda query_text, account_id, top_k=10, source_type=None: skill_hits,
+    )
+    # Only the first of the role's two points matches, so the other is
+    # narrowed away and should land in the reserve rather than vanish.
+    monkeypatch.setattr(
+        "app.retrieval.search.search_experience_points",
+        lambda query_text, account_id, top_k=5, experience_id=None: [
+            Hit(id=3, score=0.9, payload={"text": "Shipped a thing"})
+        ],
+    )
+
+
+def test_reserve_holds_what_the_resume_is_not_showing(tmp_path, monkeypatch):
+    """Everything real that got left out has to be recoverable, because
+    app/resume_build/pagefit.py adds it back when a resume falls short of
+    its target page count."""
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id, picked_repo_id, spare_repo_id = _seed_with_leftovers(tmp_path)
+    _stub_reserve_searches(monkeypatch, picked_repo_id, spare_repo_id)
+
+    fake_response = MagicMock()
+    fake_response.parsed = {
+        "summary": "A concise, grounded summary.",
+        "projects": [
+            {"repo_id": picked_repo_id, "tagline": "Nice tool", "points": ["Built X"]}
+        ],
+        "skills": ["Python"],
+    }
+    monkeypatch.setattr(
+        "app.resume_build.orchestrator.complete", MagicMock(return_value=fake_response)
+    )
+
+    data = build_resume_data(account_id, posting_id)
+    reserve = data["reserve"]
+
+    assert [p["name"] for p in reserve["projects"]] == ["spare-project"]
+    # A held-back project's bullet is the repository's own description,
+    # never anything a model wrote for it.
+    assert reserve["projects"][0]["points"] == ["A spare project nobody picked"]
+    assert reserve["experience_points"] == {"Acme": ["Also did a spare thing"]}
+    assert reserve["skills"] == ["Spare Skill"]
+
+
+def test_reserve_never_reaches_the_rendered_tex(tmp_path, monkeypatch):
+    account_id, posting_id, picked_repo_id, spare_repo_id = _seed_with_leftovers(tmp_path)
+    _stub_reserve_searches(monkeypatch, picked_repo_id, spare_repo_id)
+
+    fake_response = MagicMock()
+    fake_response.parsed = {
+        "summary": "A concise, grounded summary.",
+        "projects": [
+            {"repo_id": picked_repo_id, "tagline": "Nice tool", "points": ["Built X"]}
+        ],
+        "skills": ["Python"],
+    }
+    monkeypatch.setattr(
+        "app.resume_build.orchestrator.complete", MagicMock(return_value=fake_response)
+    )
+
+    tex = generate_resume(account_id, posting_id)
+
+    assert "spare-project" not in tex
+    assert "Spare Skill" not in tex
+    assert "Also did a spare thing" not in tex
+
+
+def test_long_repo_description_is_truncated_before_it_is_sent(tmp_path, monkeypatch):
+    """A repo that put a whole README in its GitHub "About" field would
+    otherwise pay for it in every resume build for that account."""
+    account_id, posting_id = _seed(tmp_path)
+    db = get_db()
+    repo = db.query(Repository).filter(Repository.account_id == account_id).one()
+    repo.description = "A cool project. " + ("padding " * 500)
+    repo_id = repo.id
+    db.commit()
+    db.close()
+    _stub_search(monkeypatch, repo_id)
+
+    fake_response = MagicMock()
+    fake_response.parsed = {"summary": "S", "projects": [], "skills": []}
+    fake_complete = MagicMock(return_value=fake_response)
+    monkeypatch.setattr("app.resume_build.orchestrator.complete", fake_complete)
+
+    generate_resume(account_id, posting_id)
+
+    candidates_message = next(
+        m["content"]
+        for m in fake_complete.call_args.args[1]
+        if m["role"] == "user" and "CANDIDATE PROJECTS" in m["content"]
+    )
+    assert "A cool project." in candidates_message
+    assert candidates_message.count("padding") < 50
+
+
+def test_resume_build_call_is_tagged_with_its_purpose(tmp_path, monkeypatch):
+    """So /monitor's by_purpose breakdown can tell resume spend apart from
+    ingestion spend."""
+    account_id, posting_id = _seed(tmp_path)
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    fake_response = MagicMock()
+    fake_response.parsed = {"summary": "S", "projects": [], "skills": []}
+    fake_complete = MagicMock(return_value=fake_response)
+    monkeypatch.setattr("app.resume_build.orchestrator.complete", fake_complete)
+
+    generate_resume(account_id, posting_id)
+
+    assert fake_complete.call_args.kwargs["purpose"] == "resume_build"

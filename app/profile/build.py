@@ -1,8 +1,13 @@
 """build_profile(repos) -> Profile, the skill-profile entrypoint.
 
 Per repo: manifest-declared skills (free, deterministic) + README/description
-skills (one bulk-tier LLM call, see extract.py for the fallback chain and
-NoSourceTextError). Each claim gets a weight from `weighting.compute_weight`
+skills and project links (one bulk-tier LLM call for both, see extract.py
+for the fallback chain and NoSourceTextError). Before the per-repo loop,
+_prefetch_facts runs extract.py's batched pass, which covers several repos
+per call; a repo it answered needs no call of its own, and a repo it missed
+falls through to one, so nothing depends on the batched pass succeeding.
+
+Each claim gets a weight from `weighting.compute_weight`
 (fork status, recency, commit volume, evidence type). Writes one
 `SkillEvidence` row per claim, then aggregates across repos into
 `Profile.skills_json` via noisy-OR: multiple independent pieces of evidence
@@ -15,8 +20,11 @@ input, an unexpected error specific to that repo) marks that repo
 evidence. Each repo commits independently, so a single exception can't
 lose the entire batch.
 
-Rate limit / budget exhaustion is not treated as "this repo failed"; it
-means every remaining repo in this batch is about to fail the same way.
+Rate limit / budget exhaustion, or running out of usable API keys, is not
+treated as "this repo failed"; it means every remaining repo in this
+batch is about to fail the same way. (A key dying is normally invisible
+here: app/core/llm.py switches to the next stored key and the call
+succeeds. This is the case where there is no next key.)
 Continuing would spend one doomed call per remaining repo and fill each
 with the same raw error. Instead, `BudgetExceededError`/`LLMRateLimitedError`
 (app/core/llm.py) are caught separately: that one repo is marked
@@ -36,17 +44,21 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Iterator
 from functools import reduce
+from typing import Any
 
 from sqlalchemy import delete, select
+from sqlalchemy.orm import Session
 
 from app.core.db import Profile, ProjectLink, Repository, SkillEvidence, get_db
-from app.core.llm import BudgetExceededError, LLMRateLimitedError
+from app.core.llm import BudgetExceededError, LLMRateLimitedError, is_out_of_keys
 from app.profile.claims import LinkClaim, SkillClaim
 from app.profile.extract import (
     NoSourceTextError,
-    extract_links_from_repo,
-    extract_skills_from_repo,
+    RepoFacts,
+    extract_repo_facts,
+    prefetch_repo_facts,
 )
 from app.profile.manifest_skills import skills_from_manifests
 from app.profile.skill_review import name_key, rejected_keys, review_names
@@ -58,7 +70,9 @@ _SKIP_STATUSES = {"extracted", "no_signal"}
 _ERROR_MESSAGE_LIMIT = 2000
 
 
-def _write_claims(db, repo: Repository, claims: list[SkillClaim], now: dt.datetime) -> None:
+def _write_claims(
+    db: Session, repo: Repository, claims: list[SkillClaim], now: dt.datetime
+) -> None:
     # Names already reviewed and rejected for this account never get written
     # again; new names are reviewed in one batch after extraction, see
     # review_skill_evidence.
@@ -86,7 +100,7 @@ def _write_claims(db, repo: Repository, claims: list[SkillClaim], now: dt.dateti
         )
 
 
-def _write_links(db, repo: Repository, claims: list[LinkClaim]) -> None:
+def _write_links(db: Session, repo: Repository, claims: list[LinkClaim]) -> None:
     # Dedupe against repo.url itself (already shown as the project's primary
     # link elsewhere in the UI, so a README that just links back to its own
     # GitHub repo shouldn't produce a redundant row) and against duplicates
@@ -104,7 +118,12 @@ def _write_links(db, repo: Repository, claims: list[LinkClaim]) -> None:
         )
 
 
-def _process_repo(db, repo: Repository, now: dt.datetime) -> bool:
+def _process_repo(
+    db: Session,
+    repo: Repository,
+    now: dt.datetime,
+    prefetched: dict[int, RepoFacts] | None = None,
+) -> bool:
     """Mutates repo's status and this repo's SkillEvidence rows in place.
     Never raises: every failure mode ends in a status, not an exception,
     so the caller can commit unconditionally after this returns.
@@ -115,7 +134,12 @@ def _process_repo(db, repo: Repository, now: dt.datetime) -> bool:
     False otherwise, including the normal "this repo failed for its own
     reasons, others might still succeed" case.
 
-    Commits partway through, before calling extract_skills_from_repo. Not
+    `prefetched` is what the batched pass already got for this repo (see
+    extract.py's prefetch_repo_facts), if anything. A hit there means this
+    repo needs no call of its own; a miss falls through to one, so a group
+    whose batched call failed still gets processed normally.
+
+    Commits partway through, before calling extract_repo_facts. Not
     optional. That call reaches core.llm.complete(), which opens its own
     independent session to record the LLMCall row. If this function's own
     session still had an uncommitted delete/insert pending at that point,
@@ -143,57 +167,60 @@ def _process_repo(db, repo: Repository, now: dt.datetime) -> bool:
     db.commit()  # release the write lock before the nested LLM-call session runs
 
     stop_batch = False
-    try:
-        llm_claims = extract_skills_from_repo(repo)
-    except NoSourceTextError:
-        repo.skill_extraction_status = "no_signal"
-        repo.skill_extraction_error = None
-        llm_claims = []
-    except (BudgetExceededError, LLMRateLimitedError) as e:
-        logger.warning("rate limit / budget hit on %s: %s; stopping batch", repo.full_name, e)
-        repo.skill_extraction_status = "rate_limited"
-        repo.skill_extraction_error = (
-            f"{e} Processing stopped here so the remaining projects don't fail "
-            "the same way; run it again later to continue."
-        )
-        llm_claims = []
-        stop_batch = True
-    except Exception as e:  # this repo's own problem, not the batch's
-        logger.warning("skill extraction failed for %s: %s", repo.full_name, e)
-        repo.skill_extraction_status = "failed"
-        repo.skill_extraction_error = str(e)[:_ERROR_MESSAGE_LIMIT]
-        llm_claims = []
-    else:
+    facts = (prefetched or {}).get(repo.id)
+    if facts is not None:
+        # Already answered by the batched pass, no call of its own.
         repo.skill_extraction_status = "extracted"
         repo.skill_extraction_error = None
+    else:
+        try:
+            facts = extract_repo_facts(repo)
+        except NoSourceTextError:
+            repo.skill_extraction_status = "no_signal"
+            repo.skill_extraction_error = None
+            facts = RepoFacts()
+        except (BudgetExceededError, LLMRateLimitedError) as e:
+            logger.warning("rate limit / budget hit on %s: %s; stopping batch", repo.full_name, e)
+            repo.skill_extraction_status = "rate_limited"
+            repo.skill_extraction_error = (
+                f"{e} Processing stopped here so the remaining projects don't fail "
+                "the same way; run it again later to continue."
+            )
+            facts = RepoFacts()
+            stop_batch = True
+        except Exception as e:
+            if is_out_of_keys(e):
+                # Every key for the provider is spent (see
+                # app/core/llm.py), not something wrong with this repo.
+                # Same posture as the rate-limit case above: stop, so the
+                # repos after it keep their pending status and the next
+                # run continues from here.
+                logger.warning("out of usable keys on %s: %s; stopping batch", repo.full_name, e)
+                repo.skill_extraction_status = "rate_limited"
+                repo.skill_extraction_error = (
+                    f"{e} Processing stopped here so the remaining projects don't fail "
+                    "the same way; run it again once a key is available to continue."
+                )[:_ERROR_MESSAGE_LIMIT]
+                stop_batch = True
+            else:  # this repo's own problem, not the batch's
+                logger.warning("skill extraction failed for %s: %s", repo.full_name, e)
+                repo.skill_extraction_status = "failed"
+                repo.skill_extraction_error = str(e)[:_ERROR_MESSAGE_LIMIT]
+            facts = RepoFacts()
+        else:
+            repo.skill_extraction_status = "extracted"
+            repo.skill_extraction_error = None
 
     repo.skills_extracted_at = now
-    _write_claims(db, repo, llm_claims, now)
-
-    # Same first pass, separate LLM call (see extract.py's
-    # extract_links_from_repo module docstring for why it's not folded into
-    # the skills call above). Skipped when stop_batch is already set;
-    # another call would just hit the same rate limit / budget cap.
-    # Best-effort otherwise: a link-extraction failure is not this repo's
-    # skill_extraction_status problem, so it's caught and dropped rather
-    # than overwriting a status the skills block above already decided.
-    if not stop_batch:
-        try:
-            link_claims = extract_links_from_repo(repo)
-        except NoSourceTextError:
-            link_claims = []
-        except (BudgetExceededError, LLMRateLimitedError) as e:
-            logger.warning("rate limit / budget hit extracting links for %s: %s", repo.full_name, e)
-            link_claims = []
-        except Exception as e:
-            logger.warning("link extraction failed for %s: %s", repo.full_name, e)
-            link_claims = []
-        _write_links(db, repo, link_claims)
+    _write_claims(db, repo, facts.skills, now)
+    # Same call, no second dispatch: skills and links come back together
+    # (see extract.py's module docstring).
+    _write_links(db, repo, facts.links)
 
     return stop_batch
 
 
-def _index_repo_evidence(db, repo: Repository) -> None:
+def _index_repo_evidence(db: Session, repo: Repository) -> None:
     """Best-effort re-embed of this repo's current SkillEvidence rows into
     Qdrant, called right after each repo's write commits. Never raises: a
     Qdrant hiccup here must not lose or roll back the SQLite write that
@@ -228,12 +255,41 @@ def _aggregate(evidence: list[SkillEvidence]) -> dict:
     return skills_json
 
 
+def _prefetch_facts(db: Session, repos: list[Repository], force: bool) -> dict[int, RepoFacts]:
+    """One batched extraction pass, ahead of the per-repo loop, over the
+    repos this run will actually process (the same skip rule the loop
+    itself applies, so a batch of already-extracted repos spends nothing).
+
+    Below two repos there is nothing to amortize, so the batched prompt's
+    extra instructions would cost more than the call it saves; the loop's
+    own per-repo calls handle those.
+
+    Commits first for the same reason the loop body does: the batched call
+    opens its own session to record its LLMCall row, and an open write
+    transaction on this session would deadlock against it (see
+    _process_repo).
+    """
+    pending: list[Repository] = []
+    for repo_ref in repos:
+        repo = db.get(Repository, repo_ref.id)
+        if repo is None:
+            continue
+        if not force and repo.skill_extraction_status in _SKIP_STATUSES:
+            continue
+        pending.append(repo)
+    if len(pending) < 2:
+        return {}
+    db.commit()
+    return prefetch_repo_facts(pending)
+
+
 def build_profile(
     repos: list[Repository], now: dt.datetime | None = None, force: bool = False
 ) -> Profile:
     now = now or dt.datetime.now(dt.UTC)
     db = get_db()
     try:
+        prefetched = _prefetch_facts(db, repos, force)
         for i, repo_ref in enumerate(repos):
             # repo_ref may be detached (loaded in an earlier, now-closed
             # session); mutating it directly wouldn't be tracked by this
@@ -245,7 +301,7 @@ def build_profile(
             if not force and repo.skill_extraction_status in _SKIP_STATUSES:
                 continue
             try:
-                stop_batch = _process_repo(db, repo, now)
+                stop_batch = _process_repo(db, repo, now, prefetched)
                 db.commit()
             except Exception:
                 # _process_repo shouldn't raise (it catches its own LLM
@@ -289,7 +345,7 @@ def build_profile(
 
 def build_profile_progress(
     repos: list[Repository], now: dt.datetime | None = None, force: bool = False
-):
+) -> Iterator[dict[str, Any]]:
     """Generator twin of build_profile(): yields progress per repo instead
     of only returning once the whole batch is done, for the background
     extraction job's SSE stream (see app/profile/jobs.py). Duplicated rather
@@ -314,6 +370,7 @@ def build_profile_progress(
     total = len(repos)
     processed = 0
     try:
+        prefetched = _prefetch_facts(db, repos, force)
         for i, repo_ref in enumerate(repos, start=1):
             repo = db.get(Repository, repo_ref.id)
             if repo is None:
@@ -328,7 +385,7 @@ def build_profile_progress(
                 }
                 continue
             try:
-                stop_batch = _process_repo(db, repo, now)
+                stop_batch = _process_repo(db, repo, now, prefetched)
                 db.commit()
             except Exception:
                 logger.exception("unexpected error processing %s", repo.full_name)
@@ -459,7 +516,10 @@ def rebuild_manifest_evidence(now: dt.datetime | None = None) -> tuple[int, int]
     try:
         repos = list(db.execute(select(Repository)).scalars())
         for repo in repos:
-            stale = SkillEvidence.repo_id == repo.id, SkillEvidence.evidence_type == "declared_dependency"
+            stale = (
+                SkillEvidence.repo_id == repo.id,
+                SkillEvidence.evidence_type == "declared_dependency",
+            )
             old_ids = list(db.execute(select(SkillEvidence.id).where(*stale)).scalars())
             db.execute(delete(SkillEvidence).where(*stale))
             claims = skills_from_manifests(repo.manifests_json or {})

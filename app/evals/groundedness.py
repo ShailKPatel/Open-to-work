@@ -19,6 +19,7 @@ import logging
 from dataclasses import dataclass
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.db import Repository, Resume, SkillEvidence, get_db
 from app.core.llm import (
@@ -59,7 +60,7 @@ class GroundednessResult:
     skipped_reason: str | None = None
 
 
-def _project_evidence_text(db, repo_id: int) -> str:
+def _project_evidence_text(db: Session, repo_id: int) -> str:
     repo = db.get(Repository, repo_id)
     if repo is None:
         return ""
@@ -142,6 +143,7 @@ def score_groundedness(
                             ],
                             schema=_SCHEMA,
                             account_id=account_id,
+                            purpose="groundedness_eval",
                         )
                     except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
                         logger.info("groundedness check stopped early: %s", e)

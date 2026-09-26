@@ -110,8 +110,7 @@ class FakeClient:
 
 
 def _reset_db(tmp_path: Path):
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     get_settings.cache_clear()
     import os
 

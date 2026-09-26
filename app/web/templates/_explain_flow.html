@@ -13,8 +13,8 @@
 
 {% set budget = '%g' | format(models.budget) %}
 {% set T_EMBED = "Embedding model|" ~ models.embedding ~ "|Runs locally via sentence-transformers on CPU. No API key, no network call.|Cached by a hash of the text, so the same text is never encoded twice." %}
-{% set T_BULK = "LLM · cheaper model|Any LiteLLM model, picked on Manage APIs|Used for high-volume work: repo skills, project links, role-family names.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
-{% set T_QUALITY = "LLM · stronger model|Any LiteLLM model, picked on Manage APIs|Used where one mistake matters: job and resume extraction, writing resume content, page-fit cuts.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
+{% set T_BULK = "LLM · cheaper model|Any LiteLLM model, picked on Manage APIs|Used for high-volume work and for choices between items it was handed: repo skills, project links, role-family names, page-fit cuts.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
+{% set T_QUALITY = "LLM · stronger model|Any LiteLLM model, picked on Manage APIs|Used where one mistake matters: job and resume extraction, writing resume content.|Cached, and blocked once the $" ~ budget ~ "/month budget is spent." %}
 {% set T_VISION = "LLM · stronger model, reads files|Any LiteLLM model, picked on Manage APIs|The PDF or image itself is sent to the model." %}
 {% set T_QDRANT = "Vector database|Qdrant, its own Docker container|Cosine distance.|Every account-scoped search filters on the payload's account_id.|Point id equals the SQLite row id, so an edit overwrites in place." %}
 {% set T_SQLITE = "Database|SQLite via SQLAlchemy|WAL journal mode plus a 30s busy timeout.|Source of truth: Qdrant is a derived index built from these rows." %}
@@ -254,7 +254,7 @@ data: {"stage": "done", "total_repos": 8,
             {{ ex.node('b-index', '9 · Embed', 'Qdrant upsert', '“Skill: X. Evidence: Y.” embedded, payload scoped to your account.', 'vector', ['skill_evidence'], area='grid-column:1;grid-row:3', tip=T_EMBED) }}
             {{ ex.node('b-write', '8 · Write', 'SkillEvidence rows', 'Plus project links. Committed per repo.', 'db', variant='store', area='grid-column:2;grid-row:3', tip=T_SQLITE) }}
             {{ ex.node('b-weight', '7 · Score', 'Weight each claim', 'Evidence type × confidence × fork × recency × volume.', 'gauge', area='grid-column:3;grid-row:3', tip=T_WEIGHT) }}
-            {{ ex.node('b-llm', '6 · LLM (bulk)', 'Skills + links', 'Two schema-bound calls: {skill, confidence} and {label, url}.', 'spark', ['cached', 'budget-capped'], area='grid-column:4;grid-row:3', tip=T_BULK) }}
+            {{ ex.node('b-llm', '6 · LLM (bulk)', 'Skills + links', 'One schema-bound call: {skill, confidence} and {label, url} together. Several repos share a call.', 'spark', ['cached', 'budget-capped'], area='grid-column:4;grid-row:3', tip=T_BULK) }}
             {{ ex.node('b-nosig', 'No LLM spent', 'no_signal', 'No README, no description. Manifest skills are still kept.', 'alert', variant='err', area='grid-column:5;grid-row:3') }}
 
             {{ ex.node('b-progress', '10 · Event', 'Progress state', 'Job registry snapshot. The SSE stream tails it and can reattach.', 'stream', area='grid-column:1;grid-row:4', tip=T_THREAD) }}
@@ -442,7 +442,7 @@ user:    "The following is a job posting's text ...
           <h3 class="ex-h3">Resume build (retrieval-augmented generation)</h3>
           <p class="ex-lede">
             Finds your evidence that best matches the job, has the LLM write the wording, drops
-            anything it made up, and trims until the PDF fits.
+            anything it made up, and tunes the layout until the PDF is exactly as long as you asked for.
           </p>
           <div class="ex-meta">
             <span><b>Trigger</b> “Build resume” on a job card</span>
@@ -459,7 +459,7 @@ user:    "The following is a job posting's text ...
             {{ ex.node('e-err404', 'Error', '404', 'Unknown profile or posting.', 'alert', variant='err', area='grid-column:1;grid-row:1') }}
             {{ ex.node('e-points', '3a · Vector search', 'Experience points', 'Per role, top 5 matching points. Falls back to the real points if search is empty.', 'search', ['experience_points'], area='grid-column:3;grid-row:1', tip=T_SEARCH ~ "|Filtered to one role at a time, so every role keeps its own best points.|A hit whose text no longer exists in SQLite (a stale vector) is ignored.") }}
 
-            {{ ex.node('e-pick', '1 · Input', 'Posting + template', 'One page or two.', 'briefcase', ['onepage', 'twopage'], area='grid-column:1;grid-row:2') }}
+            {{ ex.node('e-pick', '1 · Input', 'Posting + template', 'One page or two. Whichever you pick is an exact target, not a ceiling.', 'briefcase', ['onepage', 'twopage'], area='grid-column:1;grid-row:2') }}
             {{ ex.node('e-det', '2 · No LLM', 'Fixed context', 'Header, education and every work role in order, rebuilt from SQLite each time.', 'db', variant='store', area='grid-column:2;grid-row:2', tip="Deterministic context|Name, contact, links, education and all work roles (company, title, dates).|Never sent to the model to choose from, so work history can't be dropped or invented.") }}
             {{ ex.node('e-projects', '3b · Vector search', 'Candidate projects', 'Top 24 evidence hits, best score per repo, 8 projects with their skills.', 'search', ['skill_evidence'], area='grid-column:3;grid-row:2', tip=T_SEARCH ~ "|Filtered to source_type repo.") }}
             {{ ex.node('e-llm', '4 · LLM (quality)', 'Write content', 'Fixed system prompt, posting as reference-only text, candidate lists, length guidance.', 'spark', ['JSON only'], area='grid-column:4;grid-row:2', tip=T_QUALITY) }}
@@ -477,14 +477,14 @@ user:    "The following is a job posting's text ...
         <div class="ex-scroll">
           <div class="ex-diagram ex-flow ex-cols-6" data-wires="flowE2">
             {{ ex.node('e2-data', 'From step 5', 'Resume data dict', 'Summary, projects, skills plus the fixed context.', 'code', area='grid-column:1;grid-row:1') }}
-            {{ ex.node('e2-render', '6 · Render', 'Jinja → .tex', 'Every value LaTeX-escaped on the way in.', 'doc', area='grid-column:2;grid-row:1') }}
+            {{ ex.node('e2-render', '6 · Render', 'Jinja → .tex', 'Every value LaTeX-escaped on the way in. Margins, spacing and type size come in as parameters.', 'doc', area='grid-column:2;grid-row:1', tip="Density ladder|13 rungs of geometry, from tight (9pt, 0.72 cm margins) to airy (12pt, 1.5 cm).|Re-rendering one rung costs a Tectonic run and no tokens, so layout is always tried before content.") }}
             {{ ex.node('e2-compile', '7 · Compile', 'Tectonic', 'Temp directory in, PDF bytes out.', 'cube', errs=['501 missing', '502 compile'], area='grid-column:3;grid-row:1', tip=T_TECTONIC) }}
-            {{ ex.node('e2-count', '8 · Decision', 'Pages ≤ target?', 'Counted from the real PDF.', 'split', variant='decision', area='grid-column:4;grid-row:1', tip=T_PYPDF) }}
+            {{ ex.node('e2-count', '8 · Decision', 'Exactly N pages?', 'One page or two, no more and no less. Counted from the real PDF.', 'split', variant='decision', area='grid-column:4;grid-row:1', tip=T_PYPDF ~ "|Over the target: tighten the layout, then cut. Under it: open the layout up, then add your own held-back content back in.") }}
             {{ ex.node('e2-save', '10 · Write', 'Save to library', 'Resume row, content JSON, PDF on disk, indexed.', 'db', variant='store', area='grid-column:5;grid-row:1', tip=T_SQLITE ~ "|Best-effort: a failed save never turns a finished PDF into an error.") }}
-            {{ ex.node('e2-pdf', 'Output', 'PDF response', 'X-Page-Count and X-Resume-Id headers.', 'doc', ext=true, area='grid-column:6;grid-row:1') }}
+            {{ ex.node('e2-pdf', 'Output', 'PDF response', 'X-Page-Count, X-Page-Target and X-Resume-Id headers.', 'doc', ext=true, area='grid-column:6;grid-row:1') }}
 
-            {{ ex.node('e2-cut', '9 · LLM (vision)', 'Pick one cut', 'Sees the PDF. A skill first, then a project bullet, then an experience bullet. Never a role.', 'spark', ['max 6 rounds'], area='grid-column:4;grid-row:2', tip=T_VISION ~ "|Any cut that doesn't match current content is treated as “no safe cut”, so the loop can't spin on a hallucination.") }}
-            {{ ex.node('e2-nocut', 'Soft failure', "Can't fit", 'Best PDF returned anyway, X-Page-Fit-Achieved: false.', 'alert', variant='err', area='grid-column:5;grid-row:2') }}
+            {{ ex.node('e2-cut', '9 · LLM (bulk, vision)', 'Plan the cuts', 'Only once the tightest layout still runs over. An ordered plan, applied one at a time: a skill first, then a project bullet, then an experience bullet. Never a role.', 'spark', ['max 6 rounds'], area='grid-column:4;grid-row:2', tip=T_BULK ~ "|The compiled PDF itself is sent to the model.|Any cut that doesn't match current content is treated as “no safe cut”, so the loop can't spin on a hallucination.") }}
+            {{ ex.node('e2-nocut', 'Soft failure', 'Off the target', 'Still too long after every safe cut, or too short with nothing real left to add. Best PDF returned anyway, X-Page-Fit-Achieved: false.', 'alert', variant='err', area='grid-column:5;grid-row:2') }}
           </div>
         </div>
       </div>

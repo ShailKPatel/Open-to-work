@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     # (see app/api/job_postings.py's from_screenshot).
     job_screenshot_storage_dir: str = "./data/job_screenshots"
 
+    # Builds any missing skill-map layout in a background thread at
+    # startup (app/api/skills.py's warm_skill_maps), so the first person
+    # to open the map does not wait for an embedding model to load.
+    # Turned off by tests, which must not load a model at all.
+    skill_map_warm_start: bool = True
+
+    # Rechecks keys whose quota cooldown has elapsed, at startup and on an
+    # interval, in a background thread (app/core/key_refresh.py). Turned
+    # off by tests, which must not make provider calls; the /apis page can
+    # still run the same pass on demand.
+    key_refresh_on_start: bool = True
+
     # Eval harness (app/evals/). Kept outside data/, which is gitignored,
     # so golden labels and result reports can be committed.
     evals_golden_dir: str = "./evals/golden"

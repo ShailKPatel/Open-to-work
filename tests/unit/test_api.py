@@ -13,8 +13,7 @@ from app.ingest.github.sync import SyncSummary
 def _reset_db(tmp_path: Path):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     os.environ["RESUME_STORAGE_DIR"] = str(tmp_path / "resumes")
     get_settings.cache_clear()
@@ -591,6 +590,8 @@ def test_delete_account_removes_qdrant_points_for_both_evidence_types(tmp_path, 
     points orphaned or, worse, deletes an unrelated repo-linked point that
     happens to share the same raw id.
     """
+    import os
+
     import app.retrieval.vectorstore as vectorstore_module
     from app.core.db import (
         Experience,
@@ -604,8 +605,6 @@ def test_delete_account_removes_qdrant_points_for_both_evidence_types(tmp_path, 
         index_experience_skill_evidence,
         index_skill_evidence,
     )
-
-    import os
 
     # Set before _reset_db, which caches settings: set after, the client
     # would still point at the default server URL instead of in-memory.

@@ -1,41 +1,103 @@
-"""Page-fit loop: render, compile, check the real page count, and if it's
-over the target, ask the LLM (multimodal, given the actual compiled PDF,
-not just the text) for the single smallest cut that would help, apply it,
-and recompile. Repeats until it fits or nothing safe is left to cut.
+"""Page-fit loop: land a resume on exactly the page count the user asked
+for, one page or two, never over it and never under it.
 
-Why multimodal and not just "count characters": page overflow is a
-layout fact, not a text-length fact, one long word or one extra bullet
-can push a whole section onto a second page while a much longer summary
-doesn't. One skill or one word can cause an entire new page, and removing
-it cuts a whole line. Only the model looking at the actual rendered PDF can tell
-which cut, if any, would actually help versus which would trim words for
-no layout benefit at all.
+Three levers, applied in that order of preference, because they cost
+very different things:
 
-One cut per iteration, always the smallest kind available, in this fixed
-priority order the LLM is told to follow: a skill first (cheapest, most
-flexible), then one project bullet point (dropping the whole project only
-if that empties it), then one experience bullet point last and only if a
-role would still keep at least one (an experience role itself is never
-removable, and neither is the role's company/title/dates, since experience
-is compulsory). No LLM call at all happens when the first compile already fits,
-this loop costs nothing beyond the orchestrator's own generation call in
-the common case.
+1. Typography. app/resume_build/layout.py turns the templates' geometry
+   (margins, section spacing, bullet spacing, type size, leading) into
+   parameters and exposes a ladder of density rungs. Re-rendering one
+   rung tighter or one rung looser changes roughly a third of a page of
+   capacity across the full ladder, costs one Tectonic run, costs no LLM
+   tokens at all, and loses nothing the account holder actually wrote.
+   This is the first thing tried in both directions, and usually the
+   only thing needed.
+
+2. Content the account already has but the resume is not showing. The
+   orchestrator hands over a `reserve` alongside the resume data: the
+   candidate projects the model did not pick, the per-role experience
+   points the retrieval step narrowed away, the candidate skills that
+   did not make the cut. When the content is too thin to reach the
+   target even at the loosest rung, these get added back, largest first
+   so the count converges quickly. Nothing here is invented, it is all
+   the account's own already-grounded data, which is why this step needs
+   no LLM call and carries no hallucination risk.
+
+3. Cutting real content. Only when the tightest rung still overflows.
+   This is the one lever that loses something, so it runs last and one
+   cut at a time, always the smallest kind available, in a fixed
+   priority order the model is told to follow: a skill first (cheapest,
+   most flexible), then one project bullet point (dropping the whole
+   project only if that empties it), then one experience bullet point
+   last and only if a role would still keep at least one. An experience
+   role itself is never removable, and neither is its company, title or
+   dates, since job history is compulsory.
+
+One look at the PDF, several cuts: the model returns an ordered plan
+(weakest item first) and this module applies it one entry at a time,
+re-compiling between each, only going back for a new plan when the plan
+runs out. Cuts are still applied one at a time for the same reason as
+before, since each one may be the one that fits; what changed is that a
+resume needing three of them costs one call with the PDF attached instead
+of three.
+
+Why the model sees the compiled PDF rather than a character count:
+overflow is a layout fact, not a text-length fact. One long word or one
+extra bullet can push a whole section onto a second page while a much
+longer summary does not. Only a look at the actual rendered page tells
+which cut would help versus which would trim words for no layout benefit
+at all.
+
+Picking the *loosest* rung that still fits, rather than the first one
+that fits, is what stops a resume from falling below its target. For a
+one-page target it means the page is filled rather than half empty; for
+a two-page target it means the second page carries as much as it can
+instead of trailing off after three lines.
 """
 
 from __future__ import annotations
 
 import copy
 import io
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from typing import Any
 
-from app.core.llm import complete, system_message, user_message
-from app.resume_build.compile import compile_tex
+from app.core.llm import (
+    ApiKeyMissingError,
+    BudgetExceededError,
+    LLMDispatchError,
+    complete,
+    system_message,
+    user_message,
+)
+from app.resume_build.compile import CompileError, compile_tex
 from app.resume_build.latex import render_resume
+from app.resume_build.layout import BASE_DENSITY_INDEX, DENSITY_LADDER, layout_for
+
+# What "the model is out of reach" looks like here, after app/core/llm.py
+# has already tried every stored key for the provider. Not a trimming bug
+# and not something a longer wait inside this loop would fix, so the loop
+# stops asking and keeps the resume it has.
+_LLM_UNREACHABLE = (ApiKeyMissingError, BudgetExceededError, LLMDispatchError)
 
 _DEFAULT_MAX_ITERATIONS = 6
+_DEFAULT_MAX_ADDITIONS = 12
 
-_TRIM_SCHEMA = {
+# Cuts asked for per look at the PDF. One call that ranks the four weakest
+# items costs barely more than one that names the single weakest, and the
+# resume that needs three cuts then costs one call instead of three. Kept
+# short because each applied cut changes the document the rest of the plan
+# was written against, so a long plan's tail is guesswork.
+_MAX_PLANNED_CUTS = 4
+
+# Hard ceiling on Tectonic runs for one call, so a pathological document
+# (page count that refuses to move with density, a reserve that keeps
+# adding content worth zero height) cannot turn into an unbounded
+# compile storm behind a request.
+_DEFAULT_MAX_COMPILES = 28
+
+_CUT_SCHEMA = {
     "type": "object",
     "properties": {
         "cut_type": {
@@ -49,36 +111,62 @@ _TRIM_SCHEMA = {
     "required": ["cut_type"],
 }
 
+_TRIM_SCHEMA = {
+    "type": "object",
+    "properties": {"cuts": {"type": "array", "items": _CUT_SCHEMA}},
+    "required": ["cuts"],
+}
+
 _SYSTEM_PROMPT = (
     "You are shown a compiled resume PDF that is longer than its target "
-    "page count. Suggest exactly one small cut that would most likely "
-    "bring it back under the limit: prefer dropping one skill from the "
-    "skills list, then one bullet point under one project, then, only if "
-    "nothing else is available, one bullet point under one experience "
-    "role (never suggest removing an entire experience role, its company, "
-    "title, or dates, those are compulsory). Only suggest cutting a "
-    "project bullet point from a project that has more than one point "
-    "left, and an experience bullet point from a role that has more than "
-    "one point left. If nothing safe is left to cut, set cut_type to "
-    "\"none\". Base your choice on what you actually see causing the "
-    "overflow in the PDF (a long line, a near-empty last page, a widow "
-    "line), not a guess. Return JSON matching the given schema, nothing "
-    "else."
+    "page count. Its margins, spacing and type size have already been "
+    "tightened as far as they go, so cutting content is the only option "
+    "left. Return an ordered plan of small cuts, weakest item first, to "
+    "be applied one at a time until the resume fits: prefer dropping a "
+    "skill from the skills list, then a bullet point under a project, "
+    "then, only if nothing else is available, a bullet point under an "
+    "experience role (never suggest removing an entire experience role, "
+    "its company, title, or dates, those are compulsory). Only suggest "
+    "cutting a project bullet point from a project that has more than one "
+    "point left, and an experience bullet point from a role that has more "
+    "than one point left, counting the earlier cuts in your own plan. "
+    "Never list the same item twice. Give as many cuts as you are asked "
+    "for, ordered so that applying only the first few is still the right "
+    "choice: most of the time only the first one or two get used, and the "
+    "rest are there so that a resume needing more cuts does not need "
+    "another look at it. If nothing safe is left to cut, return an empty "
+    "list. Base the order on what you actually see causing the overflow "
+    "in the PDF (a long line, a near-empty last page, a widow line), not "
+    "a guess. Return JSON matching the given schema, nothing else."
 )
 
 
 class PageFitNotAchievedError(RuntimeError):
     """Ran out of safe cuts (or iterations) before reaching the target
-    page count. Carries the best result actually reached, in
-    best_tex/best_pdf_bytes/best_page_count, so a caller can still offer
-    that rather than nothing.
+    page count, or lost the ability to ask for more. Carries the best
+    result actually reached, in best_tex/best_pdf_bytes/best_page_count,
+    so a caller can still offer that rather than nothing.
+
+    Raised for overflow only. Falling *short* of the target is not an
+    error: the reserve can legitimately run dry on an account that simply
+    does not have two pages of real material yet, and a truthful short
+    resume beats a padded one. That case comes back as a FitResult with
+    fit_exact False, for the caller to surface however it likes.
     """
 
-    def __init__(self, message: str, best_tex: str, best_pdf_bytes: bytes, best_page_count: int):
+    def __init__(
+        self,
+        message: str,
+        best_tex: str,
+        best_pdf_bytes: bytes,
+        best_page_count: int,
+        best_data: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.best_tex = best_tex
         self.best_pdf_bytes = best_pdf_bytes
         self.best_page_count = best_page_count
+        self.best_data = best_data
 
 
 @dataclass
@@ -87,12 +175,80 @@ class FitResult:
     pdf_bytes: bytes
     page_count: int
     cuts_made: int
+    additions_made: int = 0
+    density: float = 1.0
+    target_pages: int = 0
+    fit_exact: bool = True
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _Attempt:
+    density: float
+    tex: str
+    pdf_bytes: bytes
+    pages: int
 
 
 def page_count(pdf_bytes: bytes) -> int:
     from pypdf import PdfReader
 
     return len(PdfReader(io.BytesIO(pdf_bytes)).pages)
+
+
+def _fingerprint(data: dict[str, Any]) -> str:
+    return json.dumps(data, sort_keys=True, default=str)
+
+
+class _Typesetter:
+    """Renders and compiles one content dict at one density rung, and
+    remembers what it already compiled. The cache matters because the
+    ladder walk and the cut/add loops revisit the same (content,
+    density) pair often enough that recompiling it would double the
+    Tectonic runs for no new information.
+    """
+
+    def __init__(self, template: str, max_compiles: int = _DEFAULT_MAX_COMPILES):
+        self._template = template
+        self._template_file = f"{template}.tex.j2"
+        self._cache: dict[tuple[float, str], _Attempt] = {}
+        self._unusable: set[float] = set()
+        self._budget = max_compiles
+
+    @property
+    def budget_left(self) -> int:
+        return self._budget
+
+    def attempt(self, data: dict[str, Any], density: float) -> _Attempt:
+        key = (density, _fingerprint(data))
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+
+        tex = render_resume(
+            self._template_file, {**data, "layout": layout_for(self._template, density)}
+        )
+        pdf_bytes = compile_tex(tex)
+        self._budget -= 1
+        result = _Attempt(density, tex, pdf_bytes, page_count(pdf_bytes))
+        self._cache[key] = result
+        return result
+
+    def try_attempt(self, data: dict[str, Any], density: float) -> _Attempt | None:
+        """attempt(), but a rung that will not compile at all is reported
+        as unavailable rather than failing the whole build. The tightest
+        rungs switch the document class to extarticle for a sub-10pt
+        body, which needs a package Tectonic has to fetch; losing that
+        rung should cost the resume one notch of range, not the whole
+        PDF. A rung that fails once is not retried.
+        """
+        if density in self._unusable or self._budget <= 0:
+            return None
+        try:
+            return self.attempt(data, density)
+        except CompileError:
+            self._unusable.add(density)
+            return None
 
 
 def _describe_data(data: dict[str, Any]) -> str:
@@ -152,51 +308,294 @@ def _apply_cut(data: dict[str, Any], suggestion: dict[str, Any]) -> bool:
     return False
 
 
+def _apply_addition(data: dict[str, Any], reserve: dict[str, Any]) -> bool:
+    """Moves one held-back item from the reserve into the resume.
+    Mutates both in place, returns False once the reserve is empty (or
+    holds only things already present, a stale reserve on a resume that
+    was edited since it was built).
+
+    Largest first, deliberately: a whole reserve project is worth several
+    lines, an experience point worth about one, a skill worth almost
+    nothing on its own. Overshooting the target by adding a project is
+    fine and in fact useful, since the density ladder then tightens back
+    down onto the target exactly, whereas creeping up one skill at a time
+    would burn a compile per skill and might never arrive.
+    """
+    projects_held: list[dict[str, Any]] = reserve.get("projects") or []
+    while projects_held:
+        project = projects_held.pop(0)
+        shown = {p.get("name") for p in data.get("projects", [])}
+        if project.get("name") in shown:
+            continue
+        data.setdefault("projects", []).append(project)
+        return True
+
+    held_points: dict[str, list[str]] = reserve.get("experience_points") or {}
+    for company, points in held_points.items():
+        while points:
+            point = points.pop(0)
+            for role in data.get("experience", []):
+                if role["company"] == company and point not in role.get("points", []):
+                    role.setdefault("points", []).append(point)
+                    return True
+
+    skills_held: list[str] = reserve.get("skills") or []
+    while skills_held:
+        skill = skills_held.pop(0)
+        current = data.setdefault("skills", [])
+        if skill.casefold() not in {s.casefold() for s in current}:
+            current.append(skill)
+            return True
+
+    return False
+
+
+def _best_fitting_rung(
+    typesetter: _Typesetter, data: dict[str, Any], target_pages: int
+) -> _Attempt | None:
+    """Walks the density ladder for the loosest rung whose page count is
+    still at or under the target, which is the rung that fills the
+    requested pages most completely. Returns None when even the tightest
+    rung overflows.
+
+    A walk rather than a binary search: page count against density is
+    only *nearly* monotonic (a rung can land a widow line differently
+    than its neighbours), and the walk is short in practice because the
+    orchestrator already sizes content for the chosen template, so the
+    base rung is normally within a rung or two of the answer.
+    """
+    base = typesetter.attempt(data, DENSITY_LADDER[BASE_DENSITY_INDEX])
+
+    if base.pages > target_pages:
+        for i in range(BASE_DENSITY_INDEX - 1, -1, -1):
+            tighter = typesetter.try_attempt(data, DENSITY_LADDER[i])
+            if tighter is not None and tighter.pages <= target_pages:
+                return tighter
+        return None
+
+    best = base
+    for i in range(BASE_DENSITY_INDEX + 1, len(DENSITY_LADDER)):
+        looser = typesetter.try_attempt(data, DENSITY_LADDER[i])
+        if looser is None:
+            continue
+        if looser.pages > target_pages:
+            break
+        best = looser
+    return best
+
+
+def _grow_to_target(
+    typesetter: _Typesetter,
+    working: dict[str, Any],
+    reserve: dict[str, Any],
+    target_pages: int,
+    max_additions: int,
+    additions_so_far: int,
+) -> tuple[int, dict[str, Any] | None]:
+    """Adds reserve content at the loosest rung until the resume reaches
+    the target, or overshoots it, which the density ladder then tightens
+    back down onto the target exactly. One compile per addition, not a
+    whole ladder walk, since only the count at the loosest rung decides
+    whether there is still room to fill.
+
+    Returns the new total addition count and a copy of the content as it
+    stood just before the final addition. That snapshot is the caller's
+    undo: the addition that reaches the target is the only one that can
+    overshoot so far that even the tightest layout overflows, and
+    rolling back just that one keeps every earlier addition.
+    """
+    loosest = DENSITY_LADDER[-1]
+    additions = additions_so_far
+    before_last: dict[str, Any] | None = None
+
+    while additions < max_additions and typesetter.budget_left > 0:
+        snapshot = copy.deepcopy(working)
+        if not _apply_addition(working, reserve):
+            break
+        additions += 1
+        before_last = snapshot
+        attempt = typesetter.try_attempt(working, loosest)
+        if attempt is not None and attempt.pages >= target_pages:
+            break
+
+    return additions, before_last
+
+
+def _plan_cuts(
+    data: dict[str, Any],
+    overflowing: _Attempt,
+    target_pages: int,
+    remaining: int,
+    account_id: int | None,
+) -> list[dict[str, Any]]:
+    """One look at the overflowing PDF, an ordered list of cuts back, each
+    in the shape _apply_cut() takes. Empty means the model found nothing
+    safe left to cut.
+
+    The PDF goes with it because overflow is a layout fact (see this
+    module's docstring), and the PDF is also the expensive part of this
+    prompt, which is the whole reason for asking about several cuts at
+    once rather than re-sending it per cut.
+
+    Bulk tier, not quality: the model is ranking items it was handed by
+    how little the resume loses without them, not writing anything. The
+    grounding check in _apply_cut() is what keeps a weaker model's answer
+    safe, and an entry it gets wrong costs the next entry in the plan, not
+    a bad resume.
+    """
+    wanted = max(1, min(remaining, _MAX_PLANNED_CUTS))
+    response = complete(
+        "bulk",
+        [
+            system_message(_SYSTEM_PROMPT),
+            user_message(
+                f"Target: {target_pages} page(s). "
+                f"Current: {overflowing.pages} page(s). "
+                f"Give up to {wanted} cut(s), weakest first.\n\n"
+                + _describe_data(data),
+                files=[overflowing.pdf_bytes],
+            ),
+        ],
+        schema=_TRIM_SCHEMA,
+        account_id=account_id,
+        purpose="pagefit_trim",
+    )
+    planned = (response.parsed or {}).get("cuts")
+    if not isinstance(planned, list):
+        return []
+    return [cut for cut in planned if isinstance(cut, dict)][:wanted]
+
+
 def fit_to_page_limit(
     data: dict[str, Any],
     template: str,
     max_pages: int,
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     account_id: int | None = None,
+    max_additions: int = _DEFAULT_MAX_ADDITIONS,
+    max_compiles: int = _DEFAULT_MAX_COMPILES,
 ) -> FitResult:
+    """Renders `data` on `template` at exactly `max_pages` pages.
+
+    `data` may carry a "reserve" key (see the module comment and
+    app/resume_build/orchestrator.py); it is consumed here and never
+    reaches the template or the returned data, so a caller can hand the
+    orchestrator's output straight in and persist FitResult.data as the
+    resume's real content.
+
+    Raises PageFitNotAchievedError when the resume is still too long
+    after the tightest layout and every safe cut, or when the model
+    needed to pick the next cut is out of reach (every key spent, budget
+    gone). Either way the error carries the best compiled result, so the
+    caller can still hand back a real resume. Coming up short returns
+    normally with fit_exact False.
+    """
+    target_pages = max(1, max_pages)
     working = copy.deepcopy(data)
-    tex = render_resume(f"{template}.tex.j2", working)
-    pdf_bytes = compile_tex(tex)
-    pages = page_count(pdf_bytes)
+    reserve = working.pop("reserve", None) or {}
+    typesetter = _Typesetter(template, max_compiles=max_compiles)
+
     cuts = 0
+    additions = 0
+    undo_last_addition: dict[str, Any] | None = None
+    # Cuts the model has already picked but that have not been applied yet.
+    # Refilled by one call whenever it runs dry, so a resume needing three
+    # cuts costs one look at the PDF rather than three.
+    planned_cuts: list[dict[str, Any]] = []
 
-    while pages > max_pages:
-        if cuts >= max_iterations:
-            raise PageFitNotAchievedError(
-                f"still {pages} pages after {cuts} cuts (limit {max_iterations}), "
-                f"target was {max_pages}",
-                tex, pdf_bytes, pages,
-            )
-
-        response = complete(
-            "quality",
-            [
-                system_message(_SYSTEM_PROMPT),
-                user_message(
-                    f"Target: {max_pages} page(s). Current: {pages} page(s).\n\n"
-                    + _describe_data(working),
-                    files=[pdf_bytes],
-                ),
-            ],
-            schema=_TRIM_SCHEMA,
-            account_id=account_id,
+    def _result(attempt: _Attempt) -> FitResult:
+        return FitResult(
+            tex=attempt.tex,
+            pdf_bytes=attempt.pdf_bytes,
+            page_count=attempt.pages,
+            cuts_made=cuts,
+            additions_made=additions,
+            density=attempt.density,
+            target_pages=target_pages,
+            fit_exact=attempt.pages == target_pages,
+            data=working,
         )
-        suggestion = response.parsed or {"cut_type": "none"}
 
-        if suggestion.get("cut_type") == "none" or not _apply_cut(working, suggestion):
-            raise PageFitNotAchievedError(
-                f"no more safe cuts available, still {pages} pages, target was {max_pages}",
-                tex, pdf_bytes, pages,
-            )
+    while True:
+        fitting = _best_fitting_rung(typesetter, working, target_pages)
 
-        cuts += 1
-        tex = render_resume(f"{template}.tex.j2", working)
-        pdf_bytes = compile_tex(tex)
-        pages = page_count(pdf_bytes)
+        if fitting is None and undo_last_addition is not None:
+            # The addition that finally reached the target overshot far
+            # enough that even the tightest layout runs over. Roll back
+            # that one addition, keep the earlier ones, and take
+            # whatever that lands on.
+            working = undo_last_addition
+            undo_last_addition = None
+            additions -= 1
+            reverted = _best_fitting_rung(typesetter, working, target_pages)
+            if reverted is not None:
+                return _result(reverted)
+            fitting = None
 
-    return FitResult(tex=tex, pdf_bytes=pdf_bytes, page_count=pages, cuts_made=cuts)
+        if fitting is None:
+            overflowing = typesetter.attempt(working, DENSITY_LADDER[0])
+            if cuts >= max_iterations:
+                raise PageFitNotAchievedError(
+                    f"still {overflowing.pages} pages after {cuts} cuts "
+                    f"(limit {max_iterations}), target was {target_pages}",
+                    overflowing.tex, overflowing.pdf_bytes, overflowing.pages, working,
+                )
+
+            if not planned_cuts:
+                try:
+                    planned_cuts = _plan_cuts(
+                        working,
+                        overflowing,
+                        target_pages,
+                        remaining=max_iterations - cuts,
+                        account_id=account_id,
+                    )
+                except _LLM_UNREACHABLE as e:
+                    # Every key for the provider is spent, or there is no
+                    # budget left. The resume itself is already written
+                    # and compiled; only the trimming pass is missing, so
+                    # hand back what exists rather than throwing away the
+                    # whole build. The caller reports it as a resume that
+                    # did not reach its page target, with this reason.
+                    raise PageFitNotAchievedError(
+                        f"the trimming step could not run, so the resume is still "
+                        f"{overflowing.pages} page(s) against a target of {target_pages}: {e}",
+                        overflowing.tex, overflowing.pdf_bytes, overflowing.pages, working,
+                    ) from e
+
+            applied = False
+            while planned_cuts:
+                suggestion = planned_cuts.pop(0)
+                if suggestion.get("cut_type") == "none":
+                    continue
+                if _apply_cut(working, suggestion):
+                    applied = True
+                    break
+                # Stale or invented reference: the plan was written against
+                # the data as it stood, and an earlier cut may have already
+                # taken this item. Skipped, not fatal, the next entry in the
+                # plan is the next-weakest item anyway.
+
+            if not applied:
+                raise PageFitNotAchievedError(
+                    f"no more safe cuts available, still {overflowing.pages} pages, "
+                    f"target was {target_pages}",
+                    overflowing.tex, overflowing.pdf_bytes, overflowing.pages, working,
+                )
+
+            cuts += 1
+            continue
+
+        if fitting.pages >= target_pages or typesetter.budget_left <= 0:
+            return _result(fitting)
+
+        grown, undo_last_addition = _grow_to_target(
+            typesetter, working, reserve, target_pages, max_additions, additions
+        )
+        if grown == additions:
+            # Reserve is empty and the loosest layout still leaves the
+            # resume short. This account does not have `target_pages`
+            # worth of real material; hand back the best honest version
+            # rather than padding it out.
+            return _result(fitting)
+        additions = grown

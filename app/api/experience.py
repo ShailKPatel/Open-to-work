@@ -3,7 +3,7 @@ source (alongside app/api/projects.py's repos) that feeds the /skills
 aggregate view (app/api/skills.py). Every Experience row is manual; there
 is no GitHub-shaped sync for a job history, so unlike projects there's no
 is_manual flag or synthetic-id trick, and no LLM extraction pass yet
-(evidence_type is "manual" only, see app/core/db.py's ExperienceSkillEvidence
+(evidence_type is "manual" only, see app/core/db/models.py's ExperienceSkillEvidence
 docstring for why this is a separate table from SkillEvidence).
 
 Experience itself carries no free-text description; every detail lives as
@@ -20,8 +20,10 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
 
-from app.core.db import Experience, ExperiencePoint, ExperienceSkillEvidence, get_db
+from app.api.deps import DbSession
+from app.core.db import Experience, ExperiencePoint, ExperienceSkillEvidence
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
 from app.profile.skill_review import approve
 
@@ -99,7 +101,7 @@ class ExperienceDetail(BaseModel):
         )
 
 
-def _skill_counts(db, experience_ids: list[int]) -> dict[int, int]:
+def _skill_counts(db: Session, experience_ids: list[int]) -> dict[int, int]:
     if not experience_ids:
         return {}
     rows = db.execute(
@@ -107,10 +109,12 @@ def _skill_counts(db, experience_ids: list[int]) -> dict[int, int]:
         .where(ExperienceSkillEvidence.experience_id.in_(experience_ids))
         .group_by(ExperienceSkillEvidence.experience_id)
     ).all()
-    return dict(rows)
+    # Row unpacks as a 2-tuple; spelling it out keeps the dict's key/value
+    # types checkable instead of landing as Row objects.
+    return {group_key: count for group_key, count in rows}
 
 
-def _skills_for(db, experience_id: int) -> list[SkillEvidenceItem]:
+def _skills_for(db: Session, experience_id: int) -> list[SkillEvidenceItem]:
     rows = db.execute(
         select(ExperienceSkillEvidence).where(
             ExperienceSkillEvidence.experience_id == experience_id
@@ -127,7 +131,7 @@ def _skills_for(db, experience_id: int) -> list[SkillEvidenceItem]:
     return skills
 
 
-def _points_for(db, experience_id: int) -> list[PointItem]:
+def _points_for(db: Session, experience_id: int) -> list[PointItem]:
     rows = db.execute(
         select(ExperiencePoint)
         .where(ExperiencePoint.experience_id == experience_id)
@@ -136,25 +140,21 @@ def _points_for(db, experience_id: int) -> list[PointItem]:
     return [PointItem.from_point(r) for r in rows]
 
 
-def _detail_for(db, exp: Experience) -> ExperienceDetail:
+def _detail_for(db: Session, exp: Experience) -> ExperienceDetail:
     return ExperienceDetail.from_experience(exp, _skills_for(db, exp.id), _points_for(db, exp.id))
 
 
 @router.get("", response_model=list[ExperienceSummary])
-def list_experience(account_id: int) -> list[ExperienceSummary]:
-    db = get_db()
-    try:
-        rows = list(
-            db.execute(
-                select(Experience)
-                .where(Experience.account_id == account_id)
-                .order_by(Experience.start_date.desc().nulls_last())
-            ).scalars()
-        )
-        counts = _skill_counts(db, [r.id for r in rows])
-        return [ExperienceSummary.from_experience(r, counts.get(r.id, 0)) for r in rows]
-    finally:
-        db.close()
+def list_experience(account_id: int, *, db: DbSession) -> list[ExperienceSummary]:
+    rows = list(
+        db.execute(
+            select(Experience)
+            .where(Experience.account_id == account_id)
+            .order_by(Experience.start_date.desc().nulls_last())
+        ).scalars()
+    )
+    counts = _skill_counts(db, [r.id for r in rows])
+    return [ExperienceSummary.from_experience(r, counts.get(r.id, 0)) for r in rows]
 
 
 class ExperienceCreate(BaseModel):
@@ -167,7 +167,7 @@ class ExperienceCreate(BaseModel):
 
 
 @router.post("", response_model=ExperienceDetail)
-def create_experience(body: ExperienceCreate) -> ExperienceDetail:
+def create_experience(body: ExperienceCreate, *, db: DbSession) -> ExperienceDetail:
     title = body.title.strip()
     company = body.company.strip()
     if not title:
@@ -175,34 +175,26 @@ def create_experience(body: ExperienceCreate) -> ExperienceDetail:
     if not company:
         raise HTTPException(status_code=422, detail="company is required")
 
-    db = get_db()
-    try:
-        exp = Experience(
-            account_id=body.account_id,
-            title=title,
-            company=company,
-            location=(body.location or None),
-            start_date=body.start_date,
-            end_date=body.end_date,
-        )
-        db.add(exp)
-        db.commit()
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+    exp = Experience(
+        account_id=body.account_id,
+        title=title,
+        company=company,
+        location=(body.location or None),
+        start_date=body.start_date,
+        end_date=body.end_date,
+    )
+    db.add(exp)
+    db.commit()
+    db.refresh(exp)
+    return _detail_for(db, exp)
 
 
 @router.get("/{experience_id}", response_model=ExperienceDetail)
-def experience_detail(experience_id: int) -> ExperienceDetail:
-    db = get_db()
-    try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+def experience_detail(experience_id: int, *, db: DbSession) -> ExperienceDetail:
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    return _detail_for(db, exp)
 
 
 class ExperienceUpdate(BaseModel):
@@ -214,7 +206,12 @@ class ExperienceUpdate(BaseModel):
 
 
 @router.patch("/{experience_id}", response_model=ExperienceDetail)
-def update_experience(experience_id: int, body: ExperienceUpdate) -> ExperienceDetail:
+def update_experience(
+    experience_id: int,
+    body: ExperienceUpdate,
+    *,
+    db: DbSession,
+) -> ExperienceDetail:
     fields = body.model_dump(exclude_unset=True)
     for key in ("title", "company"):
         if key in fields and fields[key] is not None:
@@ -222,18 +219,14 @@ def update_experience(experience_id: int, body: ExperienceUpdate) -> ExperienceD
             if not fields[key]:
                 raise HTTPException(status_code=422, detail=f"{key} is required")
 
-    db = get_db()
-    try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        for key, value in fields.items():
-            setattr(exp, key, value)
-        db.commit()
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    for key, value in fields.items():
+        setattr(exp, key, value)
+    db.commit()
+    db.refresh(exp)
+    return _detail_for(db, exp)
 
 
 def _delete_qdrant_points(evidence_ids: list[int]) -> None:
@@ -275,46 +268,42 @@ def _delete_point_vectors(point_ids: list[int]) -> None:
 
 
 @router.delete("/{experience_id}")
-def delete_experience(experience_id: int) -> dict:
-    db = get_db()
-    try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+def delete_experience(experience_id: int, *, db: DbSession) -> dict:
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
 
-        evidence_ids = list(
-            db.execute(
-                select(ExperienceSkillEvidence.id).where(
-                    ExperienceSkillEvidence.experience_id == experience_id
-                )
-            ).scalars()
-        )
-        from app.retrieval.index import experience_evidence_point_id
-
-        _delete_qdrant_points([experience_evidence_point_id(i) for i in evidence_ids])
-
-        point_ids = list(
-            db.execute(
-                select(ExperiencePoint.id).where(
-                    ExperiencePoint.experience_id == experience_id
-                )
-            ).scalars()
-        )
-        _delete_point_vectors(point_ids)
-
+    evidence_ids = list(
         db.execute(
-            delete(ExperienceSkillEvidence).where(
+            select(ExperienceSkillEvidence.id).where(
                 ExperienceSkillEvidence.experience_id == experience_id
             )
-        )
+        ).scalars()
+    )
+    from app.retrieval.index import experience_evidence_point_id
+
+    _delete_qdrant_points([experience_evidence_point_id(i) for i in evidence_ids])
+
+    point_ids = list(
         db.execute(
-            delete(ExperiencePoint).where(ExperiencePoint.experience_id == experience_id)
+            select(ExperiencePoint.id).where(
+                ExperiencePoint.experience_id == experience_id
+            )
+        ).scalars()
+    )
+    _delete_point_vectors(point_ids)
+
+    db.execute(
+        delete(ExperienceSkillEvidence).where(
+            ExperienceSkillEvidence.experience_id == experience_id
         )
-        db.delete(exp)
-        db.commit()
-        return {"deleted": True, "id": experience_id}
-    finally:
-        db.close()
+    )
+    db.execute(
+        delete(ExperiencePoint).where(ExperiencePoint.experience_id == experience_id)
+    )
+    db.delete(exp)
+    db.commit()
+    return {"deleted": True, "id": experience_id}
 
 
 class PointCreate(BaseModel):
@@ -326,96 +315,90 @@ class PointUpdate(BaseModel):
 
 
 @router.post("/{experience_id}/points", response_model=ExperienceDetail)
-def add_point(experience_id: int, body: PointCreate) -> ExperienceDetail:
+def add_point(experience_id: int, body: PointCreate, *, db: DbSession) -> ExperienceDetail:
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="text is required")
 
-    db = get_db()
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    next_order = (
+        db.execute(
+            select(func.max(ExperiencePoint.order_index)).where(
+                ExperiencePoint.experience_id == experience_id
+            )
+        ).scalar()
+        or 0
+    ) + 1
+    point = ExperiencePoint(experience_id=experience_id, text=text, order_index=next_order)
+    db.add(point)
+    db.commit()
+    db.refresh(point)
     try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        next_order = (
-            db.execute(
-                select(func.max(ExperiencePoint.order_index)).where(
-                    ExperiencePoint.experience_id == experience_id
-                )
-            ).scalar()
-            or 0
-        ) + 1
-        point = ExperiencePoint(experience_id=experience_id, text=text, order_index=next_order)
-        db.add(point)
-        db.commit()
-        db.refresh(point)
-        try:
-            from app.retrieval.index import index_experience_points
+        from app.retrieval.index import index_experience_points
 
-            index_experience_points([point], account_id=exp.account_id)
-        except Exception:
-            # Same posture as add_skill below: the SQLite write already
-            # committed, a Qdrant hiccup here shouldn't fail the request.
-            logger.exception("could not index experience point id=%s", point.id)
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+        index_experience_points([point], account_id=exp.account_id)
+    except Exception:
+        # Same posture as add_skill below: the SQLite write already
+        # committed, a Qdrant hiccup here shouldn't fail the request.
+        logger.exception("could not index experience point id=%s", point.id)
+    db.refresh(exp)
+    return _detail_for(db, exp)
 
 
 @router.patch("/{experience_id}/points/{point_id}", response_model=ExperienceDetail)
-def update_point(experience_id: int, point_id: int, body: PointUpdate) -> ExperienceDetail:
+def update_point(
+    experience_id: int,
+    point_id: int,
+    body: PointUpdate,
+    *,
+    db: DbSession,
+) -> ExperienceDetail:
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=422, detail="text is required")
 
-    db = get_db()
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    point = db.execute(
+        select(ExperiencePoint).where(
+            ExperiencePoint.id == point_id, ExperiencePoint.experience_id == experience_id
+        )
+    ).scalar_one_or_none()
+    if point is None:
+        raise HTTPException(status_code=404, detail=f"no point with id={point_id}")
+    point.text = text
+    db.commit()
+    db.refresh(point)
     try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        point = db.execute(
-            select(ExperiencePoint).where(
-                ExperiencePoint.id == point_id, ExperiencePoint.experience_id == experience_id
-            )
-        ).scalar_one_or_none()
-        if point is None:
-            raise HTTPException(status_code=404, detail=f"no point with id={point_id}")
-        point.text = text
-        db.commit()
-        db.refresh(point)
-        try:
-            from app.retrieval.index import index_experience_points
+        from app.retrieval.index import index_experience_points
 
-            index_experience_points([point], account_id=exp.account_id)
-        except Exception:
-            logger.exception("could not re-index experience point id=%s", point.id)
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+        index_experience_points([point], account_id=exp.account_id)
+    except Exception:
+        logger.exception("could not re-index experience point id=%s", point.id)
+    db.refresh(exp)
+    return _detail_for(db, exp)
 
 
 @router.delete("/{experience_id}/points/{point_id}", response_model=ExperienceDetail)
-def delete_point(experience_id: int, point_id: int) -> ExperienceDetail:
-    db = get_db()
-    try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        point = db.execute(
-            select(ExperiencePoint).where(
-                ExperiencePoint.id == point_id, ExperiencePoint.experience_id == experience_id
-            )
-        ).scalar_one_or_none()
-        if point is None:
-            raise HTTPException(status_code=404, detail=f"no point with id={point_id}")
-        db.delete(point)
-        db.commit()
-        _delete_point_vectors([point_id])
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+def delete_point(experience_id: int, point_id: int, *, db: DbSession) -> ExperienceDetail:
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    point = db.execute(
+        select(ExperiencePoint).where(
+            ExperiencePoint.id == point_id, ExperiencePoint.experience_id == experience_id
+        )
+    ).scalar_one_or_none()
+    if point is None:
+        raise HTTPException(status_code=404, detail=f"no point with id={point_id}")
+    db.delete(point)
+    db.commit()
+    _delete_point_vectors([point_id])
+    db.refresh(exp)
+    return _detail_for(db, exp)
 
 
 class SkillEvidenceCreate(BaseModel):
@@ -433,71 +416,65 @@ class SkillEvidenceUpdate(BaseModel):
 
 
 @router.post("/{experience_id}/skills", response_model=ExperienceDetail)
-def add_skill(experience_id: int, body: SkillEvidenceCreate) -> ExperienceDetail:
-    db = get_db()
+def add_skill(experience_id: int, body: SkillEvidenceCreate, *, db: DbSession) -> ExperienceDetail:
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    row = add_evidence(
+        db,
+        ExperienceSkillEvidence,
+        "experience_id",
+        experience_id,
+        skill=body.skill,
+        evidence_type=body.evidence_type,
+        weight=body.weight,
+        confidence=body.confidence,
+    )
+    # Adding it by hand overrules an earlier "not a skill" review verdict.
+    approve(db, exp.account_id, row.skill)
     try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        row = add_evidence(
-            db,
-            ExperienceSkillEvidence,
-            "experience_id",
-            experience_id,
-            skill=body.skill,
-            evidence_type=body.evidence_type,
-            weight=body.weight,
-            confidence=body.confidence,
-        )
-        # Adding it by hand overrules an earlier "not a skill" review verdict.
-        approve(db, exp.account_id, row.skill)
-        try:
-            from app.retrieval.index import index_experience_skill_evidence
+        from app.retrieval.index import index_experience_skill_evidence
 
-            index_experience_skill_evidence([row], account_id=exp.account_id)
-        except Exception:
-            # Same posture as app/profile/build.py's indexing calls: the
-            # SQLite write already committed above, which is the data that
-            # matters; a Qdrant hiccup here shouldn't fail the request.
-            logger.exception("could not index experience skill evidence id=%s", row.id)
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+        index_experience_skill_evidence([row], account_id=exp.account_id)
+    except Exception:
+        # Same posture as app/profile/build.py's indexing calls: the
+        # SQLite write already committed above, which is the data that
+        # matters; a Qdrant hiccup here shouldn't fail the request.
+        logger.exception("could not index experience skill evidence id=%s", row.id)
+    db.refresh(exp)
+    return _detail_for(db, exp)
 
 
 @router.patch("/{experience_id}/skills/{skill_id}", response_model=ExperienceDetail)
-def update_skill(experience_id: int, skill_id: int, body: SkillEvidenceUpdate) -> ExperienceDetail:
+def update_skill(
+    experience_id: int,
+    skill_id: int,
+    body: SkillEvidenceUpdate,
+    *,
+    db: DbSession,
+) -> ExperienceDetail:
     fields = body.model_dump(exclude_unset=True)
 
-    db = get_db()
-    try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        row = update_evidence(
-            db, ExperienceSkillEvidence, "experience_id", experience_id, skill_id, fields
-        )
-        if fields.get("skill"):
-            approve(db, exp.account_id, row.skill)
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    row = update_evidence(
+        db, ExperienceSkillEvidence, "experience_id", experience_id, skill_id, fields
+    )
+    if fields.get("skill"):
+        approve(db, exp.account_id, row.skill)
+    db.refresh(exp)
+    return _detail_for(db, exp)
 
 
 @router.delete("/{experience_id}/skills/{skill_id}", response_model=ExperienceDetail)
-def delete_skill(experience_id: int, skill_id: int) -> ExperienceDetail:
-    db = get_db()
-    try:
-        exp = db.get(Experience, experience_id)
-        if exp is None:
-            raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
-        delete_evidence(db, ExperienceSkillEvidence, "experience_id", experience_id, skill_id)
-        from app.retrieval.index import experience_evidence_point_id
+def delete_skill(experience_id: int, skill_id: int, *, db: DbSession) -> ExperienceDetail:
+    exp = db.get(Experience, experience_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    delete_evidence(db, ExperienceSkillEvidence, "experience_id", experience_id, skill_id)
+    from app.retrieval.index import experience_evidence_point_id
 
-        _delete_qdrant_points([experience_evidence_point_id(skill_id)])
-        db.refresh(exp)
-        return _detail_for(db, exp)
-    finally:
-        db.close()
+    _delete_qdrant_points([experience_evidence_point_id(skill_id)])
+    db.refresh(exp)
+    return _detail_for(db, exp)

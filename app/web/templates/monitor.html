@@ -221,6 +221,18 @@
               </ul>
             </div>
             <div>
+              <h3 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By feature</h3>
+              <ul class="mt-2 space-y-1 text-sm">
+                <template x-for="b in usage.by_purpose" :key="b.key">
+                  <li class="flex justify-between gap-3 py-1 border-b border-[color:var(--line)]">
+                    <span x-text="b.label"></span>
+                    <span class="text-[color:var(--muted)]"><span x-text="b.calls"></span> calls · <span x-text="b.cached_calls"></span> cached · $<span x-text="b.cost_usd.toFixed(2)"></span></span>
+                  </li>
+                </template>
+                <li class="text-[color:var(--muted)] py-1" x-show="!usage.by_purpose.length">No calls in this window.</li>
+              </ul>
+            </div>
+            <div>
               <h3 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By tier / model</h3>
               <ul class="mt-2 space-y-1 text-sm">
                 <template x-for="b in usage.by_model" :key="b.key">
@@ -308,7 +320,7 @@
             <div class="flex items-center justify-between gap-3 flex-wrap">
               <div class="flex items-center gap-2 text-sm">
                 <span class="uppercase text-xs tracking-wide text-[color:var(--muted)] border border-[color:var(--line)] px-1.5 py-0.5" x-text="event.source"></span>
-                <span x-text="kindLabel(event.kind)" :class="event.kind === 'budget_exceeded' ? 'otw-error' : ''"></span>
+                <span x-text="kindLabel(event.kind)" :class="kindIsError(event.kind) ? 'otw-error' : ''"></span>
               </div>
               <span class="text-xs text-[color:var(--muted)]" x-text="formatTime(event.created_at)"></span>
             </div>
@@ -428,8 +440,23 @@
         }
       },
 
+      // Every kind app/core/rate_limits.py records. Unknown kinds fall
+      // back to the raw value rather than being mislabelled as one of
+      // these, so a kind added later still reads sensibly here.
       kindLabel(kind) {
-        return kind === 'budget_exceeded' ? 'Budget cap hit' : 'Rate limited';
+        return {
+          budget_exceeded: 'Budget cap hit',
+          rate_limited: 'Rate limited',
+          key_failover: 'Key swapped out',
+          keys_exhausted: 'Out of keys',
+          stage_failed: 'Step stopped',
+        }[kind] || kind;
+      },
+
+      // Red for the ones that stopped real work; a key swap is worth
+      // seeing but the request it happened in still went through.
+      kindIsError(kind) {
+        return ['budget_exceeded', 'keys_exhausted', 'stage_failed'].includes(kind);
       },
 
       formatTime(iso) {

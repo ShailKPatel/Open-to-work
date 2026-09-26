@@ -160,7 +160,9 @@ def extract_job_posting(raw_text: str, account_id: int | None = None) -> JobExtr
         ),
     ]
 
-    response = complete("quality", messages, schema=_SCHEMA, account_id=account_id)
+    response = complete(
+        "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="job_extract"
+    )
     if response.parsed is None:
         raise JobExtractionError("LLM response for job posting extraction was not valid JSON")
 

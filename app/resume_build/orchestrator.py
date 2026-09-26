@@ -61,23 +61,35 @@ _MAX_CANDIDATE_PROJECTS = 8
 _MAX_SELECTED_PROJECTS = 4
 _MAX_CANDIDATE_SKILLS = 25
 _MAX_SELECTED_SKILLS = 15
+# How much of a repo's own "About" description reaches the prompt. A
+# description is one line of GitHub metadata; anything past this is a repo
+# that put its whole README in the field, and it costs the same tokens in
+# every resume build for the same account.
+_MAX_CANDIDATE_DESCRIPTION_CHARS = 300
 _MAX_POINTS_PER_PROJECT = 3
 _MAX_POINTS_PER_ROLE = 5
+_MAX_RESERVE_PROJECTS = 4
+_MAX_RESERVE_SKILLS = 20
 
 _LENGTH_GUIDANCE = {
     "onepage": (
         "This resume renders on a one-page template. Keep the summary to "
         "2 to 3 sentences. Select at most 3 projects, 1 to 2 bullet "
         "points each. Select at most 10 skills. Favor fewer, stronger "
-        "choices over maximizing coverage: the goal is a resume that "
-        "plausibly fits one page before any later automatic trimming "
-        "pass runs, not a resume packed to the edge."
+        "choices over maximizing coverage: aim for a resume that fills "
+        "one page and slightly overruns it rather than one that leaves "
+        "the page half empty. A later automatic pass tightens the layout "
+        "and trims the weakest item if it does run over, so a little too "
+        "much is much cheaper than too little."
     ),
     "twopage": (
         "This resume renders on a two-page template, more room than a "
         "one-page one. Keep the summary to 2 to 4 sentences. Select up "
         "to 4 projects, 2 to 3 bullet points each. Select up to 16 "
-        "skills."
+        "skills. Aim to fill both pages and slightly overrun rather than "
+        "to stop short: a later automatic pass tightens the layout and "
+        "trims the weakest item if it does run over, so a little too "
+        "much is much cheaper than too little."
     ),
 }
 
@@ -166,7 +178,9 @@ def _candidate_projects(
     if not top_repo_ids:
         all_repos = list(
             db.execute(
-                select(Repository).where(Repository.account_id == account_id).limit(_MAX_CANDIDATE_PROJECTS)
+                select(Repository)
+                .where(Repository.account_id == account_id)
+                .limit(_MAX_CANDIDATE_PROJECTS)
             ).scalars()
         )
         top_repo_ids = [r.id for r in all_repos]
@@ -283,12 +297,17 @@ def _build_candidates_message(
     if candidates:
         for c in candidates:
             skills_text = ", ".join(c["skills"]) or "none listed"
+            description = str(c["description"])[:_MAX_CANDIDATE_DESCRIPTION_CHARS]
             note = ""
-            if project_instructions and c["repo_id"] in project_instructions and project_instructions[c["repo_id"]].strip():
+            if (
+                project_instructions
+                and c["repo_id"] in project_instructions
+                and project_instructions[c["repo_id"]].strip()
+            ):
                 note = f" [User Note: {project_instructions[c['repo_id']].strip()}]"
             lines.append(
                 f"- id={c['repo_id']} name={c['name']!r} "
-                f"description={c['description']!r} skills={skills_text}{note}"
+                f"description={description!r} skills={skills_text}{note}"
             )
     else:
         lines.append("(none available)")
@@ -297,7 +316,10 @@ def _build_candidates_message(
     lines.append(", ".join(candidate_skills) if candidate_skills else "(none available)")
     if custom_instruction and custom_instruction.strip():
         lines.append("")
-        lines.append(f"USER SPECIFIC REWRITE INSTRUCTION FOR THIS RESUME:\n{custom_instruction.strip()}")
+        lines.append(
+            "USER SPECIFIC REWRITE INSTRUCTION FOR THIS RESUME:\n"
+            f"{custom_instruction.strip()}"
+        )
     return "\n".join(lines)
 
 
@@ -349,6 +371,74 @@ def _ground_skills(llm_skills: list[Any], candidate_skills: list[str]) -> list[s
     return result
 
 
+def _reserve_project(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """Turns a candidate project the model did not select into a
+    render-ready entry, for app/resume_build/pagefit.py to add back when
+    a resume comes up short of its target page count. Its single bullet
+    is the repository's own description, straight from this account's
+    Repository row: no model wrote it, so adding it back cannot
+    introduce a claim the account holder did not make.
+    """
+    description = (candidate.get("description") or "").strip()
+    if not description:
+        return None
+    return {
+        "name": candidate["name"],
+        "tagline": None,
+        "href": candidate["href"],
+        "url_display": candidate["name"],
+        "date_range": _format_month_year(candidate["date"]) if candidate["date"] else "",
+        "points": [description],
+        "note": None,
+    }
+
+
+def _build_reserve(
+    ctx: _DeterministicContext,
+    experience: list[dict[str, Any]],
+    projects: list[dict[str, Any]],
+    skills: list[str],
+) -> dict[str, Any]:
+    """Everything this account genuinely has that the resume is not
+    currently showing: candidate projects the model passed over, the
+    per-role experience points the retrieval step narrowed away, and
+    candidate skills that did not make the list. Ordered by relevance to
+    the job, so a page that needs filling gets the best of what is left
+    rather than an arbitrary leftover.
+
+    This never leaves the machine and never reaches a prompt. It is read
+    only by the page-fit loop, which consumes it before rendering.
+    """
+    shown_projects = {p["name"] for p in projects}
+    reserve_projects = []
+    for candidate in ctx.candidates:
+        if candidate["name"] in shown_projects:
+            continue
+        entry = _reserve_project(candidate)
+        if entry is not None:
+            reserve_projects.append(entry)
+        if len(reserve_projects) >= _MAX_RESERVE_PROJECTS:
+            break
+
+    held_points: dict[str, list[str]] = {}
+    for role in experience:
+        shown = role["points"]
+        dropped = [p for p in ctx.experience_all_points.get(role["id"], []) if p not in shown]
+        if dropped:
+            held_points[role["company"]] = dropped
+
+    shown_skills = {s.casefold() for s in skills}
+    reserve_skills = [
+        s for s in ctx.candidate_skill_names if s.casefold() not in shown_skills
+    ][:_MAX_RESERVE_SKILLS]
+
+    return {
+        "projects": reserve_projects,
+        "experience_points": held_points,
+        "skills": reserve_skills,
+    }
+
+
 @dataclass
 class _DeterministicContext:
     """The DB-to-template mapping build_resume_data()/edit_resume_content()
@@ -362,6 +452,11 @@ class _DeterministicContext:
     education: list[dict[str, Any]]
     candidates: list[dict[str, Any]]
     candidate_skill_names: list[str]
+    # Every real point each role has, keyed by experience id, before
+    # _select_experience_points() narrowed it. The page-fit loop draws on
+    # the difference when a resume needs more content to reach its target
+    # page count, so a narrowed-away point is held back rather than lost.
+    experience_all_points: dict[int, list[str]]
 
 
 def _build_deterministic_context(
@@ -380,12 +475,17 @@ def _build_deterministic_context(
     header = build_header_context(
         account, social_links, selected_email=selected_email, selected_phone=selected_phone
     )
-    experience = build_experience_context(db, account_id)
-    experience = _select_experience_points(experience, job_text, account_id)
+    full_experience = build_experience_context(db, account_id)
+    all_points = {role["id"]: list(role["points"]) for role in full_experience}
+    experience = _select_experience_points(full_experience, job_text, account_id)
     education = build_education_context(db, account_id)
-    candidates = _candidate_projects(db, account_id, job_text, selected_project_ids=selected_project_ids)
+    candidates = _candidate_projects(
+        db, account_id, job_text, selected_project_ids=selected_project_ids
+    )
     candidate_skill_names = _candidate_skills(account_id, job_text, selected_skills=selected_skills)
-    return _DeterministicContext(header, experience, education, candidates, candidate_skill_names)
+    return _DeterministicContext(
+        header, experience, education, candidates, candidate_skill_names, all_points
+    )
 
 
 def _build_resume_data_for_text(
@@ -431,7 +531,9 @@ def _build_resume_data_for_text(
         ),
         user_message(_length_guidance(template)),
     ]
-    response = complete("quality", messages, schema=_SCHEMA, account_id=account_id)
+    response = complete(
+        "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="resume_build"
+    )
     if response.parsed is None:
         raise ValueError("LLM response for resume generation was not valid JSON")
 
@@ -454,6 +556,7 @@ def _build_resume_data_for_text(
         "education": ctx.education,
         "technologies": [],
         "skills": skills,
+        "reserve": _build_reserve(ctx, experience, projects, skills),
     }
 
 
@@ -471,8 +574,15 @@ def build_resume_data(
 ) -> dict[str, Any]:
     """Returns the template-ready data dict itself, not a rendered
     string: app/resume_build/pagefit.py needs this shape (it re-renders
-    with individual entries removed on each cut, see that module) rather
-    than a starting .tex string it would have to parse back apart.
+    with individual entries removed or added back on each pass, see that
+    module) rather than a starting .tex string it would have to parse
+    back apart.
+
+    The dict carries a "reserve" key holding the account's own content
+    this resume is not currently showing, which the page-fit loop draws
+    on when the resume falls short of its target page count. The
+    templates ignore it and the loop strips it, so it never reaches the
+    rendered .tex or the saved content.
     """
     db = get_db()
     try:
@@ -571,12 +681,17 @@ def edit_resume_content(
         ctx = _build_deterministic_context(db, account, account_id, job_text)
         candidates_by_id = {c["repo_id"]: c for c in ctx.candidates}
 
+        # sort_keys so the same resume content always serializes to the
+        # same bytes: an edit asked for twice is then one prompt, served
+        # from app/core/llm.py's cache the second time, rather than two
+        # that differ only in key order.
         current_text = json.dumps(
             {
                 "summary": current_content.get("summary") or "",
                 "projects": current_content.get("projects", []),
                 "skills": current_content.get("skills", []),
-            }
+            },
+            sort_keys=True,
         )
 
         messages = [
@@ -587,7 +702,9 @@ def edit_resume_content(
             user_message("Account holder's edit instruction:\n" + message),
             user_message(_length_guidance(template)),
         ]
-        response = complete("quality", messages, schema=_SCHEMA, account_id=account_id)
+        response = complete(
+            "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="resume_edit"
+        )
         if response.parsed is None:
             raise ValueError("LLM response for resume edit was not valid JSON")
 
@@ -603,6 +720,7 @@ def edit_resume_content(
             "education": ctx.education,
             "technologies": [],
             "skills": skills,
+            "reserve": _build_reserve(ctx, ctx.experience, projects, skills),
         }
     finally:
         db.close()

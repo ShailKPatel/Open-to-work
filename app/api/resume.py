@@ -5,7 +5,7 @@ plus freeform notes, all independently editable by hand afterward.
 experience/education the rest of the Portfolio section holds.
 
 Distinct from Account.resume_filename/resume_path, the single-file mirror
-kept for backward compatibility (app/core/db.py's Account docstring);
+kept for backward compatibility (app/core/db/models.py's Account docstring);
 nothing here reads from those two columns, app/profile/resume_ingest.py
 writes to them as a side effect of every upload so they stay in sync.
 """
@@ -20,8 +20,10 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
-from app.core.db import Account, JobPosting, Resume, get_db
+from app.api.deps import DbSession
+from app.core.db import Account, JobPosting, Resume
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
@@ -102,17 +104,13 @@ class ResumeItem(BaseModel):
 
 
 @router.get("", response_model=list[ResumeItem])
-def list_resumes(account_id: int) -> list[ResumeItem]:
-    db = get_db()
-    try:
-        rows = db.execute(
-            select(Resume)
-            .where(Resume.account_id == account_id)
-            .order_by(Resume.uploaded_at.desc())
-        ).scalars()
-        return [ResumeItem.from_row(r) for r in rows]
-    finally:
-        db.close()
+def list_resumes(account_id: int, *, db: DbSession) -> list[ResumeItem]:
+    rows = db.execute(
+        select(Resume)
+        .where(Resume.account_id == account_id)
+        .order_by(Resume.uploaded_at.desc())
+    ).scalars()
+    return [ResumeItem.from_row(r) for r in rows]
 
 
 class ResumeSearchHit(BaseModel):
@@ -122,7 +120,9 @@ class ResumeSearchHit(BaseModel):
 
 @router.get("/search", response_model=list[ResumeSearchHit])
 def search_resumes_for_posting(
-    account_id: int, job_posting_id: int, top_k: int = 3
+    account_id: int, job_posting_id: int, top_k: int = 3,
+    *,
+    db: DbSession,
 ) -> list[ResumeSearchHit]:
     """"Closest existing resume to this job" for /portfolio/resume/build's
     suggestion panel: semantic search over this account's resume library
@@ -133,26 +133,22 @@ def search_resumes_for_posting(
     """
     from app.retrieval.search import search_resumes
 
-    db = get_db()
-    try:
-        posting = db.get(JobPosting, job_posting_id)
-        if posting is None:
-            raise HTTPException(status_code=404, detail=f"no job posting with id={job_posting_id}")
+    posting = db.get(JobPosting, job_posting_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=f"no job posting with id={job_posting_id}")
 
-        hits = search_resumes(posting.raw_text_quarantined, account_id, top_k=top_k)
-        rows_by_id = {
-            r.id: r
-            for r in db.execute(
-                select(Resume).where(Resume.id.in_([h.id for h in hits]))
-            ).scalars()
-        }
-        return [
-            ResumeSearchHit(resume=ResumeItem.from_row(rows_by_id[h.id]), score=h.score)
-            for h in hits
-            if h.id in rows_by_id
-        ]
-    finally:
-        db.close()
+    hits = search_resumes(posting.raw_text_quarantined, account_id, top_k=top_k)
+    rows_by_id = {
+        r.id: r
+        for r in db.execute(
+            select(Resume).where(Resume.id.in_([h.id for h in hits]))
+        ).scalars()
+    }
+    return [
+        ResumeSearchHit(resume=ResumeItem.from_row(rows_by_id[h.id]), score=h.score)
+        for h in hits
+        if h.id in rows_by_id
+    ]
 
 
 @router.post("", response_model=ResumeItem)
@@ -161,23 +157,26 @@ def upload_resume(
     name: str = Form(""),
     notes: str = Form(""),
     file: UploadFile = File(...),
+    *,
+    db: DbSession,
 ) -> ResumeItem:
     if not file.filename:
         raise HTTPException(status_code=422, detail="a file is required")
 
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
-        row = ingest_resume(db, account_id, file, name=name, notes=notes)
-        return ResumeItem.from_row(row)
-    finally:
-        db.close()
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    row = ingest_resume(db, account_id, file, name=name, notes=notes)
+    return ResumeItem.from_row(row)
 
 
 @router.get("/{resume_id}/file")
-def download_resume(resume_id: int, disposition: str = "attachment") -> FileResponse:
+def download_resume(
+    resume_id: int,
+    disposition: str = "attachment",
+    *,
+    db: DbSession,
+) -> FileResponse:
     """`disposition=inline` (the view-in-a-popup path, resume.html's View
     button) lets the browser render a PDF/image straight in an
     iframe/img instead of forcing a save dialog; plain `attachment` (the
@@ -187,41 +186,38 @@ def download_resume(resume_id: int, disposition: str = "attachment") -> FileResp
     """
     if disposition not in ("attachment", "inline"):
         raise HTTPException(status_code=422, detail="disposition must be attachment or inline")
-    db = get_db()
-    try:
-        row = db.get(Resume, resume_id)
-        if row is None or not row.stored_path or not Path(row.stored_path).exists():
-            raise HTTPException(status_code=404, detail=f"no resume file with id={resume_id}")
-        return FileResponse(
-            row.stored_path,
-            filename=row.filename,
-            media_type=row.mime_type,
-            content_disposition_type=disposition,
-        )
-    finally:
-        db.close()
+    row = db.get(Resume, resume_id)
+    if row is None or not row.stored_path or not Path(row.stored_path).exists():
+        raise HTTPException(status_code=404, detail=f"no resume file with id={resume_id}")
+    return FileResponse(
+        row.stored_path,
+        filename=row.filename,
+        media_type=row.mime_type,
+        content_disposition_type=disposition,
+    )
 
 
 @router.get("/{resume_id}/compiled-file")
-def download_compiled_resume(resume_id: int, disposition: str = "attachment") -> FileResponse:
+def download_compiled_resume(
+    resume_id: int,
+    disposition: str = "attachment",
+    *,
+    db: DbSession,
+) -> FileResponse:
     """The AI-edited/generated PDF (Resume.compiled_path), a separate
     file from GET /{resume_id}/file's original upload. Same disposition
     handling as that endpoint, see its docstring."""
     if disposition not in ("attachment", "inline"):
         raise HTTPException(status_code=422, detail="disposition must be attachment or inline")
-    db = get_db()
-    try:
-        row = db.get(Resume, resume_id)
-        if row is None or not row.compiled_path or not Path(row.compiled_path).exists():
-            raise HTTPException(status_code=404, detail=f"no compiled resume with id={resume_id}")
-        return FileResponse(
-            row.compiled_path,
-            filename=row.filename or "resume.pdf",
-            media_type="application/pdf",
-            content_disposition_type=disposition,
-        )
-    finally:
-        db.close()
+    row = db.get(Resume, resume_id)
+    if row is None or not row.compiled_path or not Path(row.compiled_path).exists():
+        raise HTTPException(status_code=404, detail=f"no compiled resume with id={resume_id}")
+    return FileResponse(
+        row.compiled_path,
+        filename=row.filename or "resume.pdf",
+        media_type="application/pdf",
+        content_disposition_type=disposition,
+    )
 
 
 class ResumeUpdate(BaseModel):
@@ -245,52 +241,44 @@ def _reindex_best_effort(row: Resume, resume_id: int) -> None:
 
 
 @router.patch("/{resume_id}", response_model=ResumeItem)
-def update_resume(resume_id: int, body: ResumeUpdate) -> ResumeItem:
+def update_resume(resume_id: int, body: ResumeUpdate, *, db: DbSession) -> ResumeItem:
     fields = body.model_dump(exclude_unset=True)
-    db = get_db()
-    try:
-        row = db.get(Resume, resume_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
-        if "name" in fields:
-            row.name = (fields["name"].strip() if fields["name"] else None) or None
-        if "notes" in fields:
-            row.notes = (fields["notes"].strip() if fields["notes"] else None) or None
-        if "tags" in fields:
-            row.tags_json = [t.strip() for t in (fields["tags"] or []) if t.strip()]
-        if "target_roles" in fields:
-            row.target_roles_json = [t.strip() for t in (fields["target_roles"] or []) if t.strip()]
-        if "summary" in fields:
-            row.summary = (fields["summary"].strip() if fields["summary"] else None) or None
-        db.commit()
-        db.refresh(row)
+    row = db.get(Resume, resume_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
+    if "name" in fields:
+        row.name = (fields["name"].strip() if fields["name"] else None) or None
+    if "notes" in fields:
+        row.notes = (fields["notes"].strip() if fields["notes"] else None) or None
+    if "tags" in fields:
+        row.tags_json = [t.strip() for t in (fields["tags"] or []) if t.strip()]
+    if "target_roles" in fields:
+        row.target_roles_json = [t.strip() for t in (fields["target_roles"] or []) if t.strip()]
+    if "summary" in fields:
+        row.summary = (fields["summary"].strip() if fields["summary"] else None) or None
+    db.commit()
+    db.refresh(row)
 
-        _reindex_best_effort(row, resume_id)
-        return ResumeItem.from_row(row)
-    finally:
-        db.close()
+    _reindex_best_effort(row, resume_id)
+    return ResumeItem.from_row(row)
 
 
 @router.post("/{resume_id}/reprocess", response_model=ResumeItem)
-def reprocess_resume(resume_id: int) -> ResumeItem:
-    db = get_db()
-    try:
-        row = db.get(Resume, resume_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
-        if not row.stored_path or not Path(row.stored_path).exists():
-            raise HTTPException(status_code=409, detail="the resume's file is missing on disk")
-        row = run_extraction(db, row)
-        return ResumeItem.from_row(row)
-    finally:
-        db.close()
+def reprocess_resume(resume_id: int, *, db: DbSession) -> ResumeItem:
+    row = db.get(Resume, resume_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
+    if not row.stored_path or not Path(row.stored_path).exists():
+        raise HTTPException(status_code=409, detail="the resume's file is missing on disk")
+    row = run_extraction(db, row)
+    return ResumeItem.from_row(row)
 
 
 class ResumeEditRequest(BaseModel):
     message: str
 
 
-def _job_text_for_edit(resume: Resume, db) -> str:
+def _job_text_for_edit(resume: Resume, db: Session) -> str:
     """The text this resume's content is (or, for the first edit, will
     be) grounded against: a linked JobPosting's own text when this
     resume came from /portfolio/resume/build, otherwise the resume's own current
@@ -320,7 +308,7 @@ def _job_text_for_edit(resume: Resume, db) -> str:
 
 
 @router.post("/{resume_id}/edit", response_model=ResumeItem)
-def edit_resume(resume_id: int, body: ResumeEditRequest) -> ResumeItem:
+def edit_resume(resume_id: int, body: ResumeEditRequest, *, db: DbSession) -> ResumeItem:
     """Prompt-driven edit: the account holder writes a message describing
     what to change, an LLM updates the resume's summary/projects/skills
     to match (app/resume_build/orchestrator.py's edit_resume_content()),
@@ -344,72 +332,79 @@ def edit_resume(resume_id: int, body: ResumeEditRequest) -> ResumeItem:
     if not message:
         raise HTTPException(status_code=422, detail="message is required")
 
-    db = get_db()
+    row = db.get(Resume, resume_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
+
+    job_text = _job_text_for_edit(row, db)
+    template = row.template or "onepage"
+
     try:
-        row = db.get(Resume, resume_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
+        if row.content_json is None:
+            if not job_text.strip():
+                raise HTTPException(
+                    status_code=409,
+                    detail="this resume hasn't been analyzed yet; reprocess it first",
+                )
+            base_content = build_resume_data_from_seed(row.account_id, job_text, template)
+        else:
+            base_content = row.content_json
 
-        job_text = _job_text_for_edit(row, db)
-        template = row.template or "onepage"
+        new_content = edit_resume_content(
+            row.account_id, job_text, base_content, message, template=template
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (
+        ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError
+    ) as e:
+        raise _map_llm_error(e) from e
 
-        try:
-            if row.content_json is None:
-                if not job_text.strip():
-                    raise HTTPException(
-                        status_code=409,
-                        detail="this resume hasn't been analyzed yet; reprocess it first",
-                    )
-                base_content = build_resume_data_from_seed(row.account_id, job_text, template)
-            else:
-                base_content = row.content_json
-
-            new_content = edit_resume_content(
-                row.account_id, job_text, base_content, message, template=template
+    max_pages = _DEFAULT_MAX_PAGES[template]
+    try:
+        result = fit_to_page_limit(new_content, template, max_pages, account_id=row.account_id)
+        pdf_bytes = result.pdf_bytes
+        new_content = result.data or new_content
+        if not result.fit_exact:
+            logger.warning(
+                "page-fit came up short for resume id=%s: %s page(s) against a target of %s",
+                resume_id, result.page_count, max_pages,
             )
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        except (
-            ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError
-        ) as e:
-            raise _map_llm_error(e) from e
+    except PageFitNotAchievedError as e:
+        logger.warning("page-fit did not reach target for resume id=%s: %s", resume_id, e)
+        pdf_bytes = e.best_pdf_bytes
+        new_content = e.best_data or new_content
+    except TectonicNotInstalledError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
+    except CompileError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+    except (
+        ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError
+    ) as e:
+        raise _map_llm_error(e) from e
 
-        max_pages = _DEFAULT_MAX_PAGES[template]
-        try:
-            result = fit_to_page_limit(new_content, template, max_pages, account_id=row.account_id)
-            pdf_bytes = result.pdf_bytes
-        except PageFitNotAchievedError as e:
-            logger.warning("page-fit did not reach target for resume id=%s: %s", resume_id, e)
-            pdf_bytes = e.best_pdf_bytes
-        except TectonicNotInstalledError as e:
-            raise HTTPException(status_code=501, detail=str(e)) from e
-        except CompileError as e:
-            raise HTTPException(status_code=502, detail=str(e)) from e
-        except (
-            ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError
-        ) as e:
-            raise _map_llm_error(e) from e
+    # The held-back reserve content the page-fit loop draws on is
+    # working state, never part of the resume's saved content.
+    new_content.pop("reserve", None)
 
-        account_dir = Path(get_settings().resume_storage_dir) / str(row.account_id)
-        account_dir.mkdir(parents=True, exist_ok=True)
-        dest = account_dir / f"{row.id}_edited.pdf"
-        dest.write_bytes(pdf_bytes)
+    account_dir = Path(get_settings().resume_storage_dir) / str(row.account_id)
+    account_dir.mkdir(parents=True, exist_ok=True)
+    dest = account_dir / f"{row.id}_edited.pdf"
+    dest.write_bytes(pdf_bytes)
 
-        row.content_json = new_content
-        row.template = template
-        row.compiled_path = str(dest)
-        row.compiled_at = dt.datetime.now(dt.UTC)
-        row.summary = new_content.get("summary")
-        row.tags_json = new_content.get("skills", [])
-        if row.extraction_status != "extracted":
-            row.extraction_status = "extracted"
-        db.commit()
-        db.refresh(row)
+    row.content_json = new_content
+    row.template = template
+    row.compiled_path = str(dest)
+    row.compiled_at = dt.datetime.now(dt.UTC)
+    row.summary = new_content.get("summary")
+    row.tags_json = new_content.get("skills", [])
+    if row.extraction_status != "extracted":
+        row.extraction_status = "extracted"
+    db.commit()
+    db.refresh(row)
 
-        _reindex_best_effort(row, resume_id)
-        return ResumeItem.from_row(row)
-    finally:
-        db.close()
+    _reindex_best_effort(row, resume_id)
+    return ResumeItem.from_row(row)
 
 
 def _delete_qdrant_point(resume_id: int) -> None:
@@ -427,19 +422,15 @@ def _delete_qdrant_point(resume_id: int) -> None:
 
 
 @router.delete("/{resume_id}")
-def delete_resume(resume_id: int) -> dict:
-    db = get_db()
-    try:
-        row = db.get(Resume, resume_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
-        _delete_qdrant_point(resume_id)
-        if row.stored_path:
-            Path(row.stored_path).unlink(missing_ok=True)
-        if row.compiled_path:
-            Path(row.compiled_path).unlink(missing_ok=True)
-        db.delete(row)
-        db.commit()
-        return {"deleted": True, "id": resume_id}
-    finally:
-        db.close()
+def delete_resume(resume_id: int, *, db: DbSession) -> dict:
+    row = db.get(Resume, resume_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
+    _delete_qdrant_point(resume_id)
+    if row.stored_path:
+        Path(row.stored_path).unlink(missing_ok=True)
+    if row.compiled_path:
+        Path(row.compiled_path).unlink(missing_ok=True)
+    db.delete(row)
+    db.commit()
+    return {"deleted": True, "id": resume_id}

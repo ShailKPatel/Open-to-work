@@ -1,6 +1,6 @@
 """Coverage for the SQLite snapshot taken at startup: without it, a deleted or
 replaced database file would leave the app starting over on an empty database
-with nothing to restore from. See app/core/db.py::_backup_sqlite_file.
+with nothing to restore from. See app/core/db/engine.py::_backup_sqlite_file.
 """
 
 import sqlite3
@@ -55,7 +55,7 @@ def test_backup_created_and_contains_real_data(tmp_path):
 
 
 def test_old_backups_pruned_beyond_keep_limit(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.core.db._BACKUP_KEEP", 3)
+    monkeypatch.setattr("app.core.db.engine._BACKUP_KEEP", 3)
     db_path = tmp_path / "app.db"
     _make_real_db(db_path)
     backups_dir = tmp_path / "backups"
@@ -102,7 +102,9 @@ def test_init_db_takes_a_backup_first(tmp_path, monkeypatch):
     get_settings.cache_clear()
 
     calls = []
-    monkeypatch.setattr("app.core.db._backup_sqlite_file", lambda url: calls.append(url))
+    monkeypatch.setattr(
+        "app.core.db.migrations._backup_sqlite_file", lambda url: calls.append(url)
+    )
     try:
         init_db()
     finally:

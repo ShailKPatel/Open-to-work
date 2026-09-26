@@ -1,4 +1,4 @@
-\documentclass[10pt, letterpaper]{article}
+\documentclass[\VAR{layout.font_pt}pt, letterpaper]{\VAR{layout.doc_class}}
 
 % Preamble is RenderCV's own template styling (github.com/rendercv/rendercv,
 % MIT licensed) - structural LaTeX only, no personal data. Every actual
@@ -16,11 +16,11 @@
 
 % Packages:
 \usepackage[
-    top=1.5 cm,
-    bottom=1.5 cm,
-    left=2 cm,
-    right=2 cm,
-    footskip=0.8 cm,
+    top=\VAR{layout.margin_top_cm} cm,
+    bottom=\VAR{layout.margin_bottom_cm} cm,
+    left=\VAR{layout.margin_side_cm} cm,
+    right=\VAR{layout.margin_side_cm} cm,
+    footskip=\VAR{layout.footskip_cm} cm,
 ]{geometry}
 \usepackage{titlesec}
 \usepackage{tabularx}
@@ -73,13 +73,13 @@
 
 \titleformat{\section}{\needspace{4\baselineskip}\bfseries\large}{}{0pt}{}[\vspace{1pt}\titlerule]
 
-\titlespacing{\section}{-1pt}{0.4 cm}{0.3 cm}
+\titlespacing{\section}{-1pt}{\VAR{layout.section_before_cm} cm}{\VAR{layout.section_after_cm} cm}
 
 \renewcommand\labelitemi{$\circ$}
 \newenvironment{highlights}{
     \begin{itemize}[
-        topsep=0.15 cm,
-        parsep=0.15 cm,
+        topsep=\VAR{layout.bullet_topsep_cm} cm,
+        parsep=\VAR{layout.bullet_parsep_cm} cm,
         partopsep=0pt,
         itemsep=0pt,
         leftmargin=0.4 cm + 10pt
@@ -113,16 +113,18 @@
 
 \let\hrefWithoutArrow\href
 
+\linespread{\VAR{layout.line_spread}}
+
 \begin{document}
 
     \begin{header}
-        \textbf{\fontsize{24 pt}{24 pt}\selectfont \VAR{full_name | latex}}
-        \vspace{0.3 cm}
+        \textbf{\fontsize{\VAR{layout.name_pt} pt}{\VAR{layout.name_pt} pt}\selectfont \VAR{full_name | latex}}
+        \vspace{\VAR{layout.header_gap_cm} cm}
 
         \normalsize
         {\color{black}
         \BLOCK{for item in contact_items}
-        \BLOCK{if item.href}\mbox{\hrefWithoutArrow{\VAR{item.href}}{\VAR{item.icon}\ \VAR{item.text | latex}}}\BLOCK{else}\mbox{\VAR{item.icon}\ \VAR{item.text | latex}}\BLOCK{endif}%
+        \BLOCK{if item.href}\mbox{\hrefWithoutArrow{\VAR{item.href | latex_url}}{\VAR{item.icon}\ \VAR{item.text | latex}}}\BLOCK{else}\mbox{\VAR{item.icon}\ \VAR{item.text | latex}}\BLOCK{endif}%
         \BLOCK{if not loop.last}\kern 0.20 cm\textbar\kern 0.20 cm\BLOCK{endif}
         \BLOCK{endfor}
         }
@@ -132,7 +134,7 @@
 
         {\color{black}
         \BLOCK{for item in social_items}
-        \BLOCK{if item.href}\mbox{\hrefWithoutArrow{\VAR{item.href}}{\VAR{item.icon}\ \VAR{item.text | latex}}}\BLOCK{else}\mbox{\VAR{item.icon}\ \VAR{item.text | latex}}\BLOCK{endif}%
+        \BLOCK{if item.href}\mbox{\hrefWithoutArrow{\VAR{item.href | latex_url}}{\VAR{item.icon}\ \VAR{item.text | latex}}}\BLOCK{else}\mbox{\VAR{item.icon}\ \VAR{item.text | latex}}\BLOCK{endif}%
         \BLOCK{if not loop.last}\kern 0.20 cm\textbar\kern 0.20 cm\BLOCK{endif}
         \BLOCK{endfor}
         }
@@ -161,7 +163,7 @@
     \end{twocolentry}
 
     \BLOCK{if role.points}
-    \vspace{0.15 cm}
+    \vspace{\VAR{layout.entry_gap_cm} cm}
     \begin{onecolentry}
         \begin{highlights}
             \BLOCK{for point in role.points}
@@ -171,7 +173,7 @@
     \end{onecolentry}
     \BLOCK{endif}
 
-    \BLOCK{if not loop.last}\vspace{0.2 cm}\BLOCK{endif}
+    \BLOCK{if not loop.last}\vspace{\VAR{layout.role_gap_cm} cm}\BLOCK{endif}
 \BLOCK{endfor}
 \BLOCK{endif}
 
@@ -182,11 +184,11 @@
     \textit{\VAR{project.date_range | latex}}
 }
     \textbf{\VAR{project.name | latex}}\BLOCK{if project.tagline} -- \VAR{project.tagline | latex}\BLOCK{endif} \\
-    \BLOCK{if project.href}\href{\VAR{project.href}}{\VAR{project.url_display | latex}}\BLOCK{endif}
+    \BLOCK{if project.href}\href{\VAR{project.href | latex_url}}{\VAR{project.url_display | latex}}\BLOCK{endif}
 \end{twocolentry}
 
 \BLOCK{if project.points}
-\vspace{0.15 cm}
+\vspace{\VAR{layout.entry_gap_cm} cm}
 \begin{onecolentry}
     \begin{highlights}
         \BLOCK{for point in project.points}
@@ -200,7 +202,7 @@
 {\small \VAR{project.note | latex}}
 \BLOCK{endif}
 
-\BLOCK{if not loop.last}\vspace{0.3 cm}\BLOCK{endif}
+\BLOCK{if not loop.last}\vspace{\VAR{layout.project_gap_cm} cm}\BLOCK{endif}
 \BLOCK{endfor}
 \BLOCK{endif}
 
@@ -213,7 +215,7 @@
         \textbf{\VAR{school.institution | latex}} \\
         \textit{\VAR{school.degree | latex}}
     \end{twocolentry}
-    \BLOCK{if not loop.last}\vspace{0.10 cm}\BLOCK{endif}
+    \BLOCK{if not loop.last}\vspace{\VAR{layout.education_gap_cm} cm}\BLOCK{endif}
 \BLOCK{endfor}
 \BLOCK{endif}
 

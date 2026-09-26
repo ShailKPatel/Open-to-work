@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+from collections.abc import Iterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -24,6 +25,7 @@ from github import BadCredentialsException, RateLimitExceededException, UnknownO
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from app.api.deps import DbSession
 from app.core.db import Account, SyncSource, get_db
 from app.ingest.github.cancellation import request_cancel
 from app.ingest.github.source_parser import InvalidSourceError, parse_source
@@ -54,19 +56,15 @@ class SourceSummary(BaseModel):
 
 
 @router.get("", response_model=list[SourceSummary])
-def list_sources(account_id: int) -> list[SourceSummary]:
-    db = get_db()
-    try:
-        rows = list(
-            db.execute(
-                select(SyncSource)
-                .where(SyncSource.account_id == account_id)
-                .order_by(SyncSource.created_at)
-            ).scalars()
-        )
-        return [SourceSummary.from_row(r) for r in rows]
-    finally:
-        db.close()
+def list_sources(account_id: int, *, db: DbSession) -> list[SourceSummary]:
+    rows = list(
+        db.execute(
+            select(SyncSource)
+            .where(SyncSource.account_id == account_id)
+            .order_by(SyncSource.created_at)
+        ).scalars()
+    )
+    return [SourceSummary.from_row(r) for r in rows]
 
 
 class CreateSourceRequest(BaseModel):
@@ -75,69 +73,61 @@ class CreateSourceRequest(BaseModel):
 
 
 @router.post("", response_model=SourceSummary)
-def create_source(payload: CreateSourceRequest) -> SourceSummary:
-    db = get_db()
-    try:
-        account = db.get(Account, payload.account_id)
-        if account is None:
-            raise HTTPException(
-                status_code=404, detail=f"no account with id={payload.account_id}"
-            )
-
-        try:
-            parsed = parse_source(payload.raw_input)
-        except InvalidSourceError as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
-
-        # Same account, same kind, same target: reject rather than
-        # silently create a second tile that just duplicates the first
-        # one's work. Compared on the *parsed* target, not raw_input, so
-        # "octocat" and "https://github.com/octocat" collide too.
-        existing = db.execute(
-            select(SyncSource).where(
-                SyncSource.account_id == payload.account_id,
-                SyncSource.kind == parsed.kind,
-                SyncSource.github_username == parsed.username,
-                SyncSource.repo_full_name == parsed.repo_full_name,
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            raise HTTPException(
-                status_code=409, detail="This is already in your fetch-data list."
-            )
-
-        row = SyncSource(
-            account_id=payload.account_id,
-            raw_input=payload.raw_input.strip(),
-            kind=parsed.kind,
-            github_username=parsed.username,
-            repo_full_name=parsed.repo_full_name,
+def create_source(payload: CreateSourceRequest, *, db: DbSession) -> SourceSummary:
+    account = db.get(Account, payload.account_id)
+    if account is None:
+        raise HTTPException(
+            status_code=404, detail=f"no account with id={payload.account_id}"
         )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return SourceSummary.from_row(row)
-    finally:
-        db.close()
+
+    try:
+        parsed = parse_source(payload.raw_input)
+    except InvalidSourceError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    # Same account, same kind, same target: reject rather than
+    # silently create a second tile that just duplicates the first
+    # one's work. Compared on the *parsed* target, not raw_input, so
+    # "octocat" and "https://github.com/octocat" collide too.
+    existing = db.execute(
+        select(SyncSource).where(
+            SyncSource.account_id == payload.account_id,
+            SyncSource.kind == parsed.kind,
+            SyncSource.github_username == parsed.username,
+            SyncSource.repo_full_name == parsed.repo_full_name,
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409, detail="This is already in your fetch-data list."
+        )
+
+    row = SyncSource(
+        account_id=payload.account_id,
+        raw_input=payload.raw_input.strip(),
+        kind=parsed.kind,
+        github_username=parsed.username,
+        repo_full_name=parsed.repo_full_name,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return SourceSummary.from_row(row)
 
 
 @router.delete("/{source_id}")
-def delete_source(source_id: int) -> dict:
+def delete_source(source_id: int, *, db: DbSession) -> dict:
     """Removes it from the fetch list only; does not touch any repos or
     skill evidence a previous sync of it already pulled in. Those stay
     with the account like anything else synced; delete-account is still
     the only "erase everything" action.
     """
-    db = get_db()
-    try:
-        row = db.get(SyncSource, source_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"no source with id={source_id}")
-        db.delete(row)
-        db.commit()
-        return {"deleted": True, "source_id": source_id}
-    finally:
-        db.close()
+    row = db.get(SyncSource, source_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no source with id={source_id}")
+    db.delete(row)
+    db.commit()
+    return {"deleted": True, "source_id": source_id}
 
 
 def _sse(event: dict) -> str:
@@ -178,7 +168,7 @@ def sync_source_stream(source_id: int, run_id: str | None = None) -> StreamingRe
     finally:
         db.close()
 
-    def events():
+    def events() -> Iterator[str]:
         # Only a real "done" counts as synced, not merely "the generator
         # didn't raise", since a mid-batch rate-limit now stops the
         # generator cleanly (yields "rate_limited", returns) instead of

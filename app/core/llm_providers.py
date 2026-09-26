@@ -114,7 +114,38 @@ def litellm_kwargs(provider: str, credentials: dict) -> dict:
     return {"api_key": credentials["api_key"]}
 
 
-CheckStatus = str  # "valid" | "invalid" | "rate_limited" | "unknown"
+CheckStatus = str  # "valid" | "invalid" | "rate_limited" | "blocked" | "unknown"
+
+# Phrases a provider uses when it is refusing the credential itself
+# rather than one request: a suspended, revoked, or not-yet-enabled key.
+# Matched against a 403/PermissionDenied message to tell that apart from
+# "this key may not use that model", which is a per-model permission and
+# says nothing about the key's health.
+_BLOCKED_PHRASES = (
+    "suspended",
+    "revoked",
+    "disabled",
+    "deactivated",
+    "blocked",
+    "has been deleted",
+    "api key not valid",
+    "api_key_invalid",
+    "consumer_suspended",
+    "account is not active",
+    "billing",
+    "has not been used in project",
+    "api has not been enabled",
+    "serviceusage",
+)
+
+
+def is_blocked_detail(detail: str | None) -> bool:
+    """Whether a provider's forbidden-class message is about the key being
+    shut off (see _BLOCKED_PHRASES). Used by app/core/llm.py to decide
+    between the "blocked" status, which is never rechecked on its own, and
+    a per-model permission problem, which leaves the key's status alone."""
+    low = (detail or "").lower()
+    return any(phrase in low for phrase in _BLOCKED_PHRASES)
 
 
 def validate_credentials(provider: str, credentials: dict) -> tuple[CheckStatus, str]:
@@ -123,8 +154,16 @@ def validate_credentials(provider: str, credentials: dict) -> tuple[CheckStatus,
     error, or Bedrock's no-cheap-call case below); never treat that the
     same as a confirmed-bad "invalid" key. "rate_limited" means the check
     call itself got a 429: the credentials may be fine, just out of quota
-    right now. Real dispatch (app/core/llm.py) can also set this status,
-    via record_dispatch_outcome().
+    right now, and the returned detail keeps the provider's own words
+    because that is where the reset information is (app/core/key_cooldown.py
+    reads it). "blocked" means the provider forbade the credential
+    outright, which no waiting fixes. Real dispatch (app/core/llm.py) can
+    also set any of these, via record_dispatch_outcome().
+
+    A key whose generation quota is spent still answers a list-models call
+    with 200, so "valid" here means "this credential is live", not "this
+    key has quota left"; only a real dispatch can tell the latter. That is
+    what the cooldown in app/core/key_cooldown.py exists for.
 
     AWS Bedrock has no such lightweight call without a full AWS SigV4
     client (boto3 isn't a dependency here), so its credentials are
@@ -188,7 +227,31 @@ def validate_credentials(provider: str, credentials: dict) -> tuple[CheckStatus,
     if r.status_code == 200:
         return "valid", "This key is working."
     if r.status_code == 429:
-        return "rate_limited", "Rate-limited or out of quota right now. The key itself may be fine."
-    if r.status_code in (400, 401, 403):
+        return (
+            "rate_limited",
+            "Rate-limited or out of quota right now. The key itself may be fine. "
+            f"Provider said: {_body_excerpt(r)}",
+        )
+    if r.status_code == 403:
+        return (
+            "blocked",
+            "The provider is refusing this key outright (suspended, revoked, or its API not "
+            "enabled for this project). Waiting will not fix it. "
+            f"Provider said: {_body_excerpt(r)}",
+        )
+    if r.status_code in (400, 401):
         return "invalid", "This key is invalid. Please check it and try again."
     return "unknown", f"Provider returned an unexpected error (HTTP {r.status_code}). Try again."
+
+
+def _body_excerpt(response: httpx.Response, limit: int = 300) -> str:
+    """The provider's own error body, trimmed to something a page can show
+    on one line. Kept verbatim otherwise: for a 429 it is what names the
+    quota that was hit and how long to wait."""
+    try:
+        text = " ".join(response.text.split())
+    except Exception:
+        return "(no details)"
+    if not text:
+        return "(no details)"
+    return text if len(text) <= limit else text[: limit - 3] + "..."

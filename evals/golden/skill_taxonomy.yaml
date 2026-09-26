@@ -1,0 +1,170 @@
+# Hand-labeled ground truth for the skill embedding benchmark
+# (scripts/benchmark_embeddings.py).
+#
+# categories: every skill name in the sample, mapped to the domain a
+# hiring engineer would file it under. Two skills sharing a category
+# should sit near each other in embedding space; that is what the
+# neighbour-purity and silhouette metrics measure.
+#
+# trap_pairs: names that look alike but mean unrelated things. A model
+# that scores these high is reading characters, not meaning. These are
+# the pairs that currently put ElasticNet next to EfficientNet on the
+# map.
+#
+# true_pairs: names that look nothing alike but belong together. A model
+# that scores these low is missing domain knowledge.
+#
+# The headline metric is the margin between true_pairs and trap_pairs.
+# Edit this file freely; the benchmark reads it, it is not generated.
+
+categories:
+  A/B Testing: experimentation
+  Agentic AI: llm
+  Agile / Scrum: practices
+  Arduino: hardware
+  Autoprefixer: frontend
+  AWS: cloud
+  BayesSearchCV: ml
+  CatBoost: ml
+  Chart.js: frontend
+  ChromaDB: database
+  Classification: ml
+  CNNs: deep-learning
+  Command Line Interface: tooling
+  Computer Vision: deep-learning
+  CSS: frontend
+  Django: backend
+  Docker: devops
+  EfficientNet: deep-learning
+  ElasticNet: ml
+  ElasticNetCV: ml
+  Electron: frontend
+  Express.js: backend
+  FastAPI: backend
+  fine-tuning: llm
+  Flask: backend
+  Framer Motion: frontend
+  Gemini API: llm
+  Generative AI: llm
+  GeoJSON: geospatial
+  GeoPandas: geospatial
+  Git: tooling
+  GitHub: tooling
+  GitHub Pages: cloud
+  GradCAM: deep-learning
+  HTML: frontend
+  Hugging Face: llm
+  Hugging Face Transformers: llm
+  Java: language
+  JavaScript: language
+  Jupyter Notebook: tooling
+  JWT: backend
+  Lambda: cloud
+  LangChain: llm
+  LangGraph: llm
+  Lasso: ml
+  LightGBM: ml
+  Linux: devops
+  LiteLLM: llm
+  LlamaIndex: llm
+  LLMs: llm
+  machine learning: ml
+  Matplotlib: data-viz
+  MLOps: devops
+  MongoDB: database
+  MongoDB Atlas Vector Search: database
+  Mongoose: database
+  Multer: backend
+  MySQL: database
+  n8n: devops
+  Netlify: cloud
+  NetworkX: data-science
+  NLTK: nlp
+  Node.js: backend
+  Nodemailer: backend
+  NumPy: data-science
+  OCR: deep-learning
+  OneHot Encoding: ml
+  OpenAI API: llm
+  Optuna: ml
+  Pandas: data-science
+  Plotly: data-viz
+  PostCSS: frontend
+  PostgreSQL: database
+  Postman: tooling
+  Prompt Engineering: llm
+  Pug: frontend
+  pytest: testing
+  Python: language
+  PyTorch: deep-learning
+  RAG: llm
+  RAG Pipelines: llm
+  React: frontend
+  Redis: database
+  Regression: ml
+  Ridge: ml
+  RobustScaler: ml
+  S3: cloud
+  Scikit-Learn: ml
+  SciPy: data-science
+  Seaborn: data-viz
+  Sentence Transformers: nlp
+  Sentence-Transformers: nlp
+  SHAP: ml
+  Shapely: geospatial
+  SQLAlchemy: database
+  Statsmodels: data-science
+  Streamlit: frontend
+  Streamlit Cloud: cloud
+  System Design: practices
+  Tabler Icons: frontend
+  Tailwind CSS: frontend
+  TypeScript: language
+  Uvicorn: backend
+  Vercel: cloud
+  Vite: tooling
+  Vitest: testing
+  Voting Regressor: ml
+  VS Code: tooling
+  XGBoost: ml
+
+# Look-alike, mean-different. Lower similarity is better.
+trap_pairs:
+  - [ElasticNet, EfficientNet]
+  - [ElasticNetCV, EfficientNet]
+  - [NetworkX, Netlify]
+  - [LiteLLM, LightGBM]
+  - [Shapely, Plotly]
+  - [Vitest, A/B Testing]
+  - [Pug, RAG]
+  - [PostCSS, Postman]
+  - [Lasso, LlamaIndex]
+  - [Multer, Optuna]
+  - [Java, JavaScript]
+  - [Mongoose, Multer]
+  - [SHAP, Shapely]
+  - [Ridge, Vite]
+  - [Autoprefixer, NLTK]
+
+# Different names, same neighbourhood. Higher similarity is better.
+true_pairs:
+  - [PostgreSQL, MySQL]
+  - [React, Vue.js]
+  - [Docker, Kubernetes]
+  - [PyTorch, TensorFlow]
+  - [XGBoost, LightGBM]
+  - [FastAPI, Flask]
+  - [Tailwind CSS, CSS]
+  - [pytest, Vitest]
+  - [LangChain, LlamaIndex]
+  - [Pandas, NumPy]
+  - [AWS, S3]
+  - [GeoPandas, Shapely]
+  - [Matplotlib, Seaborn]
+  - [Git, GitHub]
+  - [Redis, MongoDB]
+  - [Computer Vision, CNNs]
+  - [RAG, ChromaDB]
+  - [Node.js, Express.js]
+  - [Linux, Command Line Interface]
+  - [Scikit-Learn, machine learning]

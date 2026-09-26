@@ -131,6 +131,75 @@ def test_generate_still_returns_best_pdf_on_unfit(monkeypatch):
     assert resp.content == b"%PDF-best"
 
 
+def test_generate_says_which_step_ran_out_of_keys(monkeypatch):
+    """By the time this reaches the route, app/core/llm.py has tried every
+    stored key. What the route adds is where in the build that happened,
+    so the answer is not just "generation failed"."""
+    def _raise(*args, **kwargs):
+        raise LLMRateLimitedError("All 2 OpenAI keys failed on this request.")
+
+    monkeypatch.setattr("app.api.resume_build.build_resume_data", _raise)
+
+    resp = _client().post(
+        "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
+    )
+
+    assert resp.status_code == 503
+    detail = resp.json()["detail"]
+    assert 'stopped at "tailoring the content to the job"' in detail
+    assert "All 2 OpenAI keys failed" in detail
+    assert "Nothing had finished yet." in detail
+
+
+def test_generate_keeps_the_resume_when_the_keys_die_during_the_fit(monkeypatch):
+    """The content step is the expensive one and it already succeeded, so
+    running out of keys in the page-fit step returns the compiled resume
+    with the reason attached, not an error and no file."""
+    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+
+    def _raise(*args, **kwargs):
+        raise PageFitNotAchievedError(
+            "the trimming step could not run, so the resume is still 2 page(s) against a "
+            "target of 1: All 2 OpenAI keys failed on this request.",
+            best_tex="x", best_pdf_bytes=b"%PDF-best", best_page_count=2,
+        )
+
+    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _raise)
+
+    resp = _client().post(
+        "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
+    )
+
+    assert resp.status_code == 200
+    assert resp.content == b"%PDF-best"
+    assert resp.headers["x-page-fit-achieved"] == "false"
+    assert "All 2 OpenAI keys failed" in resp.headers["x-page-fit-note"]
+
+
+def test_generate_note_header_is_one_bounded_line(monkeypatch):
+    """The message lists one key per line; a header value cannot carry
+    newlines, and an over-long one gets dropped in transit."""
+    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+
+    def _raise(*args, **kwargs):
+        raise PageFitNotAchievedError(
+            "could not trim:\n- Personal: out of quota\n- Work: rejected\n" + "x" * 900,
+            best_tex="x", best_pdf_bytes=b"%PDF-best", best_page_count=2,
+        )
+
+    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _raise)
+
+    resp = _client().post(
+        "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
+    )
+
+    note = resp.headers["x-page-fit-note"]
+    assert "\n" not in note
+    assert len(note) <= 400
+    assert note.startswith("could not trim: - Personal: out of quota - Work: rejected")
+    assert note.endswith("...")
+
+
 def test_generate_maps_missing_tectonic_to_501(monkeypatch):
     monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
 
@@ -182,8 +251,7 @@ def test_generate_saves_result_into_resume_library(tmp_path, monkeypatch):
     from app.core.db import Account, JobPosting, Resume, get_db, init_db
     from app.core.settings import get_settings
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     vectorstore_module.get_client.cache_clear()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     os.environ["RESUME_STORAGE_DIR"] = str(tmp_path / "resumes")
@@ -258,36 +326,51 @@ def test_generate_defaults_max_pages_by_template(monkeypatch):
 
 def test_options_endpoint_returns_selections(tmp_path, monkeypatch):
     import os
+
     import app.core.db as db_module
     from app.core.db import Account, JobPosting, Repository, get_db, init_db
     from app.core.settings import get_settings
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()
 
     db = get_db()
-    account = Account(first_name="Ada", last_name="Lovelace", github_username="octocat", contact_email="ada@example.com")
+    account = Account(
+        first_name="Ada",
+        last_name="Lovelace",
+        github_username="octocat",
+        contact_email="ada@example.com",
+    )
     db.add(account)
     db.commit()
     db.refresh(account)
 
     posting = JobPosting(
         account_id=account.id, source="pasted", external_id="opt", company="Acme",
-        title="Backend Engineer", raw_text_quarantined="Python and FastAPI developer", content_hash="opthash",
+        title="Backend Engineer",
+        raw_text_quarantined="Python and FastAPI developer",
+        content_hash="opthash",
     )
     db.add(posting)
 
-    repo = Repository(account_id=account.id, github_id=101, name="otw", full_name="octocat/otw", url="https://github.com/octocat/otw")
+    repo = Repository(
+        account_id=account.id,
+        github_id=101,
+        name="otw",
+        full_name="octocat/otw",
+        url="https://github.com/octocat/otw",
+    )
     db.add(repo)
     db.commit()
 
     account_id, posting_id = account.id, posting.id
     db.close()
 
-    resp = _client().get(f"/api/resume-build/options?account_id={account_id}&job_posting_id={posting_id}")
+    resp = _client().get(
+        f"/api/resume-build/options?account_id={account_id}&job_posting_id={posting_id}"
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert "emails" in data

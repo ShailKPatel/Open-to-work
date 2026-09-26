@@ -1,6 +1,6 @@
 """Job posting record: paste text, fetch a public URL, upload a
 screenshot, or fetch a login-walled URL via a stored authenticated source
-(app/core/db.py's AuthSource, app/ingest/jobs/auth_fetch.py). Every path
+(app/core/db/models.py's AuthSource, app/ingest/jobs/auth_fetch.py). Every path
 ends up as one JobPosting row, structured-extracted the same way
 (app/profile/job_extract.py), best-effort role-family resolved
 (app/profile/role_family.py), and best-effort indexed for semantic search
@@ -24,7 +24,9 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.api.deps import DbSession
 from app.core.db import JobPosting, RoleFamily, get_db
 from app.core.settings import get_settings
 from app.ingest.jobs.auth_fetch import (
@@ -52,7 +54,7 @@ def _content_hash(raw_text: str) -> str:
     return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
 
 
-def _run_extraction(posting: JobPosting, db) -> None:
+def _run_extraction(posting: JobPosting, db: Session) -> None:
     """Best-effort structured extraction, same posture as
     app/profile/resume_ingest.py's run_extraction: a failed call never
     loses the posting itself, just leaves extraction_status at "failed"
@@ -243,14 +245,14 @@ class JobPostingDetail(JobPostingSummary):
         )
 
 
-def _role_family_for(db, posting: JobPosting) -> RoleFamily | None:
+def _role_family_for(db: Session, posting: JobPosting) -> RoleFamily | None:
     if posting.role_family_id is None:
         return None
     return db.get(RoleFamily, posting.role_family_id)
 
 
 @router.post("", response_model=JobPostingDetail)
-def create_posting(body: JobPostingCreate) -> JobPostingDetail:
+def create_posting(body: JobPostingCreate, *, db: DbSession) -> JobPostingDetail:
     posting = _create_posting_from_text(
         account_id=body.account_id,
         raw_text=body.raw_text,
@@ -260,11 +262,7 @@ def create_posting(body: JobPostingCreate) -> JobPostingDetail:
         title=body.title,
         location=body.location,
     )
-    db = get_db()
-    try:
-        return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-    finally:
-        db.close()
+    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
 class JobPostingFromUrl(BaseModel):
@@ -273,7 +271,7 @@ class JobPostingFromUrl(BaseModel):
 
 
 @router.post("/from-url", response_model=JobPostingDetail)
-def create_posting_from_url(body: JobPostingFromUrl) -> JobPostingDetail:
+def create_posting_from_url(body: JobPostingFromUrl, *, db: DbSession) -> JobPostingDetail:
     """Public-URL ingestion, no login (see app/ingest/jobs/url_fetch.py).
     A page that needs login or renders via client-side JS will fail here
     with a 422 explaining why; use /from-authenticated-url for a
@@ -292,11 +290,7 @@ def create_posting_from_url(body: JobPostingFromUrl) -> JobPostingDetail:
         title=title_guess or None,
         apply_url=body.url.strip(),
     )
-    db = get_db()
-    try:
-        return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-    finally:
-        db.close()
+    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
 class JobPostingFromAuthUrl(BaseModel):
@@ -306,9 +300,13 @@ class JobPostingFromAuthUrl(BaseModel):
 
 
 @router.post("/from-authenticated-url", response_model=JobPostingDetail)
-def create_posting_from_authenticated_url(body: JobPostingFromAuthUrl) -> JobPostingDetail:
+def create_posting_from_authenticated_url(
+    body: JobPostingFromAuthUrl,
+    *,
+    db: DbSession,
+) -> JobPostingDetail:
     """Login-walled URL ingestion via a stored AuthSource
-    (app/core/db.py, app/api/auth_sources.py): a real automated browser
+    (app/core/db/models.py, app/api/auth_sources.py): a real automated browser
     login, see app/ingest/jobs/auth_fetch.py's module docstring for the
     risks.
     """
@@ -329,17 +327,15 @@ def create_posting_from_authenticated_url(body: JobPostingFromAuthUrl) -> JobPos
         title=title_guess or None,
         apply_url=body.url.strip(),
     )
-    db = get_db()
-    try:
-        return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-    finally:
-        db.close()
+    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
 @router.post("/from-screenshot", response_model=JobPostingDetail)
 def create_posting_from_screenshot(
     account_id: int = Form(...),
     file: UploadFile = File(...),
+    *,
+    db: DbSession,
 ) -> JobPostingDetail:
     """Screenshot ingestion: the LLM transcribes the visible posting text
     (see app/profile/job_screenshot_extract.py) and that transcription
@@ -365,95 +361,83 @@ def create_posting_from_screenshot(
     stored_path = account_dir / f"{content_hash[:16]}_{safe_name}"
     stored_path.write_bytes(file_bytes)
 
-    db = get_db()
+    existing = db.execute(
+        select(JobPosting).where(JobPosting.content_hash == content_hash)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return JobPostingDetail.from_posting(existing, _role_family_for(db, existing))
+
+    posting = JobPosting(
+        account_id=account_id,
+        source="screenshot",
+        external_id=content_hash,
+        company=result.extraction.company or _UNSPECIFIED,
+        title=result.extraction.title or _UNSPECIFIED,
+        location=result.extraction.location or None,
+        raw_text_quarantined=result.raw_text_transcribed,
+        content_hash=content_hash,
+        screenshot_path=str(stored_path),
+    )
+    db.add(posting)
+    db.commit()
+    db.refresh(posting)
+    # Extraction already ran (as part of reading the screenshot); store
+    # it directly rather than re-running text extraction on the
+    # transcription, which would just cost a second LLM call to
+    # re-derive the same structured fields the image call already
+    # produced.
+    posting.extracted_json = result.extraction.as_extracted_json()
+    posting.extraction_status = "extracted"
+    posting.extracted_at = dt.datetime.now(dt.UTC)
+    db.commit()
+    db.refresh(posting)
+
     try:
-        existing = db.execute(
-            select(JobPosting).where(JobPosting.content_hash == content_hash)
-        ).scalar_one_or_none()
-        if existing is not None:
-            return JobPostingDetail.from_posting(existing, _role_family_for(db, existing))
-
-        posting = JobPosting(
-            account_id=account_id,
-            source="screenshot",
-            external_id=content_hash,
-            company=result.extraction.company or _UNSPECIFIED,
-            title=result.extraction.title or _UNSPECIFIED,
-            location=result.extraction.location or None,
-            raw_text_quarantined=result.raw_text_transcribed,
-            content_hash=content_hash,
-            screenshot_path=str(stored_path),
+        family = resolve_role_family(posting.title, account_id=account_id)
+        if family is not None:
+            posting.role_family_id = family.id
+            db.commit()
+            db.refresh(posting)
+    except Exception:
+        logger.warning(
+            "role family resolution failed for posting id=%s", posting.id, exc_info=True
         )
-        db.add(posting)
-        db.commit()
-        db.refresh(posting)
-        # Extraction already ran (as part of reading the screenshot); store
-        # it directly rather than re-running text extraction on the
-        # transcription, which would just cost a second LLM call to
-        # re-derive the same structured fields the image call already
-        # produced.
-        posting.extracted_json = result.extraction.as_extracted_json()
-        posting.extraction_status = "extracted"
-        posting.extracted_at = dt.datetime.now(dt.UTC)
-        db.commit()
-        db.refresh(posting)
+    try:
+        from app.retrieval.index import index_job_posting
 
-        try:
-            family = resolve_role_family(posting.title, account_id=account_id)
-            if family is not None:
-                posting.role_family_id = family.id
-                db.commit()
-                db.refresh(posting)
-        except Exception:
-            logger.warning(
-                "role family resolution failed for posting id=%s", posting.id, exc_info=True
-            )
-        try:
-            from app.retrieval.index import index_job_posting
+        index_job_posting(posting, account_id=account_id)
+    except Exception:
+        logger.warning("could not index posting id=%s for search", posting.id, exc_info=True)
 
-            index_job_posting(posting, account_id=account_id)
-        except Exception:
-            logger.warning("could not index posting id=%s for search", posting.id, exc_info=True)
-
-        return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-    finally:
-        db.close()
+    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
 @router.get("", response_model=list[JobPostingSummary])
-def list_postings(account_id: int) -> list[JobPostingSummary]:
-    db = get_db()
-    try:
-        rows = list(
-            db.execute(
-                select(JobPosting)
-                .where(JobPosting.account_id == account_id)
-                .order_by(JobPosting.fetched_at.desc())
-            ).scalars()
+def list_postings(account_id: int, *, db: DbSession) -> list[JobPostingSummary]:
+    rows = list(
+        db.execute(
+            select(JobPosting)
+            .where(JobPosting.account_id == account_id)
+            .order_by(JobPosting.fetched_at.desc())
+        ).scalars()
+    )
+    families: dict[int, RoleFamily] = {
+        f.id: f for f in db.execute(select(RoleFamily)).scalars()
+    }
+    return [
+        JobPostingSummary.from_posting(
+            r, families.get(r.role_family_id) if r.role_family_id is not None else None
         )
-        families: dict[int, RoleFamily] = {
-            f.id: f for f in db.execute(select(RoleFamily)).scalars()
-        }
-        return [
-            JobPostingSummary.from_posting(
-                r, families.get(r.role_family_id) if r.role_family_id is not None else None
-            )
-            for r in rows
-        ]
-    finally:
-        db.close()
+        for r in rows
+    ]
 
 
 @router.get("/{posting_id}", response_model=JobPostingDetail)
-def posting_detail(posting_id: int) -> JobPostingDetail:
-    db = get_db()
-    try:
-        posting = db.get(JobPosting, posting_id)
-        if posting is None:
-            raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
-        return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-    finally:
-        db.close()
+def posting_detail(posting_id: int, *, db: DbSession) -> JobPostingDetail:
+    posting = db.get(JobPosting, posting_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
+    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
 class JobPostingUpdate(BaseModel):
@@ -467,69 +451,57 @@ class JobPostingUpdate(BaseModel):
 
 
 @router.patch("/{posting_id}", response_model=JobPostingDetail)
-def update_posting(posting_id: int, body: JobPostingUpdate) -> JobPostingDetail:
+def update_posting(posting_id: int, body: JobPostingUpdate, *, db: DbSession) -> JobPostingDetail:
     fields = body.model_dump(exclude_unset=True)
-    db = get_db()
-    try:
-        posting = db.get(JobPosting, posting_id)
-        if posting is None:
-            raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
-        if "company" in fields:
-            company = fields["company"].strip() if fields["company"] else None
-            posting.company = company or _UNSPECIFIED
-        if "title" in fields:
-            title = fields["title"].strip() if fields["title"] else None
-            posting.title = title or _UNSPECIFIED
-        if "location" in fields:
-            posting.location = (fields["location"].strip() if fields["location"] else None) or None
-        if "apply_url" in fields:
-            apply_url = fields["apply_url"].strip() if fields["apply_url"] else None
-            posting.apply_url = apply_url or None
-        if "applied" in fields:
-            posting.applied = bool(fields["applied"])
-            # Marking applied with no explicit date stamps today; unmarking
-            # clears both applied_at and applied_notes, one source of
-            # truth for "this hasn't been applied to."
-            if posting.applied and posting.applied_at is None and "applied_at" not in fields:
-                posting.applied_at = dt.date.today()
-            if not posting.applied and "applied_at" not in fields:
-                posting.applied_at = None
-                posting.applied_notes = None
-        if "applied_at" in fields:
-            posting.applied_at = fields["applied_at"]
-        if "applied_notes" in fields:
-            posting.applied_notes = (
-                fields["applied_notes"].strip() if fields["applied_notes"] else None
-            ) or None
-        db.commit()
-        db.refresh(posting)
-        return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-    finally:
-        db.close()
+    posting = db.get(JobPosting, posting_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
+    if "company" in fields:
+        company = fields["company"].strip() if fields["company"] else None
+        posting.company = company or _UNSPECIFIED
+    if "title" in fields:
+        title = fields["title"].strip() if fields["title"] else None
+        posting.title = title or _UNSPECIFIED
+    if "location" in fields:
+        posting.location = (fields["location"].strip() if fields["location"] else None) or None
+    if "apply_url" in fields:
+        apply_url = fields["apply_url"].strip() if fields["apply_url"] else None
+        posting.apply_url = apply_url or None
+    if "applied" in fields:
+        posting.applied = bool(fields["applied"])
+        # Marking applied with no explicit date stamps today; unmarking
+        # clears both applied_at and applied_notes, one source of
+        # truth for "this hasn't been applied to."
+        if posting.applied and posting.applied_at is None and "applied_at" not in fields:
+            posting.applied_at = dt.date.today()
+        if not posting.applied and "applied_at" not in fields:
+            posting.applied_at = None
+            posting.applied_notes = None
+    if "applied_at" in fields:
+        posting.applied_at = fields["applied_at"]
+    if "applied_notes" in fields:
+        posting.applied_notes = (
+            fields["applied_notes"].strip() if fields["applied_notes"] else None
+        ) or None
+    db.commit()
+    db.refresh(posting)
+    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
 @router.post("/{posting_id}/reprocess", response_model=JobPostingDetail)
-def reprocess_posting(posting_id: int) -> JobPostingDetail:
-    db = get_db()
-    try:
-        posting = db.get(JobPosting, posting_id)
-        if posting is None:
-            raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
-        _run_extraction(posting, db)
-        return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-    finally:
-        db.close()
+def reprocess_posting(posting_id: int, *, db: DbSession) -> JobPostingDetail:
+    posting = db.get(JobPosting, posting_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
+    _run_extraction(posting, db)
+    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
 @router.delete("/{posting_id}")
-def delete_posting(posting_id: int) -> dict:
-    db = get_db()
-    try:
-        posting = db.get(JobPosting, posting_id)
-        if posting is None:
-            raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
-        db.delete(posting)
-        db.commit()
-        return {"deleted": True}
-    finally:
-        db.close()
+def delete_posting(posting_id: int, *, db: DbSession) -> dict:
+    posting = db.get(JobPosting, posting_id)
+    if posting is None:
+        raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
+    db.delete(posting)
+    db.commit()
+    return {"deleted": True}

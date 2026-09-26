@@ -25,6 +25,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class Job:
     _state: dict = field(default_factory=lambda: {"stage": "starting"})
     _state_lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def set_state(self, **kwargs) -> None:
+    def set_state(self, **kwargs: Any) -> None:
         with self._state_lock:
             self._state = {**self._state, **kwargs}
 

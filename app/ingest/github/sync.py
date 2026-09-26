@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 from github import GithubException, RateLimitExceededException
 from sqlalchemy import select
@@ -56,7 +58,7 @@ def _last_authored_commit(stats: list, username: str) -> tuple[int, dt.datetime 
     return 0, None
 
 
-def _fetch_manifests(client: GitHubClient, gh_repo) -> dict:
+def _fetch_manifests(client: GitHubClient, gh_repo: Any) -> dict:
     manifests: dict[str, dict] = {}
     for entry in client.root_contents(gh_repo):
         if entry.type != "file" or entry.name not in MANIFEST_FILENAMES:
@@ -72,7 +74,7 @@ def _fetch_manifests(client: GitHubClient, gh_repo) -> dict:
 
 
 def _upsert(
-    db: Session, gh_repo, client: GitHubClient, username: str, account_id: int | None
+    db: Session, gh_repo: Any, client: GitHubClient, username: str, account_id: int | None
 ) -> bool:
     """Returns True if this repo was a cache hit (no refetch of readme/manifests/stats)."""
     existing = db.execute(
@@ -138,7 +140,7 @@ def sync_account_progress(
     client: GitHubClient | None = None,
     account_id: int | None = None,
     run_id: str | None = None,
-):
+) -> Iterator[dict[str, Any]]:
     """Generator twin of sync_account() for the SSE progress endpoint:
     yields dicts as each stage happens instead of returning once at the end.
     Same upsert logic, duplicated rather than shared with sync_account()
@@ -267,7 +269,7 @@ def sync_single_repo_progress(
     client: GitHubClient | None = None,
     account_id: int | None = None,
     run_id: str | None = None,
-):
+) -> Iterator[dict[str, Any]]:
     """Generator twin of sync_single_repo(): same event vocabulary as
     sync_account_progress() (checking_profile / listing_repos /
     repo_progress / done) so the sync-sources UI can drive one progress

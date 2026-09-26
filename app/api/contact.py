@@ -12,7 +12,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.core.db import Account, ContactEmail, ContactPhone, SocialLink, get_db
+from app.api.deps import DbSession
+from app.core.db import Account, ContactEmail, ContactPhone, SocialLink
 
 router = APIRouter(prefix="/api/accounts")
 
@@ -62,11 +63,15 @@ class ContactInfo(BaseModel):
         email_items = [ContactEmailItem.from_row(e) for e in (emails or [])]
         phone_items = [ContactPhoneItem.from_row(p) for p in (phones or [])]
 
-        primary_email = next((e.email for e in (emails or []) if e.is_primary), account.contact_email)
+        primary_email = next(
+            (e.email for e in (emails or []) if e.is_primary), account.contact_email
+        )
         if not primary_email and email_items:
             primary_email = email_items[0].email
 
-        primary_phone = next((p.phone for p in (phones or []) if p.is_primary), account.contact_phone)
+        primary_phone = next(
+            (p.phone for p in (phones or []) if p.is_primary), account.contact_phone
+        )
         if not primary_phone and phone_items:
             primary_phone = phone_items[0].phone
 
@@ -84,29 +89,25 @@ class ContactInfo(BaseModel):
 
 
 @router.get("/{account_id}/contact", response_model=ContactInfo)
-def get_contact(account_id: int) -> ContactInfo:
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
-        emails = list(
-            db.execute(
-                select(ContactEmail)
-                .where(ContactEmail.account_id == account_id)
-                .order_by(ContactEmail.created_at)
-            ).scalars()
-        )
-        phones = list(
-            db.execute(
-                select(ContactPhone)
-                .where(ContactPhone.account_id == account_id)
-                .order_by(ContactPhone.created_at)
-            ).scalars()
-        )
-        return ContactInfo.from_account(account, emails=emails, phones=phones)
-    finally:
-        db.close()
+def get_contact(account_id: int, *, db: DbSession) -> ContactInfo:
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    emails = list(
+        db.execute(
+            select(ContactEmail)
+            .where(ContactEmail.account_id == account_id)
+            .order_by(ContactEmail.created_at)
+        ).scalars()
+    )
+    phones = list(
+        db.execute(
+            select(ContactPhone)
+            .where(ContactPhone.account_id == account_id)
+            .order_by(ContactPhone.created_at)
+        ).scalars()
+    )
+    return ContactInfo.from_account(account, emails=emails, phones=phones)
 
 
 class ContactUpdate(BaseModel):
@@ -118,7 +119,7 @@ class ContactUpdate(BaseModel):
 
 
 @router.patch("/{account_id}/contact", response_model=ContactInfo)
-def update_contact(account_id: int, body: ContactUpdate) -> ContactInfo:
+def update_contact(account_id: int, body: ContactUpdate, *, db: DbSession) -> ContactInfo:
     fields = body.model_dump(exclude_unset=True)
     for key in ("contact_email", "contact_phone", "contact_location"):
         if key in fields and fields[key] is not None:
@@ -129,66 +130,65 @@ def update_contact(account_id: int, body: ContactUpdate) -> ContactInfo:
             if not fields[key]:
                 raise HTTPException(status_code=422, detail=f"{key} is required")
 
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
-        for key, value in fields.items():
-            setattr(account, key, value)
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    for key, value in fields.items():
+        setattr(account, key, value)
 
-        # Sync single contact_email into contact_emails table if missing
-        if "contact_email" in fields:
-            new_email = fields["contact_email"]
-            if new_email:
-                existing = db.execute(
-                    select(ContactEmail).where(
-                        ContactEmail.account_id == account_id,
-                        ContactEmail.email == new_email,
-                    )
-                ).scalar_one_or_none()
-                if not existing:
-                    # Clear primary flag on others
-                    db.query(ContactEmail).filter(ContactEmail.account_id == account_id).update({"is_primary": False}) if hasattr(db, "query") else None
-                    for e in db.execute(select(ContactEmail).where(ContactEmail.account_id == account_id)).scalars():
-                        e.is_primary = False
-                    row = ContactEmail(account_id=account_id, email=new_email, is_primary=True)
-                    db.add(row)
+    # Sync single contact_email into contact_emails table if missing
+    if "contact_email" in fields:
+        new_email = fields["contact_email"]
+        if new_email:
+            existing_email = db.execute(
+                select(ContactEmail).where(
+                    ContactEmail.account_id == account_id,
+                    ContactEmail.email == new_email,
+                )
+            ).scalar_one_or_none()
+            if not existing_email:
+                # Clear primary flag on others. Done through the ORM
+                # rather than a bulk UPDATE so already-loaded rows in
+                # this session see the change too.
+                for e in db.execute(
+                    select(ContactEmail).where(ContactEmail.account_id == account_id)
+                ).scalars():
+                    e.is_primary = False
+                db.add(ContactEmail(account_id=account_id, email=new_email, is_primary=True))
 
-        if "contact_phone" in fields:
-            new_phone = fields["contact_phone"]
-            if new_phone:
-                existing = db.execute(
-                    select(ContactPhone).where(
-                        ContactPhone.account_id == account_id,
-                        ContactPhone.phone == new_phone,
-                    )
-                ).scalar_one_or_none()
-                if not existing:
-                    for p in db.execute(select(ContactPhone).where(ContactPhone.account_id == account_id)).scalars():
-                        p.is_primary = False
-                    row = ContactPhone(account_id=account_id, phone=new_phone, is_primary=True)
-                    db.add(row)
+    if "contact_phone" in fields:
+        new_phone = fields["contact_phone"]
+        if new_phone:
+            existing_phone = db.execute(
+                select(ContactPhone).where(
+                    ContactPhone.account_id == account_id,
+                    ContactPhone.phone == new_phone,
+                )
+            ).scalar_one_or_none()
+            if not existing_phone:
+                for p in db.execute(
+                    select(ContactPhone).where(ContactPhone.account_id == account_id)
+                ).scalars():
+                    p.is_primary = False
+                db.add(ContactPhone(account_id=account_id, phone=new_phone, is_primary=True))
 
-        db.commit()
-        db.refresh(account)
-        emails = list(
-            db.execute(
-                select(ContactEmail)
-                .where(ContactEmail.account_id == account_id)
-                .order_by(ContactEmail.created_at)
-            ).scalars()
-        )
-        phones = list(
-            db.execute(
-                select(ContactPhone)
-                .where(ContactPhone.account_id == account_id)
-                .order_by(ContactPhone.created_at)
-            ).scalars()
-        )
-        return ContactInfo.from_account(account, emails=emails, phones=phones)
-    finally:
-        db.close()
+    db.commit()
+    db.refresh(account)
+    emails = list(
+        db.execute(
+            select(ContactEmail)
+            .where(ContactEmail.account_id == account_id)
+            .order_by(ContactEmail.created_at)
+        ).scalars()
+    )
+    phones = list(
+        db.execute(
+            select(ContactPhone)
+            .where(ContactPhone.account_id == account_id)
+            .order_by(ContactPhone.created_at)
+        ).scalars()
+    )
+    return ContactInfo.from_account(account, emails=emails, phones=phones)
 
 
 
@@ -204,17 +204,13 @@ class SocialLinkItem(BaseModel):
 
 
 @router.get("/{account_id}/social-links", response_model=list[SocialLinkItem])
-def list_social_links(account_id: int) -> list[SocialLinkItem]:
-    db = get_db()
-    try:
-        rows = db.execute(
-            select(SocialLink)
-            .where(SocialLink.account_id == account_id)
-            .order_by(SocialLink.created_at)
-        ).scalars()
-        return [SocialLinkItem.from_row(r) for r in rows]
-    finally:
-        db.close()
+def list_social_links(account_id: int, *, db: DbSession) -> list[SocialLinkItem]:
+    rows = db.execute(
+        select(SocialLink)
+        .where(SocialLink.account_id == account_id)
+        .order_by(SocialLink.created_at)
+    ).scalars()
+    return [SocialLinkItem.from_row(r) for r in rows]
 
 
 class SocialLinkCreate(BaseModel):
@@ -224,7 +220,7 @@ class SocialLinkCreate(BaseModel):
 
 
 @router.post("/{account_id}/social-links", response_model=SocialLinkItem)
-def add_social_link(account_id: int, body: SocialLinkCreate) -> SocialLinkItem:
+def add_social_link(account_id: int, body: SocialLinkCreate, *, db: DbSession) -> SocialLinkItem:
     platform = body.platform.strip()
     url = body.url.strip()
     if not platform:
@@ -232,23 +228,19 @@ def add_social_link(account_id: int, body: SocialLinkCreate) -> SocialLinkItem:
     if not url:
         raise HTTPException(status_code=422, detail="url is required")
 
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
-        row = SocialLink(
-            account_id=account_id,
-            platform=platform,
-            url=url,
-            label=(body.label.strip() if body.label else None) or None,
-        )
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return SocialLinkItem.from_row(row)
-    finally:
-        db.close()
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    row = SocialLink(
+        account_id=account_id,
+        platform=platform,
+        url=url,
+        label=(body.label.strip() if body.label else None) or None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return SocialLinkItem.from_row(row)
 
 
 class SocialLinkUpdate(BaseModel):
@@ -258,7 +250,13 @@ class SocialLinkUpdate(BaseModel):
 
 
 @router.patch("/{account_id}/social-links/{link_id}", response_model=SocialLinkItem)
-def update_social_link(account_id: int, link_id: int, body: SocialLinkUpdate) -> SocialLinkItem:
+def update_social_link(
+    account_id: int,
+    link_id: int,
+    body: SocialLinkUpdate,
+    *,
+    db: DbSession,
+) -> SocialLinkItem:
     fields = body.model_dump(exclude_unset=True)
     for key in ("platform", "url"):
         if key in fields and fields[key] is not None:
@@ -266,32 +264,24 @@ def update_social_link(account_id: int, link_id: int, body: SocialLinkUpdate) ->
             if not fields[key]:
                 raise HTTPException(status_code=422, detail=f"{key} is required")
 
-    db = get_db()
-    try:
-        row = db.get(SocialLink, link_id)
-        if row is None or row.account_id != account_id:
-            raise HTTPException(status_code=404, detail=f"no social link with id={link_id}")
-        for key, value in fields.items():
-            setattr(row, key, value)
-        db.commit()
-        db.refresh(row)
-        return SocialLinkItem.from_row(row)
-    finally:
-        db.close()
+    row = db.get(SocialLink, link_id)
+    if row is None or row.account_id != account_id:
+        raise HTTPException(status_code=404, detail=f"no social link with id={link_id}")
+    for key, value in fields.items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    return SocialLinkItem.from_row(row)
 
 
 @router.delete("/{account_id}/social-links/{link_id}")
-def delete_social_link(account_id: int, link_id: int) -> dict:
-    db = get_db()
-    try:
-        row = db.get(SocialLink, link_id)
-        if row is None or row.account_id != account_id:
-            raise HTTPException(status_code=404, detail=f"no social link with id={link_id}")
-        db.delete(row)
-        db.commit()
-        return {"deleted": True, "id": link_id}
-    finally:
-        db.close()
+def delete_social_link(account_id: int, link_id: int, *, db: DbSession) -> dict:
+    row = db.get(SocialLink, link_id)
+    if row is None or row.account_id != account_id:
+        raise HTTPException(status_code=404, detail=f"no social link with id={link_id}")
+    db.delete(row)
+    db.commit()
+    return {"deleted": True, "id": link_id}
 
 
 class ContactEmailCreate(BaseModel):
@@ -300,51 +290,48 @@ class ContactEmailCreate(BaseModel):
 
 
 @router.get("/{account_id}/emails", response_model=list[ContactEmailItem])
-def list_contact_emails(account_id: int) -> list[ContactEmailItem]:
-    db = get_db()
-    try:
-        rows = list(
-            db.execute(
-                select(ContactEmail)
-                .where(ContactEmail.account_id == account_id)
-                .order_by(ContactEmail.created_at)
-            ).scalars()
-        )
-        return [ContactEmailItem.from_row(r) for r in rows]
-    finally:
-        db.close()
+def list_contact_emails(account_id: int, *, db: DbSession) -> list[ContactEmailItem]:
+    rows = list(
+        db.execute(
+            select(ContactEmail)
+            .where(ContactEmail.account_id == account_id)
+            .order_by(ContactEmail.created_at)
+        ).scalars()
+    )
+    return [ContactEmailItem.from_row(r) for r in rows]
 
 
 @router.post("/{account_id}/emails", response_model=ContactEmailItem)
-def add_contact_email(account_id: int, body: ContactEmailCreate) -> ContactEmailItem:
+def add_contact_email(
+    account_id: int,
+    body: ContactEmailCreate,
+    *,
+    db: DbSession,
+) -> ContactEmailItem:
     email = body.email.strip()
     if not email:
         raise HTTPException(status_code=422, detail="email is required")
 
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
 
-        existing = list(
-            db.execute(select(ContactEmail).where(ContactEmail.account_id == account_id)).scalars()
-        )
-        is_first = len(existing) == 0
-        make_primary = body.is_primary or is_first
+    existing = list(
+        db.execute(select(ContactEmail).where(ContactEmail.account_id == account_id)).scalars()
+    )
+    is_first = len(existing) == 0
+    make_primary = body.is_primary or is_first
 
-        if make_primary:
-            for e in existing:
-                e.is_primary = False
-            account.contact_email = email
+    if make_primary:
+        for e in existing:
+            e.is_primary = False
+        account.contact_email = email
 
-        row = ContactEmail(account_id=account_id, email=email, is_primary=make_primary)
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return ContactEmailItem.from_row(row)
-    finally:
-        db.close()
+    row = ContactEmail(account_id=account_id, email=email, is_primary=make_primary)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return ContactEmailItem.from_row(row)
 
 
 class ContactEmailUpdate(BaseModel):
@@ -353,65 +340,63 @@ class ContactEmailUpdate(BaseModel):
 
 
 @router.patch("/{account_id}/emails/{email_id}", response_model=ContactEmailItem)
-def update_contact_email(account_id: int, email_id: int, body: ContactEmailUpdate) -> ContactEmailItem:
-    db = get_db()
-    try:
-        row = db.get(ContactEmail, email_id)
-        if row is None or row.account_id != account_id:
-            raise HTTPException(status_code=404, detail=f"no contact email with id={email_id}")
+def update_contact_email(
+    account_id: int, email_id: int, body: ContactEmailUpdate
+,
+    *,
+    db: DbSession,) -> ContactEmailItem:
+    row = db.get(ContactEmail, email_id)
+    if row is None or row.account_id != account_id:
+        raise HTTPException(status_code=404, detail=f"no contact email with id={email_id}")
 
-        if body.email is not None:
-            email = body.email.strip()
-            if not email:
-                raise HTTPException(status_code=422, detail="email is required")
-            row.email = email
+    if body.email is not None:
+        email = body.email.strip()
+        if not email:
+            raise HTTPException(status_code=422, detail="email is required")
+        row.email = email
 
-        if body.is_primary is True:
-            for e in db.execute(select(ContactEmail).where(ContactEmail.account_id == account_id)).scalars():
-                e.is_primary = False
-            row.is_primary = True
-            account = db.get(Account, account_id)
-            if account:
-                account.contact_email = row.email
+    if body.is_primary is True:
+        for e in db.execute(
+            select(ContactEmail).where(ContactEmail.account_id == account_id)
+        ).scalars():
+            e.is_primary = False
+        row.is_primary = True
+        account = db.get(Account, account_id)
+        if account:
+            account.contact_email = row.email
 
-        db.commit()
-        db.refresh(row)
-        return ContactEmailItem.from_row(row)
-    finally:
-        db.close()
+    db.commit()
+    db.refresh(row)
+    return ContactEmailItem.from_row(row)
 
 
 @router.delete("/{account_id}/emails/{email_id}")
-def delete_contact_email(account_id: int, email_id: int) -> dict:
-    db = get_db()
-    try:
-        row = db.get(ContactEmail, email_id)
-        if row is None or row.account_id != account_id:
-            raise HTTPException(status_code=404, detail=f"no contact email with id={email_id}")
-        was_primary = row.is_primary
-        db.delete(row)
+def delete_contact_email(account_id: int, email_id: int, *, db: DbSession) -> dict:
+    row = db.get(ContactEmail, email_id)
+    if row is None or row.account_id != account_id:
+        raise HTTPException(status_code=404, detail=f"no contact email with id={email_id}")
+    was_primary = row.is_primary
+    db.delete(row)
+    db.commit()
+
+    if was_primary:
+        remaining = list(
+            db.execute(
+                select(ContactEmail)
+                .where(ContactEmail.account_id == account_id)
+                .order_by(ContactEmail.created_at)
+            ).scalars()
+        )
+        account = db.get(Account, account_id)
+        if remaining:
+            remaining[0].is_primary = True
+            if account:
+                account.contact_email = remaining[0].email
+        elif account:
+            account.contact_email = None
         db.commit()
 
-        if was_primary:
-            remaining = list(
-                db.execute(
-                    select(ContactEmail)
-                    .where(ContactEmail.account_id == account_id)
-                    .order_by(ContactEmail.created_at)
-                ).scalars()
-            )
-            account = db.get(Account, account_id)
-            if remaining:
-                remaining[0].is_primary = True
-                if account:
-                    account.contact_email = remaining[0].email
-            elif account:
-                account.contact_email = None
-            db.commit()
-
-        return {"deleted": True, "id": email_id}
-    finally:
-        db.close()
+    return {"deleted": True, "id": email_id}
 
 
 class ContactPhoneCreate(BaseModel):
@@ -420,51 +405,48 @@ class ContactPhoneCreate(BaseModel):
 
 
 @router.get("/{account_id}/phones", response_model=list[ContactPhoneItem])
-def list_contact_phones(account_id: int) -> list[ContactPhoneItem]:
-    db = get_db()
-    try:
-        rows = list(
-            db.execute(
-                select(ContactPhone)
-                .where(ContactPhone.account_id == account_id)
-                .order_by(ContactPhone.created_at)
-            ).scalars()
-        )
-        return [ContactPhoneItem.from_row(r) for r in rows]
-    finally:
-        db.close()
+def list_contact_phones(account_id: int, *, db: DbSession) -> list[ContactPhoneItem]:
+    rows = list(
+        db.execute(
+            select(ContactPhone)
+            .where(ContactPhone.account_id == account_id)
+            .order_by(ContactPhone.created_at)
+        ).scalars()
+    )
+    return [ContactPhoneItem.from_row(r) for r in rows]
 
 
 @router.post("/{account_id}/phones", response_model=ContactPhoneItem)
-def add_contact_phone(account_id: int, body: ContactPhoneCreate) -> ContactPhoneItem:
+def add_contact_phone(
+    account_id: int,
+    body: ContactPhoneCreate,
+    *,
+    db: DbSession,
+) -> ContactPhoneItem:
     phone = body.phone.strip()
     if not phone:
         raise HTTPException(status_code=422, detail="phone is required")
 
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
 
-        existing = list(
-            db.execute(select(ContactPhone).where(ContactPhone.account_id == account_id)).scalars()
-        )
-        is_first = len(existing) == 0
-        make_primary = body.is_primary or is_first
+    existing = list(
+        db.execute(select(ContactPhone).where(ContactPhone.account_id == account_id)).scalars()
+    )
+    is_first = len(existing) == 0
+    make_primary = body.is_primary or is_first
 
-        if make_primary:
-            for p in existing:
-                p.is_primary = False
-            account.contact_phone = phone
+    if make_primary:
+        for p in existing:
+            p.is_primary = False
+        account.contact_phone = phone
 
-        row = ContactPhone(account_id=account_id, phone=phone, is_primary=make_primary)
-        db.add(row)
-        db.commit()
-        db.refresh(row)
-        return ContactPhoneItem.from_row(row)
-    finally:
-        db.close()
+    row = ContactPhone(account_id=account_id, phone=phone, is_primary=make_primary)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return ContactPhoneItem.from_row(row)
 
 
 class ContactPhoneUpdate(BaseModel):
@@ -473,63 +455,61 @@ class ContactPhoneUpdate(BaseModel):
 
 
 @router.patch("/{account_id}/phones/{phone_id}", response_model=ContactPhoneItem)
-def update_contact_phone(account_id: int, phone_id: int, body: ContactPhoneUpdate) -> ContactPhoneItem:
-    db = get_db()
-    try:
-        row = db.get(ContactPhone, phone_id)
-        if row is None or row.account_id != account_id:
-            raise HTTPException(status_code=404, detail=f"no contact phone with id={phone_id}")
+def update_contact_phone(
+    account_id: int, phone_id: int, body: ContactPhoneUpdate
+,
+    *,
+    db: DbSession,) -> ContactPhoneItem:
+    row = db.get(ContactPhone, phone_id)
+    if row is None or row.account_id != account_id:
+        raise HTTPException(status_code=404, detail=f"no contact phone with id={phone_id}")
 
-        if body.phone is not None:
-            phone = body.phone.strip()
-            if not phone:
-                raise HTTPException(status_code=422, detail="phone is required")
-            row.phone = phone
+    if body.phone is not None:
+        phone = body.phone.strip()
+        if not phone:
+            raise HTTPException(status_code=422, detail="phone is required")
+        row.phone = phone
 
-        if body.is_primary is True:
-            for p in db.execute(select(ContactPhone).where(ContactPhone.account_id == account_id)).scalars():
-                p.is_primary = False
-            row.is_primary = True
-            account = db.get(Account, account_id)
-            if account:
-                account.contact_phone = row.phone
+    if body.is_primary is True:
+        for p in db.execute(
+            select(ContactPhone).where(ContactPhone.account_id == account_id)
+        ).scalars():
+            p.is_primary = False
+        row.is_primary = True
+        account = db.get(Account, account_id)
+        if account:
+            account.contact_phone = row.phone
 
-        db.commit()
-        db.refresh(row)
-        return ContactPhoneItem.from_row(row)
-    finally:
-        db.close()
+    db.commit()
+    db.refresh(row)
+    return ContactPhoneItem.from_row(row)
 
 
 @router.delete("/{account_id}/phones/{phone_id}")
-def delete_contact_phone(account_id: int, phone_id: int) -> dict:
-    db = get_db()
-    try:
-        row = db.get(ContactPhone, phone_id)
-        if row is None or row.account_id != account_id:
-            raise HTTPException(status_code=404, detail=f"no contact phone with id={phone_id}")
-        was_primary = row.is_primary
-        db.delete(row)
+def delete_contact_phone(account_id: int, phone_id: int, *, db: DbSession) -> dict:
+    row = db.get(ContactPhone, phone_id)
+    if row is None or row.account_id != account_id:
+        raise HTTPException(status_code=404, detail=f"no contact phone with id={phone_id}")
+    was_primary = row.is_primary
+    db.delete(row)
+    db.commit()
+
+    if was_primary:
+        remaining = list(
+            db.execute(
+                select(ContactPhone)
+                .where(ContactPhone.account_id == account_id)
+                .order_by(ContactPhone.created_at)
+            ).scalars()
+        )
+        account = db.get(Account, account_id)
+        if remaining:
+            remaining[0].is_primary = True
+            if account:
+                account.contact_phone = remaining[0].phone
+        elif account:
+            account.contact_phone = None
         db.commit()
 
-        if was_primary:
-            remaining = list(
-                db.execute(
-                    select(ContactPhone)
-                    .where(ContactPhone.account_id == account_id)
-                    .order_by(ContactPhone.created_at)
-                ).scalars()
-            )
-            account = db.get(Account, account_id)
-            if remaining:
-                remaining[0].is_primary = True
-                if account:
-                    account.contact_phone = remaining[0].phone
-            elif account:
-                account.contact_phone = None
-            db.commit()
-
-        return {"deleted": True, "id": phone_id}
-    finally:
-        db.close()
+    return {"deleted": True, "id": phone_id}
 

@@ -24,6 +24,8 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
+from app.resume_build.layout import default_layout
+
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Order matters: backslash isn't in this map because every other
@@ -51,8 +53,10 @@ _LATEX_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _LATEX_SPECIAL_CHAR
 # argument, not typeset as regular text. `_`, `~`, `-`, `.`, `/`, `:` are
 # all common and structurally meaningful in real URLs and don't need
 # escaping there; `%`, `#`, `&` do, they're the ones LaTeX's tokenizer
-# still treats specially even inside an href target. Not yet covered by a
-# real compile test.
+# still treats specially even inside an href target. The templates apply
+# this as the `latex_url` filter on every href, checked by
+# test_render_resume_escapes_href_targets; still not exercised by a real
+# Tectonic compile.
 _URL_ESCAPE_CHARS = {"%": r"\%", "#": r"\#", "&": r"\&"}
 _URL_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _URL_ESCAPE_CHARS))
 
@@ -96,6 +100,17 @@ def _get_env() -> Environment:
 def render_resume(template_name: str, data: dict[str, Any]) -> str:
     """template_name is a filename under app/resume_build/templates/, e.g.
     "onepage.tex.j2". Returns the rendered .tex source as a string, no
-    compilation happens here, see the (not-yet-built) compile-step slice.
+    compilation happens here, see app/resume_build/compile.py.
+
+    Every template reads its geometry from a `layout` dict
+    (app/resume_build/layout.py) rather than hardcoding it, so
+    app/resume_build/pagefit.py can re-render the same content tighter or
+    airier while searching for the requested page count. A caller that
+    does not care about page fit passes no `layout` at all and gets that
+    template's own default geometry, which is exactly what it rendered
+    when the numbers were still hardcoded in the .tex.j2 file.
     """
-    return _get_env().get_template(template_name).render(**data)
+    payload = dict(data)
+    if not payload.get("layout"):
+        payload["layout"] = default_layout(template_name)
+    return _get_env().get_template(template_name).render(**payload)

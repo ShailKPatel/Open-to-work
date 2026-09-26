@@ -1,11 +1,12 @@
 import datetime as dt
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
 import app.core.db as db_module
 from app.core.db import ProjectLink, Repository, SkillEvidence, get_db, init_db
-from app.core.llm import BudgetExceededError, LLMRateLimitedError
+from app.core.llm import BudgetExceededError, LLMProviderError, LLMRateLimitedError
 from app.core.settings import get_settings
 from app.profile.build import (
     build_profile,
@@ -14,22 +15,45 @@ from app.profile.build import (
     skill_evidence_for_repos,
 )
 from app.profile.claims import LinkClaim, SkillClaim
-from app.profile.extract import NoSourceTextError
+from app.profile.extract import NoSourceTextError, RepoFacts
 
 NOW = dt.datetime(2026, 8, 24, tzinfo=dt.UTC)
 
 
 @pytest.fixture(autouse=True)
-def _stub_link_extraction(monkeypatch):
-    """None of the skill-extraction tests below care about link extraction.
-    Without this, every build_profile() call in this file would fall
-    through to the real extract_links_from_repo and attempt a real LLM
-    dispatch (blocking on network / hanging with no API key configured
-    is a much worse test failure mode than a wrong assertion). Tests that
-    do care override this via monkeypatch same as they already do for
-    extract_skills_from_repo.
+def _stub_extraction(monkeypatch):
+    """Extraction answers nothing unless a test says otherwise. Without
+    this, every build_profile() call in this file would fall through to the
+    real extraction and attempt a real LLM dispatch (blocking on network /
+    hanging with no API key configured is a much worse test failure mode
+    than a wrong assertion).
+
+    Two functions, because build.py takes two routes to the same answer:
+    prefetch_repo_facts covers a whole batch in one call and
+    extract_repo_facts covers whatever that missed. Stubbed empty here so
+    tests using _stub_skills/_stub_links below exercise the per-repo route;
+    test_batched_prefetch_* cover the batched one.
     """
-    monkeypatch.setattr("app.profile.build.extract_links_from_repo", lambda repo: [])
+    monkeypatch.setattr("app.profile.build.prefetch_repo_facts", lambda repos: {})
+    monkeypatch.setattr("app.profile.build.extract_repo_facts", lambda repo: RepoFacts())
+
+
+def _stub_skills(monkeypatch, fn):
+    """Point build.py's extraction call at `fn`, a repo -> skill claims
+    callable (or one that raises, for the failure-path tests). Skills and
+    links come back from one call now (see app/profile/extract.py), so a
+    test that only cares about skills gets the links half empty rather than
+    stubbing a second function."""
+    monkeypatch.setattr(
+        "app.profile.build.extract_repo_facts", lambda repo: RepoFacts(skills=fn(repo))
+    )
+
+
+def _stub_links(monkeypatch, fn):
+    """_stub_skills' twin for the tests that care about the links half."""
+    monkeypatch.setattr(
+        "app.profile.build.extract_repo_facts", lambda repo: RepoFacts(links=fn(repo))
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -54,8 +78,7 @@ def _reset_db(tmp_path: Path):
 
     import app.retrieval.vectorstore as vectorstore_module
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     vectorstore_module.get_client.cache_clear()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     os.environ["QDRANT_URL"] = ":memory:"
@@ -97,8 +120,8 @@ def _fresh(repo_id: int) -> Repository:
 
 def test_build_profile_writes_skill_evidence_from_manifest_and_readme(tmp_path, monkeypatch):
     _reset_db(tmp_path)
-    monkeypatch.setattr(
-        "app.profile.build.extract_skills_from_repo",
+    _stub_skills(
+        monkeypatch,
         lambda repo: [SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)],
     )
     repo = _persist_repo()
@@ -118,7 +141,7 @@ def test_build_profile_persists_extracted_status(tmp_path, monkeypatch):
     """Mutating a detached repo object's
     status doesn't persist unless it's re-attached to the commit session."""
     _reset_db(tmp_path)
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: [])
+    _stub_skills(monkeypatch, lambda repo: [])
     repo = _persist_repo()
     assert repo.skill_extraction_status == "pending"
 
@@ -135,7 +158,7 @@ def test_no_source_text_marks_no_signal_not_failed(tmp_path, monkeypatch):
     def raise_no_source(repo):
         raise NoSourceTextError("nothing to work with")
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", raise_no_source)
+    _stub_skills(monkeypatch, raise_no_source)
     repo = _persist_repo(readme=None, description=None)
 
     build_profile([repo], now=NOW)
@@ -158,7 +181,7 @@ def test_llm_failure_on_one_repo_does_not_lose_other_repos(tmp_path, monkeypatch
             raise RuntimeError("budget exceeded")
         return [SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)]
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", flaky_extract)
+    _stub_skills(monkeypatch, flaky_extract)
     good = _persist_repo(github_id=1, full_name="octocat/good")
     bad = _persist_repo(github_id=2, full_name="octocat/bad")
 
@@ -192,7 +215,7 @@ def test_rate_limit_mid_batch_stops_and_leaves_rest_untouched(tmp_path, monkeypa
             raise LLMRateLimitedError("Gemini is limiting requests from this key right now.")
         return [SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)]
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", hits_limit_on_second)
+    _stub_skills(monkeypatch, hits_limit_on_second)
     a = _persist_repo(github_id=1, full_name="octocat/a")
     b = _persist_repo(github_id=2, full_name="octocat/b")
     c = _persist_repo(github_id=3, full_name="octocat/c")
@@ -218,13 +241,43 @@ def test_budget_exceeded_mid_batch_also_stops_the_batch(tmp_path, monkeypatch):
     def hits_budget_cap(repo):
         raise BudgetExceededError("monthly budget $20.00 reached")
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", hits_budget_cap)
+    _stub_skills(monkeypatch, hits_budget_cap)
     a = _persist_repo(github_id=1, full_name="octocat/a")
     b = _persist_repo(github_id=2, full_name="octocat/b")
 
     build_profile([a, b], now=NOW)
 
     assert _fresh(a.id).skill_extraction_status == "rate_limited"
+    assert _fresh(b.id).skill_extraction_status == "pending"  # never attempted
+
+
+def test_running_out_of_keys_mid_batch_stops_it_the_same_way(tmp_path, monkeypatch):
+    """Every stored key rejected is not "this repo is broken": the repos
+    after it would fail identically. It reaches here as an
+    LLMProviderError rather than a 429, so the stop has to be decided by
+    app/core/llm.py's is_out_of_keys(), not by the exception type. Repos
+    never attempted stay pending, so the next run continues from here."""
+    _reset_db(tmp_path)
+
+    def every_key_rejected(repo):
+        error = LLMProviderError(
+            "All 2 OpenAI keys failed on this request:\n"
+            "- Personal: OpenAI rejected the API key.\n"
+            "- Work: OpenAI is limiting requests from this key right now."
+        )
+        error.blames_key = True
+        raise error
+
+    _stub_skills(monkeypatch, every_key_rejected)
+    a = _persist_repo(github_id=1, full_name="octocat/a")
+    b = _persist_repo(github_id=2, full_name="octocat/b")
+
+    build_profile([a, b], now=NOW)
+
+    a_reloaded = _fresh(a.id)
+    assert a_reloaded.skill_extraction_status == "rate_limited"
+    assert "All 2 OpenAI keys failed" in a_reloaded.skill_extraction_error
+    assert "run it again once a key is available" in a_reloaded.skill_extraction_error
     assert _fresh(b.id).skill_extraction_status == "pending"  # never attempted
 
 
@@ -238,7 +291,7 @@ def test_generic_error_mid_batch_does_not_stop_the_batch(tmp_path, monkeypatch):
             raise RuntimeError("malformed response")
         return []
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", fails_only_on_b)
+    _stub_skills(monkeypatch, fails_only_on_b)
     a = _persist_repo(github_id=1, full_name="octocat/a")
     b = _persist_repo(github_id=2, full_name="octocat/b")
     c = _persist_repo(github_id=3, full_name="octocat/c")
@@ -260,7 +313,7 @@ def test_rate_limited_repo_is_retried_automatically_without_force(tmp_path, monk
             raise LLMRateLimitedError("quota exceeded")
         return []
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", rate_limited_once)
+    _stub_skills(monkeypatch, rate_limited_once)
     repo = _persist_repo()
 
     build_profile([repo], now=NOW)
@@ -279,7 +332,7 @@ def test_already_extracted_repo_is_skipped_without_force(tmp_path, monkeypatch):
         calls.append(repo.full_name)
         return []
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", counting_extract)
+    _stub_skills(monkeypatch, counting_extract)
     repo = _persist_repo()
 
     build_profile([repo], now=NOW)
@@ -299,7 +352,7 @@ def test_failed_repo_is_retried_automatically_without_force(tmp_path, monkeypatc
             raise RuntimeError("transient error")
         return []
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", fail_once)
+    _stub_skills(monkeypatch, fail_once)
     repo = _persist_repo()
 
     build_profile([repo], now=NOW)
@@ -318,7 +371,7 @@ def test_force_reprocesses_already_extracted_repo(tmp_path, monkeypatch):
         calls.append(repo.full_name)
         return []
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", counting_extract)
+    _stub_skills(monkeypatch, counting_extract)
     repo = _persist_repo()
 
     build_profile([repo], now=NOW)
@@ -339,7 +392,7 @@ def test_reprocess_repo_clears_old_evidence_before_rewriting(tmp_path, monkeypat
         call_index["i"] += 1
         return result
 
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", sequenced_extract)
+    _stub_skills(monkeypatch, sequenced_extract)
     repo = _persist_repo()
 
     build_profile([repo], now=NOW)
@@ -363,7 +416,7 @@ def test_reprocess_repo_unknown_id_raises(tmp_path):
 
 def test_same_skill_from_two_repos_aggregates_via_noisy_or(tmp_path, monkeypatch):
     _reset_db(tmp_path)
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: [])
+    _stub_skills(monkeypatch, lambda repo: [])
     repo_a = _persist_repo(github_id=1, full_name="octocat/a")
     repo_b = _persist_repo(github_id=2, full_name="octocat/b")
 
@@ -378,7 +431,7 @@ def test_same_skill_from_two_repos_aggregates_via_noisy_or(tmp_path, monkeypatch
 
 def test_profile_skills_property_matches_skills_json(tmp_path, monkeypatch):
     _reset_db(tmp_path)
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: [])
+    _stub_skills(monkeypatch, lambda repo: [])
     repo = _persist_repo()
 
     profile = build_profile([repo], now=NOW)
@@ -390,11 +443,15 @@ def test_profile_skills_property_matches_skills_json(tmp_path, monkeypatch):
 def test_rebuild_manifest_evidence_replaces_only_manifest_rows(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     calls = []
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: calls.append(1) or [
-        SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)
-    ])
+    _stub_skills(
+        monkeypatch,
+        lambda repo: calls.append(1)
+        or [SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)],
+    )
     repo = _persist_repo(
-        manifests_json={"requirements.txt": {"ecosystem": "pip", "dependencies": ["blinker", "fastapi"]}}
+        manifests_json={
+            "requirements.txt": {"ecosystem": "pip", "dependencies": ["blinker", "fastapi"]}
+        }
     )
     build_profile([repo], now=NOW)
 
@@ -441,9 +498,9 @@ def _links_for(repo_id: int) -> list[ProjectLink]:
 
 def test_build_profile_writes_links_found_in_readme(tmp_path, monkeypatch):
     _reset_db(tmp_path)
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: [])
-    monkeypatch.setattr(
-        "app.profile.build.extract_links_from_repo",
+    _stub_skills(monkeypatch, lambda repo: [])
+    _stub_links(
+        monkeypatch,
         lambda repo: [LinkClaim(label="YouTube Video", url="https://youtu.be/abc123")],
     )
     repo = _persist_repo()
@@ -459,9 +516,9 @@ def test_build_profile_writes_links_found_in_readme(tmp_path, monkeypatch):
 
 def test_link_matching_repo_url_is_not_duplicated(tmp_path, monkeypatch):
     _reset_db(tmp_path)
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: [])
-    monkeypatch.setattr(
-        "app.profile.build.extract_links_from_repo",
+    _stub_skills(monkeypatch, lambda repo: [])
+    _stub_links(
+        monkeypatch,
         lambda repo: [LinkClaim(label="GitHub", url="https://github.com/octocat/proj")],
     )
     repo = _persist_repo(url="https://github.com/octocat/proj")
@@ -473,8 +530,8 @@ def test_link_matching_repo_url_is_not_duplicated(tmp_path, monkeypatch):
 
 def test_reprocess_clears_extracted_links_but_keeps_manual_ones(tmp_path, monkeypatch):
     _reset_db(tmp_path)
-    monkeypatch.setattr("app.profile.build.extract_skills_from_repo", lambda repo: [])
-    monkeypatch.setattr("app.profile.build.extract_links_from_repo", lambda repo: [])
+    _stub_skills(monkeypatch, lambda repo: [])
+    _stub_links(monkeypatch, lambda repo: [])
     repo = _persist_repo()
     build_profile([repo], now=NOW)  # gets it out of "pending" so reprocess is meaningful
 
@@ -485,11 +542,110 @@ def test_reprocess_clears_extracted_links_but_keeps_manual_ones(tmp_path, monkey
     db.commit()
     db.close()
 
-    monkeypatch.setattr(
-        "app.profile.build.extract_links_from_repo",
+    _stub_links(
+        monkeypatch,
         lambda repo: [LinkClaim(label="Docs", url="https://docs.example.com")],
     )
     reprocess_repo(repo.id, now=NOW)
 
     links = {(link.label, link.source) for link in _links_for(repo.id)}
     assert links == {("Live Demo", "manual"), ("Docs", "readme_extracted")}
+
+
+def test_batched_prefetch_answer_is_used_without_a_second_call(tmp_path, monkeypatch):
+    """A repo the batched pass already answered costs no call of its own."""
+    _reset_db(tmp_path)
+    repo_a = _persist_repo(github_id=1, name="a", full_name="octocat/a")
+    repo_b = _persist_repo(github_id=2, name="b", full_name="octocat/b")
+    monkeypatch.setattr(
+        "app.profile.build.prefetch_repo_facts",
+        lambda repos: {
+            repo_a.id: RepoFacts(
+                skills=[
+                    SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)
+                ],
+                links=[LinkClaim(label="Docs", url="https://docs.example.com")],
+            ),
+            repo_b.id: RepoFacts(
+                skills=[SkillClaim(skill="Rust", evidence_type="readme_described", confidence=0.8)]
+            ),
+        },
+    )
+    per_repo = MagicMock()
+    monkeypatch.setattr("app.profile.build.extract_repo_facts", per_repo)
+
+    profile = build_profile([repo_a, repo_b], now=NOW)
+
+    per_repo.assert_not_called()
+    assert "React" in profile.skills_json
+    assert "Rust" in profile.skills_json
+    assert [link.label for link in _links_for(repo_a.id)] == ["Docs"]
+    assert _fresh(repo_a.id).skill_extraction_status == "extracted"
+    assert _fresh(repo_b.id).skill_extraction_status == "extracted"
+
+
+def test_repo_the_batched_pass_missed_falls_back_to_its_own_call(tmp_path, monkeypatch):
+    """Nothing depends on the batched pass succeeding: a repo it skipped (or
+    a group whose call failed) is processed exactly as before."""
+    _reset_db(tmp_path)
+    repo_a = _persist_repo(github_id=1, name="a", full_name="octocat/a")
+    repo_b = _persist_repo(github_id=2, name="b", full_name="octocat/b")
+    monkeypatch.setattr(
+        "app.profile.build.prefetch_repo_facts",
+        lambda repos: {
+            repo_a.id: RepoFacts(
+                skills=[SkillClaim(skill="React", evidence_type="readme_described", confidence=0.9)]
+            )
+        },
+    )
+    asked: list[int] = []
+
+    def _per_repo(repo):
+        asked.append(repo.id)
+        return RepoFacts(
+            skills=[SkillClaim(skill="Rust", evidence_type="readme_described", confidence=0.8)]
+        )
+
+    monkeypatch.setattr("app.profile.build.extract_repo_facts", _per_repo)
+
+    profile = build_profile([repo_a, repo_b], now=NOW)
+
+    assert asked == [repo_b.id]
+    assert {"React", "Rust"} <= set(profile.skills_json)
+
+
+def test_prefetch_is_skipped_for_a_single_repo(tmp_path, monkeypatch):
+    """One repo has nothing to amortize, so the batched prompt's extra
+    instructions would cost more than the call they save."""
+    _reset_db(tmp_path)
+    prefetch = MagicMock(return_value={})
+    monkeypatch.setattr("app.profile.build.prefetch_repo_facts", prefetch)
+    _stub_skills(monkeypatch, lambda repo: [])
+    repo = _persist_repo()
+
+    build_profile([repo], now=NOW)
+
+    prefetch.assert_not_called()
+
+
+def test_prefetch_only_covers_repos_this_run_will_process(tmp_path, monkeypatch):
+    """Already-extracted repos are skipped by the loop, so paying to
+    prefetch them would be spend for nothing."""
+    _reset_db(tmp_path)
+    done = _persist_repo(
+        github_id=1, name="done", full_name="octocat/done", skill_extraction_status="extracted"
+    )
+    pending_a = _persist_repo(github_id=2, name="a", full_name="octocat/a")
+    pending_b = _persist_repo(github_id=3, name="b", full_name="octocat/b")
+    seen: list[list[int]] = []
+
+    def _prefetch(repos):
+        seen.append([r.id for r in repos])
+        return {}
+
+    monkeypatch.setattr("app.profile.build.prefetch_repo_facts", _prefetch)
+    _stub_skills(monkeypatch, lambda repo: [])
+
+    build_profile([done, pending_a, pending_b], now=NOW)
+
+    assert seen == [[pending_a.id, pending_b.id]]

@@ -1,5 +1,5 @@
 """Encryption at rest for secrets we store in the DB (every provider's
-credentials in app/core/db.py's ApiKey table, app/core/api_keys_store.py).
+credentials in app/core/db/models.py's ApiKey table, app/core/api_keys_store.py).
 Nothing upstream of this module should ever write a raw secret straight
 into a DB column.
 

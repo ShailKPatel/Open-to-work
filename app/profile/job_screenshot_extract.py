@@ -114,7 +114,13 @@ def extract_job_posting_from_image(
         },
     ]
 
-    response = complete("quality", messages, schema=_SCHEMA, account_id=account_id)
+    response = complete(
+        "quality",
+        messages,
+        schema=_SCHEMA,
+        account_id=account_id,
+        purpose="job_screenshot_extract",
+    )
     if response.parsed is None:
         raise ScreenshotExtractionError(
             "LLM response for job screenshot extraction was not valid JSON"

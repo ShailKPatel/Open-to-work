@@ -2,7 +2,7 @@
 
 A plain in-process set, not a DB table or a queue: this app is
 self-hosted, single instance, single account per device (see
-app/core/db.py's Account docstring); there's no second process or worker
+app/core/db/models.py's Account docstring); there's no second process or worker
 that needs to see a cancellation request, so nothing heavier is needed.
 
 Keyed by an arbitrary string "run id": a SyncSource's own id (stringified)

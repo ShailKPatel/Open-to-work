@@ -101,6 +101,7 @@ def resolve_role_family(title: str, account_id: int | None = None) -> RoleFamily
             ],
             schema=_CANONICALIZE_SCHEMA,
             account_id=account_id,
+            purpose="role_family",
         )
         if response.parsed is None:
             raise RoleFamilyResolutionError("LLM response was not valid JSON")

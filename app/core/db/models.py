@@ -1,4 +1,4 @@
-"""SQLite engine, session, ORM models, and lightweight column migrations.
+"""Every ORM model in the app, one table per class.
 
 A few tables (Detection, MatchResult) are declared ahead of the features
 that will write to them.
@@ -7,8 +7,6 @@ that will write to them.
 from __future__ import annotations
 
 import datetime as dt
-import logging
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import (
@@ -21,21 +19,10 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    create_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.settings import get_settings
-
-logger = logging.getLogger(__name__)
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-def _now() -> dt.datetime:
-    return dt.datetime.now(dt.UTC)
+from app.core.db.base import Base, _now
 
 
 class Account(Base):
@@ -441,6 +428,31 @@ class SkillVerdict(Base):
     )
 
 
+class SkillMapCache(Base):
+    """The finished 2D skill map for an account (see
+    app/profile/skill_map.py). Stored whole, as the JSON the map endpoint
+    returns, because building it costs an embedding-model load and a
+    t-SNE fit, and the answer only changes when the skills do.
+
+    fingerprint hashes everything that went into the layout: the layout
+    version, the embedding model, and the exact text each skill was
+    embedded as (which carries its evidence context). A request whose
+    fingerprint does not match this row rebuilds and replaces it, so
+    there is one row per account and never a stale map served by
+    mistake.
+    """
+
+    __tablename__ = "skill_map_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    fingerprint: Mapped[str] = mapped_column(String)
+    payload_json: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (UniqueConstraint("account_id", name="uq_skill_map_cache_account"),)
+
+
 class Resume(Base):
     """One uploaded resume file for an account. Any number per account:
     a later job-application flow picks one (or, further out, an LLM
@@ -693,21 +705,35 @@ class LLMCall(Base):
     # Attribution, added for the /monitor per-key/per-account usage
     # breakdown (app/api/monitor.py). Both nullable: a cache hit or a
     # call with no account context (account_id=None passed to complete())
-    # legitimately has no account; key_id is only set on a real dispatch
-    # that went through app/core/api_keys_store.resolve_dispatch_key(); a
-    # test's injected _completion_fn never resolves a key, so key_id stays
-    # NULL for mocked calls and for rows written before this column existed.
+    # legitimately has no account; key_id is only set on a real dispatch,
+    # and is the key that actually answered, which after a failover is not
+    # the first one tried (app/core/llm.py's _dispatch_over_keys). It also
+    # backs each key's own budget cap, so a cap and the number /monitor
+    # shows beside it are the same figure. A test's injected
+    # _completion_fn never resolves a key, so key_id stays NULL for mocked
+    # calls and for rows written before this column existed.
     # No FK constraint to api_keys/accounts (informational ids, not
     # enforced), so a since-deleted account or key doesn't break old rows.
     account_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     key_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    # Which feature spent this call: "repo_facts", "resume_build",
+    # "pagefit_trim", "skill_review", and so on, passed by every call site
+    # through app/core/llm.py's complete(). A model name and a tier say how
+    # a call was routed, not what it was for, so without this the usage
+    # page can show that spend went up without showing where. Grouped as
+    # /monitor's by_purpose breakdown (app/api/monitor.py). Nullable: rows
+    # written before this column existed, and any call site that passes
+    # nothing, land in an "unattributed" bucket rather than being dropped.
+    purpose: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class RateLimitEvent(Base):
-    """One row per time an outbound call got rate-limited or budget-capped:
-    GitHub (app/ingest/github/client.py) or the LLM provider / our own
-    monthly cap (app/core/llm.py). Distinct from Repository.
+    """One row per time an outbound call got rate-limited or budget-capped,
+    a key dropped out of rotation, or a multi-step run stopped: GitHub
+    (app/ingest/github/client.py) or the LLM provider / our own monthly cap
+    / key failover (app/core/llm.py, app/core/pipeline.py). Distinct from
+    Repository.
     skill_extraction_status == "rate_limited": that field is per-repo,
     transient, and overwritten on the next retry, this table is an
     append-only log, so the monitor page (app/api/monitor.py) can show
@@ -757,11 +783,13 @@ class EmbeddingCache(Base):
 class ApiKey(Base):
     """One stored credential set for one LLM provider, managed from the
     /apis page (app/api/api_keys.py). More than one row per `provider` is
-    allowed (rotation, labeled keys for different budgets, etc):
-    `is_active` marks the single row app/core/llm.py dispatches with for
-    that provider at any given time. At most one active per provider is
-    enforced in app/core/api_keys_store.py rather than with a partial
-    unique index, which isn't worth it for a single-process local app.
+    allowed, and they back each other up: `is_active` marks the row
+    app/core/llm.py dispatches with first, and if the provider blames that
+    key mid-request (quota gone, credential rejected) the next usable row
+    for the provider takes the same request over. At most one active per
+    provider is enforced in app/core/api_keys_store.py rather than with a
+    partial unique index, which isn't worth it for a single-process local
+    app.
 
     `encrypted_credentials` is the WHOLE provider-shaped field dict (see
     PROVIDERS in app/core/llm_providers.py) JSON-encoded then encrypted as
@@ -785,12 +813,25 @@ class ApiKey(Base):
     optional allow-list of Account ids (empty list, the default = every
     account on this device may use it, not "no one may"); a non-empty
     list restricts the key to only those accounts, checked in
-    app/core/api_keys_store.py's resolve_dispatch_key() against whichever
+    app/core/api_keys_store.py's resolve_dispatch_keys() against whichever
     account_id the calling code passes into app/core/llm.py's complete().
-    `status` is one of unknown|valid|invalid|rate_limited. The last one is
-    set only from a real dispatch hitting a 429 (see
-    record_dispatch_outcome()), never from the cheap check_key() call,
-    which can't observe quota exhaustion. `last_check_detail` carries the
+    `status` is one of unknown|valid|invalid|rate_limited|blocked, and
+    splits into two groups that are treated very differently.
+    `rate_limited` is temporary: the key filled a quota window that rolls
+    over by itself, so `exhausted_at` records when that happened,
+    `exhaustion_kind` which window was hit (per_minute|per_day|quota|
+    unknown, read from the provider's own refusal by
+    app/core/key_cooldown.py) and `retry_at` the earliest moment a recheck
+    is worth making. app/core/key_refresh.py comes back at that moment,
+    at startup and on an interval, and clears the three fields once the
+    key answers again. `invalid` (the credential was rejected) and
+    `blocked` (the provider forbade this key: suspended, revoked, or its
+    API not enabled) are not temporary and never rechecked automatically,
+    only when someone asks for it on /apis; they carry no cooldown fields.
+    None of the four statuses takes a key out of rotation, they only
+    change where it sits in the dispatch order (see
+    app/core/api_keys_store.py's _dispatch_order), because a device with
+    one key must still be able to try it. `last_check_detail` carries the
     human-readable outcome message (from app/core/llm_providers.py's
     validate_credentials(), or a dispatch failure) alongside
     `last_checked_at`, so the /apis page can show not just a status but
@@ -812,6 +853,9 @@ class ApiKey(Base):
         DateTime(timezone=True), nullable=True
     )
     last_check_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    exhausted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retry_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exhaustion_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     budget_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -846,7 +890,7 @@ class AuthSource(Base):
     alternate account, never a primary one.
 
     `encrypted_credentials` is a JSON-encoded {"username", "password"}
-    blob, encrypted the same way app/core/db.py's ApiKey stores provider
+    blob, encrypted the same way the ApiKey model above stores provider
     credentials (app/core/crypto.py): never plaintext, never logged.
     The three CSS selectors let a generic Playwright driver log into an
     arbitrary site without hardcoding per-site scraping logic: the account
@@ -880,348 +924,3 @@ class AuthSource(Base):
     )
     last_check_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-
-_engine = None
-_SessionLocal: sessionmaker | None = None
-
-
-def get_engine():
-    global _engine
-    if _engine is None:
-        url = get_settings().database_url
-        is_sqlite = url.startswith("sqlite")
-        if is_sqlite:
-            path = url.split("///")[-1]
-            if path and path != ":memory:":
-                import os
-
-                os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        _engine = create_engine(url)
-        if is_sqlite:
-            _configure_sqlite(_engine)
-    return _engine
-
-
-def _configure_sqlite(engine) -> None:
-    """WAL mode + a busy timeout. Without this, two connections writing in
-    quick succession, e.g. core.llm.complete()'s own get_db() call for
-    LLMCall bookkeeping, invoked from inside app.profile.build's
-    already-open per-repo transaction, hit
-    'sqlite3.OperationalError: database is locked' under SQLite's default
-    rollback-journal locking when extracting skills for several repos in a
-    row. WAL allows concurrent readers alongside a single writer instead of
-    locking the whole file; the busy timeout makes a genuine write/write
-    collision wait and retry instead of failing immediately.
-    """
-    from sqlalchemy import event
-
-    @event.listens_for(engine, "connect")
-    def _set_sqlite_pragma(dbapi_connection, _):
-        cursor = dbapi_connection.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA busy_timeout=30000")
-        cursor.close()
-
-
-_BACKUP_KEEP = 10
-
-
-def _backup_sqlite_file(url: str) -> None:
-    """Snapshot the live SQLite file into data/backups/ before init_db()
-    touches anything, so a startup that ends up looking at an empty or
-    missing DB (a bad restart, a deploy that lands in the wrong directory,
-    an accidental delete) always has a recent restore point next to it:
-    `cp data/backups/<newest>.db data/open_to_work.db` restores it. This
-    only ever adds files.
-
-    Uses sqlite3's own `.backup()` API rather than a raw file copy: WAL
-    mode (see _configure_sqlite) means the freshest writes can still be
-    sitting in a `-wal` file, invisible to a plain `cp` of just the main
-    `.db` file. `.backup()` reads through a live connection and always
-    produces a fully consistent snapshot regardless of WAL state.
-
-    Best-effort and silent on failure: a backup that can't be taken
-    should never be the reason the app fails to start.
-    """
-    if not url.startswith("sqlite:///") or url.endswith(":memory:"):
-        return
-    db_path = Path(url.removeprefix("sqlite:///"))
-    if not db_path.exists() or db_path.stat().st_size == 0:
-        return  # nothing real to back up yet
-    try:
-        backups_dir = db_path.parent / "backups"
-        backups_dir.mkdir(exist_ok=True)
-        stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
-        dest = backups_dir / f"{db_path.stem}-{stamp}{db_path.suffix}"
-
-        import sqlite3
-
-        src_conn = sqlite3.connect(str(db_path))
-        try:
-            dest_conn = sqlite3.connect(str(dest))
-            try:
-                src_conn.backup(dest_conn)
-            finally:
-                dest_conn.close()
-        finally:
-            src_conn.close()
-
-        # prune to the most recent _BACKUP_KEEP: a safety net, not an archive
-        backups = sorted(backups_dir.glob(f"{db_path.stem}-*{db_path.suffix}"))
-        for stale in backups[:-_BACKUP_KEEP]:
-            stale.unlink(missing_ok=True)
-    except Exception:
-        logger.exception("could not back up %s before init; continuing anyway", db_path)
-
-
-def _migrate_accounts_contact_columns(engine) -> None:
-    """Add accounts.contact_email / contact_phone / contact_location to an
-    already-existing accounts table. create_all() only creates missing
-    tables and never alters an existing one's columns, so without this an
-    upgraded instance would never get them. Idempotent: checks PRAGMA
-    table_info first, so running this on a fresh table (fresh install, or
-    a test's :memory: db) that already has all columns via create_all is a
-    safe no-op.
-    """
-    if engine.dialect.name != "sqlite":
-        return  # PRAGMA table_info is SQLite-specific; only dialect this project runs
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(accounts)"))}
-        for column in ("contact_email", "contact_phone", "contact_location"):
-            if column not in existing:
-                conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {column} TEXT"))
-        conn.commit()
-
-
-def _migrate_repositories_curation_columns(engine) -> None:
-    """Add repositories.starred to an already-existing repositories table,
-    same reasoning and same idempotent PRAGMA-check pattern as
-    _migrate_accounts_contact_columns above.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(repositories)"))}
-        if "starred" not in existing:
-            conn.execute(
-                text("ALTER TABLE repositories ADD COLUMN starred BOOLEAN NOT NULL DEFAULT 0")
-            )
-        conn.commit()
-
-
-def _migrate_resumes_name_column(engine) -> None:
-    """Add resumes.name to an already-existing resumes table, same
-    reasoning and pattern as _migrate_repositories_curation_columns above.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(resumes)"))}
-        if "name" not in existing:
-            conn.execute(text("ALTER TABLE resumes ADD COLUMN name TEXT"))
-        conn.commit()
-
-
-def _migrate_job_postings_account_id(engine) -> None:
-    """Add job_postings.account_id to an already-existing job_postings
-    table, same reasoning and pattern as _migrate_resumes_name_column
-    above.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(job_postings)"))}
-        if "account_id" not in existing:
-            conn.execute(text("ALTER TABLE job_postings ADD COLUMN account_id INTEGER"))
-        conn.commit()
-
-
-def _migrate_resumes_build_columns(engine) -> None:
-    """Add resumes.job_posting_id/template/content_json/compiled_path/
-    compiled_at to an already-existing resumes table, same reasoning and
-    pattern as _migrate_resumes_name_column above.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(resumes)"))}
-        if "job_posting_id" not in existing:
-            conn.execute(text("ALTER TABLE resumes ADD COLUMN job_posting_id INTEGER"))
-        if "template" not in existing:
-            conn.execute(text("ALTER TABLE resumes ADD COLUMN template TEXT"))
-        if "content_json" not in existing:
-            conn.execute(text("ALTER TABLE resumes ADD COLUMN content_json JSON"))
-        if "compiled_path" not in existing:
-            conn.execute(text("ALTER TABLE resumes ADD COLUMN compiled_path TEXT"))
-        if "compiled_at" not in existing:
-            conn.execute(text("ALTER TABLE resumes ADD COLUMN compiled_at DATETIME"))
-        conn.commit()
-
-
-def _migrate_job_postings_extraction_columns(engine) -> None:
-    """Add job_postings.extraction_status/extraction_error/extracted_at to
-    an already-existing job_postings table, same reasoning and pattern as
-    _migrate_job_postings_account_id above.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(job_postings)"))}
-        if "extraction_status" not in existing:
-            conn.execute(
-                text(
-                    "ALTER TABLE job_postings ADD COLUMN extraction_status "
-                    "TEXT NOT NULL DEFAULT 'pending'"
-                )
-            )
-        if "extraction_error" not in existing:
-            conn.execute(text("ALTER TABLE job_postings ADD COLUMN extraction_error TEXT"))
-        if "extracted_at" not in existing:
-            conn.execute(text("ALTER TABLE job_postings ADD COLUMN extracted_at DATETIME"))
-        conn.commit()
-
-
-def _migrate_llm_calls_attribution_columns(engine) -> None:
-    """Add llm_calls.account_id/key_id to an already-existing llm_calls
-    table, same reasoning and pattern as _migrate_resumes_name_column
-    above. Backs the /monitor per-key/per-account usage breakdown
-    (app/api/monitor.py). Rows written before this migration have both
-    NULL, which the breakdown shows as an "unattributed" bucket rather than
-    dropping that spend.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(llm_calls)"))}
-        if "account_id" not in existing:
-            conn.execute(text("ALTER TABLE llm_calls ADD COLUMN account_id INTEGER"))
-        if "key_id" not in existing:
-            conn.execute(text("ALTER TABLE llm_calls ADD COLUMN key_id INTEGER"))
-        conn.commit()
-
-
-def _migrate_rate_limit_events_account_column(engine) -> None:
-    """Add rate_limit_events.account_id to an already-existing table, same
-    pattern as _migrate_llm_calls_attribution_columns above.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(rate_limit_events)"))}
-        if "account_id" not in existing:
-            conn.execute(text("ALTER TABLE rate_limit_events ADD COLUMN account_id INTEGER"))
-        conn.commit()
-
-
-def _migrate_job_postings_tracking_columns(engine) -> None:
-    """Add job_postings.applied/applied_at/applied_notes/role_family_id/
-    screenshot_path to an already-existing job_postings table, same
-    reasoning and pattern as _migrate_job_postings_account_id above.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(job_postings)"))}
-        if "applied" not in existing:
-            conn.execute(
-                text("ALTER TABLE job_postings ADD COLUMN applied BOOLEAN NOT NULL DEFAULT 0")
-            )
-        if "applied_at" not in existing:
-            conn.execute(text("ALTER TABLE job_postings ADD COLUMN applied_at DATE"))
-        if "applied_notes" not in existing:
-            conn.execute(text("ALTER TABLE job_postings ADD COLUMN applied_notes TEXT"))
-        if "role_family_id" not in existing:
-            conn.execute(text("ALTER TABLE job_postings ADD COLUMN role_family_id INTEGER"))
-        if "screenshot_path" not in existing:
-            conn.execute(text("ALTER TABLE job_postings ADD COLUMN screenshot_path TEXT"))
-        conn.commit()
-
-
-def _migrate_contact_items(engine) -> None:
-    """Ensures contact_emails and contact_phones tables exist and populates
-    them from existing accounts.contact_email / contact_phone if present.
-    """
-    if engine.dialect.name != "sqlite":
-        return
-
-    from sqlalchemy import text
-
-    with engine.connect() as conn:
-        try:
-            accounts = conn.execute(text("SELECT id, contact_email, contact_phone FROM accounts")).fetchall()
-            for acc_id, email, phone in accounts:
-                if email:
-                    existing_email = conn.execute(
-                        text("SELECT id FROM contact_emails WHERE account_id = :acc_id"),
-                        {"acc_id": acc_id},
-                    ).fetchone()
-                    if not existing_email:
-                        conn.execute(
-                            text("INSERT INTO contact_emails (account_id, email, is_primary) VALUES (:acc_id, :email, 1)"),
-                            {"acc_id": acc_id, "email": email},
-                        )
-                if phone:
-                    existing_phone = conn.execute(
-                        text("SELECT id FROM contact_phones WHERE account_id = :acc_id"),
-                        {"acc_id": acc_id},
-                    ).fetchone()
-                    if not existing_phone:
-                        conn.execute(
-                            text("INSERT INTO contact_phones (account_id, phone, is_primary) VALUES (:acc_id, :phone, 1)"),
-                            {"acc_id": acc_id, "phone": phone},
-                        )
-            conn.commit()
-        except Exception:
-            logger.exception("Error during contact items migration; continuing")
-
-
-def init_db() -> None:
-    _backup_sqlite_file(get_settings().database_url)
-    engine = get_engine()
-    Base.metadata.create_all(engine)
-    _migrate_accounts_contact_columns(engine)
-    _migrate_repositories_curation_columns(engine)
-    _migrate_resumes_name_column(engine)
-    _migrate_job_postings_account_id(engine)
-    _migrate_resumes_build_columns(engine)
-    _migrate_job_postings_extraction_columns(engine)
-    _migrate_llm_calls_attribution_columns(engine)
-    _migrate_rate_limit_events_account_column(engine)
-    _migrate_job_postings_tracking_columns(engine)
-    _migrate_contact_items(engine)
-
-
-def get_db() -> Session:
-    global _SessionLocal
-    if _SessionLocal is None:
-        _SessionLocal = sessionmaker(bind=get_engine())
-    return _SessionLocal()
-

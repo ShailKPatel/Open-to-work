@@ -13,18 +13,21 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+from collections.abc import Iterator
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
+from app.api.deps import DbSession
 from app.core.db import ProjectLink, Repository, SkillEvidence, get_db
 from app.profile.build import build_profile, reprocess_repo, skill_evidence_for_repos
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
-from app.profile.skill_review import approve
 from app.profile.jobs import extraction_stream, start_extraction
+from app.profile.skill_review import approve
 
 # /api prefix, not just style: a JSON endpoint at the same path as an HTML
 # page silently wins the route (routes are matched in registration order)
@@ -94,7 +97,7 @@ class ProjectSummary(BaseModel):
         )
 
 
-def _skill_counts(db, repo_ids: list[int]) -> dict[int, int]:
+def _skill_counts(db: Session, repo_ids: list[int]) -> dict[int, int]:
     if not repo_ids:
         return {}
     rows = db.execute(
@@ -102,27 +105,25 @@ def _skill_counts(db, repo_ids: list[int]) -> dict[int, int]:
         .where(SkillEvidence.repo_id.in_(repo_ids))
         .group_by(SkillEvidence.repo_id)
     ).all()
-    return dict(rows)
+    # Row unpacks as a 2-tuple; spelling it out keeps the dict's key/value
+    # types checkable instead of landing as Row objects.
+    return {group_key: count for group_key, count in rows}
 
 
 @router.get("", response_model=list[ProjectSummary])
-def list_projects(account_id: int) -> list[ProjectSummary]:
-    db = get_db()
-    try:
-        repos = list(
-            db.execute(
-                select(Repository)
-                .where(Repository.account_id == account_id)
-                .order_by(Repository.full_name)
-            ).scalars()
-        )
-        # Starred first, then alphabetical: the same tie-break
-        # order_by(full_name) already gave everything else.
-        repos.sort(key=lambda r: (not r.starred, r.full_name))
-        counts = _skill_counts(db, [r.id for r in repos])
-        return [ProjectSummary.from_repo(r, counts.get(r.id, 0)) for r in repos]
-    finally:
-        db.close()
+def list_projects(account_id: int, *, db: DbSession) -> list[ProjectSummary]:
+    repos = list(
+        db.execute(
+            select(Repository)
+            .where(Repository.account_id == account_id)
+            .order_by(Repository.full_name)
+        ).scalars()
+    )
+    # Starred first, then alphabetical: the same tie-break
+    # order_by(full_name) already gave everything else.
+    repos.sort(key=lambda r: (not r.starred, r.full_name))
+    counts = _skill_counts(db, [r.id for r in repos])
+    return [ProjectSummary.from_repo(r, counts.get(r.id, 0)) for r in repos]
 
 
 class ProjectLinkItem(BaseModel):
@@ -199,7 +200,7 @@ class ProjectDetail(BaseModel):
         )
 
 
-def _links_for_repo(db, repo_id: int) -> list[ProjectLinkItem]:
+def _links_for_repo(db: Session, repo_id: int) -> list[ProjectLinkItem]:
     rows = list(
         db.execute(
             select(ProjectLink).where(ProjectLink.repo_id == repo_id).order_by(ProjectLink.id)
@@ -208,7 +209,7 @@ def _links_for_repo(db, repo_id: int) -> list[ProjectLinkItem]:
     return [ProjectLinkItem(id=r.id, label=r.label, url=r.url, source=r.source) for r in rows]
 
 
-def _detail_for(db, repo: Repository) -> ProjectDetail:
+def _detail_for(db: Session, repo: Repository) -> ProjectDetail:
     evidence = skill_evidence_for_repos([repo.id])
     skills = [
         SkillEvidenceItem(
@@ -227,18 +228,14 @@ def _detail_for(db, repo: Repository) -> ProjectDetail:
 
 
 @router.get("/{repo_id}", response_model=ProjectDetail)
-def project_detail(repo_id: int) -> ProjectDetail:
-    db = get_db()
-    try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+def project_detail(repo_id: int, *, db: DbSession) -> ProjectDetail:
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    return _detail_for(db, repo)
 
 
-def _next_manual_github_id(db) -> int:
+def _next_manual_github_id(db: Session) -> int:
     """Manually-added projects have no GitHub repo behind them, but
     `Repository.github_id` is a NOT NULL unique column (no migration
     tooling in this project to make it nullable). Real GitHub ids are always
@@ -263,7 +260,7 @@ class ProjectCreate(BaseModel):
 
 
 @router.post("", response_model=ProjectDetail)
-def create_project(body: ProjectCreate) -> ProjectDetail:
+def create_project(body: ProjectCreate, *, db: DbSession) -> ProjectDetail:
     """Manual counterpart to GitHub sync, for a project that isn't (or
     isn't yet) a GitHub repo. Starts at `skill_extraction_status="pending"`
     same as a freshly-synced repo, so Reprocess / process-pending pick it
@@ -273,31 +270,27 @@ def create_project(body: ProjectCreate) -> ProjectDetail:
     if not name:
         raise HTTPException(status_code=422, detail="name is required")
 
-    db = get_db()
+    repo = Repository(
+        account_id=body.account_id,
+        github_id=_next_manual_github_id(db),
+        name=name,
+        full_name=(body.full_name or name).strip(),
+        url=body.url.strip(),
+        description=(body.description or None),
+        primary_language=(body.primary_language or None),
+        readme=(body.readme or None),
+        is_fork=body.is_fork,
+    )
+    db.add(repo)
     try:
-        repo = Repository(
-            account_id=body.account_id,
-            github_id=_next_manual_github_id(db),
-            name=name,
-            full_name=(body.full_name or name).strip(),
-            url=body.url.strip(),
-            description=(body.description or None),
-            primary_language=(body.primary_language or None),
-            readme=(body.readme or None),
-            is_fork=body.is_fork,
-        )
-        db.add(repo)
-        try:
-            db.commit()
-        except IntegrityError as e:
-            db.rollback()
-            raise HTTPException(
-                status_code=409, detail="a project with that full name already exists"
-            ) from e
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="a project with that full name already exists"
+        ) from e
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 MAX_STARRED_PROJECTS = 3
@@ -315,7 +308,7 @@ class ProjectUpdate(BaseModel):
 
 
 @router.patch("/{repo_id}", response_model=ProjectDetail)
-def update_project(repo_id: int, body: ProjectUpdate) -> ProjectDetail:
+def update_project(repo_id: int, body: ProjectUpdate, *, db: DbSession) -> ProjectDetail:
     """Everything on the detail page is editable in place; this backs the
     single save action for name/full_name/url/description/language/readme/
     fork flag. Fields the client didn't send are left untouched
@@ -332,39 +325,35 @@ def update_project(repo_id: int, body: ProjectUpdate) -> ProjectDetail:
     if "full_name" in fields and not fields["full_name"]:
         raise HTTPException(status_code=422, detail="full_name is required")
 
-    db = get_db()
-    try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        if fields.get("starred") is True and not repo.starred:
-            starred_count = db.execute(
-                select(func.count(Repository.id)).where(
-                    Repository.account_id == repo.account_id,
-                    Repository.starred.is_(True),
-                )
-            ).scalar()
-            if (starred_count or 0) >= MAX_STARRED_PROJECTS:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"only {MAX_STARRED_PROJECTS} starred projects allowed"
-                        "; unstar one first"
-                    ),
-                )
-        for key, value in fields.items():
-            setattr(repo, key, value)
-        try:
-            db.commit()
-        except IntegrityError as e:
-            db.rollback()
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    if fields.get("starred") is True and not repo.starred:
+        starred_count = db.execute(
+            select(func.count(Repository.id)).where(
+                Repository.account_id == repo.account_id,
+                Repository.starred.is_(True),
+            )
+        ).scalar()
+        if (starred_count or 0) >= MAX_STARRED_PROJECTS:
             raise HTTPException(
-                status_code=409, detail="a project with that full name already exists"
-            ) from e
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+                status_code=422,
+                detail=(
+                    f"only {MAX_STARRED_PROJECTS} starred projects allowed"
+                    "; unstar one first"
+                ),
+            )
+    for key, value in fields.items():
+        setattr(repo, key, value)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="a project with that full name already exists"
+        ) from e
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 class SkillEvidenceCreate(BaseModel):
@@ -382,74 +371,68 @@ class SkillEvidenceUpdate(BaseModel):
 
 
 @router.post("/{repo_id}/skills", response_model=ProjectDetail)
-def add_skill(repo_id: int, body: SkillEvidenceCreate) -> ProjectDetail:
+def add_skill(repo_id: int, body: SkillEvidenceCreate, *, db: DbSession) -> ProjectDetail:
     """Hand-added skill claim: same row shape LLM extraction writes
     (`skill_evidence`), just entered by a person instead. Defaults to
     `evidence_type="manual"` so the UI's evidence label ("from README",
     "from dependencies", …) can show "added manually" for these without
     guessing.
     """
-    db = get_db()
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    row = add_evidence(
+        db,
+        SkillEvidence,
+        "repo_id",
+        repo_id,
+        skill=body.skill,
+        evidence_type=body.evidence_type,
+        weight=body.weight,
+        confidence=body.confidence,
+    )
+    if repo.account_id is not None:
+        # Adding it by hand overrules an earlier "not a skill" review verdict.
+        approve(db, repo.account_id, row.skill)
     try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        row = add_evidence(
-            db,
-            SkillEvidence,
-            "repo_id",
-            repo_id,
-            skill=body.skill,
-            evidence_type=body.evidence_type,
-            weight=body.weight,
-            confidence=body.confidence,
-        )
-        if repo.account_id is not None:
-            # Adding it by hand overrules an earlier "not a skill" review verdict.
-            approve(db, repo.account_id, row.skill)
-        try:
-            from app.retrieval.index import index_skill_evidence
+        from app.retrieval.index import index_skill_evidence
 
-            index_skill_evidence([row], account_id=repo.account_id)
-        except Exception:
-            logger.exception("could not index skill evidence id=%s", row.id)
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+        index_skill_evidence([row], account_id=repo.account_id)
+    except Exception:
+        logger.exception("could not index skill evidence id=%s", row.id)
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 @router.patch("/{repo_id}/skills/{skill_id}", response_model=ProjectDetail)
-def update_skill(repo_id: int, skill_id: int, body: SkillEvidenceUpdate) -> ProjectDetail:
+def update_skill(
+    repo_id: int,
+    skill_id: int,
+    body: SkillEvidenceUpdate,
+    *,
+    db: DbSession,
+) -> ProjectDetail:
     fields = body.model_dump(exclude_unset=True)
 
-    db = get_db()
-    try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        row = update_evidence(db, SkillEvidence, "repo_id", repo_id, skill_id, fields)
-        if fields.get("skill") and repo.account_id is not None:
-            approve(db, repo.account_id, row.skill)
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    row = update_evidence(db, SkillEvidence, "repo_id", repo_id, skill_id, fields)
+    if fields.get("skill") and repo.account_id is not None:
+        approve(db, repo.account_id, row.skill)
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 @router.delete("/{repo_id}/skills/{skill_id}", response_model=ProjectDetail)
-def delete_skill(repo_id: int, skill_id: int) -> ProjectDetail:
-    db = get_db()
-    try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        delete_evidence(db, SkillEvidence, "repo_id", repo_id, skill_id)
-        _delete_qdrant_points([skill_id])
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+def delete_skill(repo_id: int, skill_id: int, *, db: DbSession) -> ProjectDetail:
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    delete_evidence(db, SkillEvidence, "repo_id", repo_id, skill_id)
+    _delete_qdrant_points([skill_id])
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 class ProjectLinkCreate(BaseModel):
@@ -463,7 +446,7 @@ class ProjectLinkUpdate(BaseModel):
 
 
 @router.post("/{repo_id}/links", response_model=ProjectDetail)
-def add_link(repo_id: int, body: ProjectLinkCreate) -> ProjectDetail:
+def add_link(repo_id: int, body: ProjectLinkCreate, *, db: DbSession) -> ProjectDetail:
     """Hand-added link: same manual/extracted split as add_skill above.
     Always `source="manual"`: only build.py's first-pass README extraction
     writes `readme_extracted` rows.
@@ -475,21 +458,23 @@ def add_link(repo_id: int, body: ProjectLinkCreate) -> ProjectDetail:
     if not url:
         raise HTTPException(status_code=422, detail="url is required")
 
-    db = get_db()
-    try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        db.add(ProjectLink(repo_id=repo_id, label=label, url=url, source="manual"))
-        db.commit()
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    db.add(ProjectLink(repo_id=repo_id, label=label, url=url, source="manual"))
+    db.commit()
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 @router.patch("/{repo_id}/links/{link_id}", response_model=ProjectDetail)
-def update_link(repo_id: int, link_id: int, body: ProjectLinkUpdate) -> ProjectDetail:
+def update_link(
+    repo_id: int,
+    link_id: int,
+    body: ProjectLinkUpdate,
+    *,
+    db: DbSession,
+) -> ProjectDetail:
     """Editing an extracted link's label/url locks it to `source="manual"`;
     otherwise the next Reprocess would silently wipe the correction (see
     build.py's _process_repo, which only re-derives `readme_extracted` rows).
@@ -504,45 +489,37 @@ def update_link(repo_id: int, link_id: int, body: ProjectLinkUpdate) -> ProjectD
         if not fields["url"]:
             raise HTTPException(status_code=422, detail="url is required")
 
-    db = get_db()
-    try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        link = db.get(ProjectLink, link_id)
-        if link is None or link.repo_id != repo_id:
-            raise HTTPException(status_code=404, detail=f"no link with id={link_id}")
-        if fields:
-            fields["source"] = "manual"
-        for key, value in fields.items():
-            setattr(link, key, value)
-        db.commit()
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    link = db.get(ProjectLink, link_id)
+    if link is None or link.repo_id != repo_id:
+        raise HTTPException(status_code=404, detail=f"no link with id={link_id}")
+    if fields:
+        fields["source"] = "manual"
+    for key, value in fields.items():
+        setattr(link, key, value)
+    db.commit()
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 @router.delete("/{repo_id}/links/{link_id}", response_model=ProjectDetail)
-def delete_link(repo_id: int, link_id: int) -> ProjectDetail:
-    db = get_db()
-    try:
-        repo = db.get(Repository, repo_id)
-        if repo is None:
-            raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
-        link = db.get(ProjectLink, link_id)
-        if link is None or link.repo_id != repo_id:
-            raise HTTPException(status_code=404, detail=f"no link with id={link_id}")
-        db.delete(link)
-        db.commit()
-        db.refresh(repo)
-        return _detail_for(db, repo)
-    finally:
-        db.close()
+def delete_link(repo_id: int, link_id: int, *, db: DbSession) -> ProjectDetail:
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+    link = db.get(ProjectLink, link_id)
+    if link is None or link.repo_id != repo_id:
+        raise HTTPException(status_code=404, detail=f"no link with id={link_id}")
+    db.delete(link)
+    db.commit()
+    db.refresh(repo)
+    return _detail_for(db, repo)
 
 
 @router.post("/{repo_id}/reprocess", response_model=ProjectSummary)
-def reprocess(repo_id: int) -> ProjectSummary:
+def reprocess(repo_id: int, *, db: DbSession) -> ProjectSummary:
     """The UI's manual retry: always forces re-extraction, whatever the
     current status. Works whether the repo previously failed, had no
     signal, or already succeeded and someone just wants to redo it.
@@ -552,12 +529,8 @@ def reprocess(repo_id: int) -> ProjectSummary:
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
-    db = get_db()
-    try:
-        count = _skill_counts(db, [repo_id]).get(repo_id, 0)
-        return ProjectSummary.from_repo(repo, count)
-    finally:
-        db.close()
+    count = _skill_counts(db, [repo_id]).get(repo_id, 0)
+    return ProjectSummary.from_repo(repo, count)
 
 
 class ProcessPendingResponse(BaseModel):
@@ -615,7 +588,7 @@ def process_pending_stream(account_id: int) -> StreamingResponse:
     """
     start_extraction(account_id)
 
-    def events():
+    def events() -> Iterator[str]:
         for state in extraction_stream(account_id):
             yield _sse(state)
 

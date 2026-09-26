@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
+from typing import Any
 
 from sqlalchemy import select
 
@@ -119,5 +121,5 @@ def extraction_snapshot(account_id: int) -> dict | None:
     return job_snapshot(_job_key(account_id))
 
 
-def extraction_stream(account_id: int):
+def extraction_stream(account_id: int) -> Iterator[dict[str, Any]]:
     return job_stream(_job_key(account_id))

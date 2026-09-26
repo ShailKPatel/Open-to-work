@@ -88,8 +88,7 @@ def test_contributor_stats_returns_a_list(client):
 
 
 def test_single_repo_sync_writes_to_the_database_then_hits_cache(client, tmp_path: Path):
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()

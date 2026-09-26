@@ -203,6 +203,7 @@
           <section class="otw-tile p-6 flex items-center justify-between flex-wrap gap-4">
             <div>
               <p class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)]">Template Layout</p>
+              <p class="text-xs text-[color:var(--muted)] mt-0.5">Spacing and type size are tuned to land on exactly this, no more and no less.</p>
               <div class="mt-2 flex gap-4">
                 <label class="flex items-center gap-2 cursor-pointer">
                   <input type="radio" x-model="template" value="onepage" class="otw-checkbox" />
@@ -241,9 +242,15 @@
               <a :href="resultUrl" download="resume.pdf" class="otw-btn text-sm px-4 py-2">Download PDF</a>
             </div>
           </div>
-          <p x-show="pageFitAchieved === false" class="text-sm otw-error mt-3">
-            Could not fit this down to the target page count automatically
+          <p x-show="pageFitAchieved === false && pageCount > pageTarget" class="text-sm otw-error mt-3">
+            Could not fit this down to <span x-text="pageTarget"></span> page<span x-show="pageTarget !== 1">s</span> automatically
             (<span x-text="pageCount"></span> page<span x-show="pageCount !== 1">s</span> instead). You can edit project selections or instructions above and try again.
+          </p>
+          <p x-show="pageFitNote" class="text-sm otw-error mt-2" x-text="pageFitNote"></p>
+          <p x-show="pageFitAchieved === false && pageCount < pageTarget" class="text-sm otw-error mt-3">
+            There is not enough on file to fill <span x-text="pageTarget"></span> page<span x-show="pageTarget !== 1">s</span>
+            (<span x-text="pageCount"></span> page<span x-show="pageCount !== 1">s</span> instead), and padding it out would mean inventing content.
+            Pick the shorter layout, or add more projects, experience points or skills to your profile first.
           </p>
           <p x-show="resultResumeId" class="text-sm mt-3">
             Saved to your <a href="/portfolio/resume" class="underline hover:text-[color:var(--ink)]">resume library</a>; edit it there with a prompt any time.
@@ -282,7 +289,9 @@
       resultUrl: null,
       resultResumeId: null,
       pageFitAchieved: null,
+      pageFitNote: null,
       pageCount: null,
+      pageTarget: null,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -432,7 +441,11 @@
             return;
           }
           this.pageFitAchieved = res.headers.get('X-Page-Fit-Achieved') === 'true';
+          // Set only when the fit fell short for a reason worth naming,
+          // e.g. every API key for the provider ran out mid-build.
+          this.pageFitNote = res.headers.get('X-Page-Fit-Note') || null;
           this.pageCount = Number(res.headers.get('X-Page-Count') || '0');
+          this.pageTarget = Number(res.headers.get('X-Page-Target') || '0');
           this.resultResumeId = res.headers.get('X-Resume-Id') || null;
           const blob = await res.blob();
           this.resultUrl = URL.createObjectURL(blob);

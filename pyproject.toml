@@ -47,6 +47,11 @@ extend-immutable-calls = ["fastapi.Form", "fastapi.File", "fastapi.Depends"]
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+# Every function in app/ carries a signature. Without this, mypy silently
+# skips the body of any unannotated def, so a missing return type quietly
+# removed a whole function from type checking.
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 
 [tool.pytest.ini_options]
 # tests/live/ is excluded: real network calls (LLM providers, GitHub, a

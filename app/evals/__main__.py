@@ -10,10 +10,10 @@ from __future__ import annotations
 import argparse
 
 from app.core.db import init_db
-from app.evals.run import run_eval, write_report
+from app.evals.run import MetricsReport, run_eval, write_report
 
 
-def _print_report(report) -> None:  # noqa: ANN001 - MetricsReport, kept loosely typed for the CLI print
+def _print_report(report: MetricsReport) -> None:
     print(f"Eval report for account {report.account_id} ({report.generated_at})")
     print(
         f"Golden set: {report.golden_set_size} pairs for this account, "

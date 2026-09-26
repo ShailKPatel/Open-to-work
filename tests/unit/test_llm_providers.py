@@ -143,7 +143,11 @@ def test_validate_sends_each_provider_key_in_its_expected_place(monkeypatch):
         (200, "valid"),
         (400, "invalid"),
         (401, "invalid"),
-        (403, "invalid"),
+        # 403 is the provider refusing the credential itself (suspended,
+        # revoked, API not enabled), which is its own status: nothing
+        # rechecks it automatically, unlike a quota (see
+        # app/core/api_keys_store.py's recheck_keys).
+        (403, "blocked"),
         (429, "rate_limited"),
         (404, "unknown"),
         (500, "unknown"),

@@ -17,8 +17,7 @@ from app.core.settings import get_settings
 def _reset_db(tmp_path: Path):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()
@@ -263,6 +262,79 @@ def test_get_active_status_reports_unconfigured_and_configured(tmp_path):
     assert status["status"] == "valid"
 
 
+def test_resolve_dispatch_keys_returns_every_usable_key_in_try_order(tmp_path):
+    """app/core/llm.py walks this list top to bottom on failover, so the
+    order is the policy: healthy before marked-dead, active before the
+    rest, oldest before newest."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    active, _ = api_keys_store.add_key("openai", "Active", {"api_key": "sk-1"}, None)
+    second, _ = api_keys_store.add_key("openai", "Second", {"api_key": "sk-2"}, None)
+    third, _ = api_keys_store.add_key("openai", "Third", {"api_key": "sk-3"}, None)
+
+    assert [k.id for k in api_keys_store.resolve_dispatch_keys("openai", None)] == [
+        active["id"], second["id"], third["id"]
+    ]
+
+    # A key the provider complained about last time goes to the back of
+    # the queue rather than out of it: quotas reset, and dropping it would
+    # leave a device with one key unable to dispatch at all.
+    api_keys_store.record_dispatch_outcome(active["id"], ok=False, rate_limited=True)
+    assert [k.id for k in api_keys_store.resolve_dispatch_keys("openai", None)] == [
+        second["id"], third["id"], active["id"]
+    ]
+
+
+def test_resolve_dispatch_keys_leaves_out_what_cannot_serve_the_call(tmp_path):
+    """Disabled keys and keys fenced to other accounts are not "try them
+    last", they are not candidates at all."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    usable, _ = api_keys_store.add_key("openai", "Usable", {"api_key": "sk-1"}, None)
+    off, _ = api_keys_store.add_key("openai", "Switched off", {"api_key": "sk-2"}, None)
+    api_keys_store.add_key(
+        "openai", "Someone else's", {"api_key": "sk-3"}, None, allowed_account_ids=[99]
+    )
+    api_keys_store.set_enabled(off["id"], False)
+
+    assert [k.id for k in api_keys_store.resolve_dispatch_keys("openai", 7)] == [usable["id"]]
+    assert api_keys_store.resolve_dispatch_keys("anthropic", 7) == []
+
+
+def test_resolve_dispatch_keys_carries_the_label_and_cap_for_each(tmp_path):
+    """The label is what a failure names ("Personal: out of quota"), and
+    the cap is checked before a call is spent on that key, so both travel
+    with the credentials rather than being read back later."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    api_keys_store.add_key("openai", "Personal", {"api_key": "sk-1"}, 12.5)
+
+    key = api_keys_store.resolve_dispatch_keys("openai", None)[0]
+    assert key.label == "Personal"
+    assert key.credentials == {"api_key": "sk-1"}
+    assert key.budget_cap_usd == 12.5
+
+
+def test_a_key_that_answers_again_stops_being_marked_dead(tmp_path):
+    """Set when a dispatch succeeds on a key an earlier run had written
+    off, so the /apis page reflects the quota having reset instead of
+    showing a working key as rate limited until someone clicks check."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None)
+    api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
+
+    api_keys_store.record_dispatch_outcome(added["id"], ok=True)
+
+    row = next(k for k in api_keys_store.list_keys() if k["id"] == added["id"])
+    assert row["status"] == "valid"
+    assert "Working again" in row["last_check_detail"]
+
+
 def test_record_dispatch_outcome_success_is_a_no_op(tmp_path):
     from app.core import api_keys_store
 
@@ -288,6 +360,219 @@ def test_record_dispatch_outcome_marks_invalid_and_rate_limited(tmp_path):
     api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
     row = next(k for k in api_keys_store.list_keys() if k["id"] == added["id"])
     assert row["status"] == "rate_limited"
+
+
+def test_an_exhausted_key_records_when_it_ran_out_and_when_to_look_again(tmp_path):
+    """The quota clock, which is what makes an exhausted key recoverable
+    without anyone watching it: when it ran out, which window it hit, and
+    the first moment asking again is worth a request."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("gemini", "Free tier", {"api_key": "g-1"}, None)
+
+    api_keys_store.record_dispatch_outcome(
+        added["id"],
+        ok=False,
+        rate_limited=True,
+        detail="Out of quota.",
+        provider_detail='"quotaId":"GenerateRequestsPerMinute-FreeTier","retryDelay":"90s"',
+    )
+
+    row = _key(added["id"])
+    assert row["status"] == "rate_limited"
+    assert row["exhaustion_kind"] == "per_minute"
+    assert row["exhausted_at"] is not None
+    assert row["retry_at"] is not None
+    assert row["auto_rechecked"] is True
+    assert row["recheck_due"] is False  # its wait has not passed yet
+
+
+def test_a_blocked_key_is_kept_apart_from_a_quota_and_carries_no_clock(tmp_path):
+    """A provider shutting a key off is the one failure that does not fix
+    itself, so it gets its own status and no cooldown: nothing should come
+    back and ask again on a timer."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("gemini", "Suspended", {"api_key": "g-1"}, None)
+
+    api_keys_store.record_dispatch_outcome(
+        added["id"], ok=False, blocked=True, detail="This key is suspended."
+    )
+
+    row = _key(added["id"])
+    assert row["status"] == "blocked"
+    assert row["retry_at"] is None
+    assert row["exhausted_at"] is None
+    assert row["auto_rechecked"] is False
+    assert row["recheck_due"] is False
+
+
+def test_a_key_that_answers_again_loses_its_quota_clock(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None)
+    api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
+
+    api_keys_store.record_dispatch_outcome(added["id"], ok=True)
+
+    row = _key(added["id"])
+    assert row["status"] == "valid"
+    assert (row["retry_at"], row["exhausted_at"], row["exhaustion_kind"]) == (None, None, None)
+
+
+def test_recheck_due_only_touches_exhausted_keys_whose_wait_is_over(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    waiting, _ = api_keys_store.add_key("openai", "Still waiting", {"api_key": "sk-1"}, None)
+    due, _ = api_keys_store.add_key("openai", "Wait is over", {"api_key": "sk-2"}, None)
+    blocked, _ = api_keys_store.add_key("openai", "Blocked", {"api_key": "sk-3"}, None)
+    healthy, _ = api_keys_store.add_key("openai", "Fine", {"api_key": "sk-4"}, None)
+    api_keys_store.record_dispatch_outcome(waiting["id"], ok=False, rate_limited=True)
+    api_keys_store.record_dispatch_outcome(due["id"], ok=False, rate_limited=True)
+    api_keys_store.record_dispatch_outcome(blocked["id"], ok=False, blocked=True)
+    _expire_cooldown(due["id"])
+
+    checked = api_keys_store.recheck_keys("due")
+
+    assert [k["id"] for k in checked] == [due["id"]]
+    assert _key(due["id"])["status"] == "valid"
+    assert _key(waiting["id"])["status"] == "rate_limited"
+    assert _key(blocked["id"])["status"] == "blocked"
+    assert _key(healthy["id"])["status"] == "valid"
+
+
+def test_recheck_exhausted_skips_the_wait_and_recheck_blocked_is_the_only_way_back(tmp_path):
+    """The two manual scopes. "exhausted" is someone not wanting to wait
+    out the timer; "blocked" is the only thing that ever looks at a key the
+    provider shut off, which is why it is never automatic."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    waiting, _ = api_keys_store.add_key("openai", "Waiting", {"api_key": "sk-1"}, None)
+    blocked, _ = api_keys_store.add_key("openai", "Blocked", {"api_key": "sk-2"}, None)
+    api_keys_store.record_dispatch_outcome(waiting["id"], ok=False, rate_limited=True)
+    api_keys_store.record_dispatch_outcome(blocked["id"], ok=False, blocked=True)
+
+    assert [k["id"] for k in api_keys_store.recheck_keys("exhausted")] == [waiting["id"]]
+    assert _key(waiting["id"])["status"] == "valid"
+    assert _key(blocked["id"])["status"] == "blocked"
+
+    assert [k["id"] for k in api_keys_store.recheck_keys("blocked")] == [blocked["id"]]
+    assert _key(blocked["id"])["status"] == "valid"
+
+
+def test_recheck_leaves_a_key_waiting_when_the_provider_cannot_be_reached(tmp_path, monkeypatch):
+    """A failed lookup teaches nothing about the key, so it stays in the
+    waiting group with its wait pushed out rather than being promoted or
+    written off."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None)
+    api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
+    _expire_cooldown(added["id"])
+    monkeypatch.setattr(
+        "app.core.api_keys_store.validate_credentials",
+        lambda provider, credentials: ("unknown", "Couldn't reach the provider to check this."),
+    )
+
+    api_keys_store.recheck_keys("due")
+
+    row = _key(added["id"])
+    assert row["status"] == "rate_limited"
+    assert row["recheck_due"] is False  # pushed out, so the next pass isn't a hot loop
+
+
+def test_recheck_replans_the_wait_when_the_provider_says_no_again(tmp_path, monkeypatch):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("gemini", "Key", {"api_key": "g-1"}, None)
+    api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
+    _expire_cooldown(added["id"])
+    monkeypatch.setattr(
+        "app.core.api_keys_store.validate_credentials",
+        lambda provider, credentials: (
+            "rate_limited",
+            'Out of quota. Provider said: "quotaId":"GenerateRequestsPerDay-FreeTier"',
+        ),
+    )
+
+    api_keys_store.recheck_keys("due")
+
+    row = _key(added["id"])
+    assert row["status"] == "rate_limited"
+    assert row["exhaustion_kind"] == "per_day"
+    assert row["recheck_due"] is False
+
+
+def test_switched_off_keys_are_never_rechecked(tmp_path):
+    """A key that is off is not dispatched with, so spending a request to
+    learn its status is waste."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("openai", "Off", {"api_key": "sk-1"}, None)
+    api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
+    _expire_cooldown(added["id"])
+    api_keys_store.set_enabled(added["id"], False)
+
+    assert api_keys_store.recheck_keys("due") == []
+    assert _key(added["id"])["status"] == "rate_limited"
+
+
+def test_recheck_rejects_a_scope_it_does_not_know(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    with pytest.raises(ValueError, match="unknown recheck scope"):
+        api_keys_store.recheck_keys("everything")
+
+
+def test_dispatch_prefers_a_key_whose_wait_is_over_to_one_still_waiting(tmp_path):
+    """Both keys are exhausted, so neither is dropped, but the one whose
+    quota window has rolled over is the one more likely to answer and goes
+    first."""
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    still_waiting, _ = api_keys_store.add_key("openai", "Waiting", {"api_key": "sk-1"}, None)
+    wait_over, _ = api_keys_store.add_key("openai", "Over", {"api_key": "sk-2"}, None)
+    blocked, _ = api_keys_store.add_key("openai", "Blocked", {"api_key": "sk-3"}, None)
+    api_keys_store.record_dispatch_outcome(still_waiting["id"], ok=False, rate_limited=True)
+    api_keys_store.record_dispatch_outcome(wait_over["id"], ok=False, rate_limited=True)
+    api_keys_store.record_dispatch_outcome(blocked["id"], ok=False, blocked=True)
+    _expire_cooldown(wait_over["id"])
+
+    assert [k.id for k in api_keys_store.resolve_dispatch_keys("openai", None)] == [
+        wait_over["id"], still_waiting["id"], blocked["id"]
+    ]
+
+
+def _key(key_id: int) -> dict:
+    from app.core import api_keys_store
+
+    return next(k for k in api_keys_store.list_keys() if k["id"] == key_id)
+
+
+def _expire_cooldown(key_id: int) -> None:
+    """Moves a key's wait into the past, which is what the passage of time
+    would do."""
+    import datetime as dt
+
+    from app.core.db import ApiKey, get_db
+
+    db = get_db()
+    try:
+        row = db.get(ApiKey, key_id)
+        row.retry_at = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)
+        db.commit()
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -431,3 +716,38 @@ def test_delete_key_endpoint_unknown_id_is_still_reported_deleted(tmp_path):
     resp = _client().delete("/api/api-keys/999999")
     assert resp.status_code == 200
     assert resp.json() == {"deleted": True}
+
+
+def test_recheck_endpoint_reports_what_it_checked_and_what_came_back(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None)
+    api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
+
+    client = _client()
+    # Its wait has not passed, so the automatic scope has nothing to do.
+    due = client.post("/api/api-keys/recheck", json={"scope": "due"}).json()
+    assert (due["checked"], due["recovered"]) == (0, 0)
+
+    skipped_wait = client.post("/api/api-keys/recheck", json={"scope": "exhausted"}).json()
+    assert (skipped_wait["checked"], skipped_wait["recovered"]) == (1, 1)
+    assert skipped_wait["keys"][0]["status"] == "valid"
+    assert skipped_wait["keys"][0]["retry_at"] is None
+
+
+def test_recheck_endpoint_defaults_to_the_automatic_scope(tmp_path):
+    _reset_db(tmp_path)
+
+    body = _client().post("/api/api-keys/recheck").json()
+
+    assert body["scope"] == "due"
+    assert body["checked"] == 0
+
+
+def test_recheck_endpoint_rejects_an_unknown_scope(tmp_path):
+    _reset_db(tmp_path)
+
+    res = _client().post("/api/api-keys/recheck", json={"scope": "everything"})
+
+    assert res.status_code == 422

@@ -38,8 +38,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _reset_db(tmp_path: Path):
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()

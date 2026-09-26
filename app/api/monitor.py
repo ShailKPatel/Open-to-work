@@ -1,7 +1,7 @@
 """Read-only view over app/core/rate_limits.py's event log, a live
 snapshot of both providers' current headroom, and a per-key/per-account/
 per-provider/per-tier breakdown of every LLM call ever made (LLMCall,
-attributed via account_id/key_id, see app/core/db.py's docstrings on
+attributed via account_id/key_id, see app/core/db/models.py's docstrings on
 those columns). Backs the /monitor page. Nothing here writes; recording
 happens at the call sites themselves (app/ingest/github/client.py,
 app/core/llm.py) so this module can stay a pure reporting layer.
@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
+from sqlalchemy.orm import Session
 
 from app.core import api_keys_store, rate_limits
 from app.core.app_settings import get_llm_settings
@@ -30,10 +33,29 @@ router = APIRouter(prefix="/api/monitor")
 # in the breakdowns below, rather than a bare `null` the UI has to guess
 # at. Applies to real gaps (a call made with account_id=None) and to rows
 # that predate the account_id/key_id columns (an older LLMCall row,
-# see the migration's docstring in app/core/db.py) alike; there's no way
+# see the migration's docstring in app/core/db/models.py) alike; there's no way
 # to tell those two apart after the fact, and both mean the same thing to
 # someone reading the breakdown: "this spend isn't attributed to one."
 _UNATTRIBUTED = "(unattributed)"
+
+# Readable names for the LLMCall.purpose values the app writes (see
+# app/core/llm.py's complete()). A purpose with no entry here shows its raw
+# string rather than falling into the unattributed bucket: a new call site
+# should appear in the breakdown the day it ships, whether or not anyone
+# remembered to label it here.
+_PURPOSE_LABELS = {
+    "repo_facts": "Project extraction (skills + links)",
+    "repo_facts_batch": "Project extraction (batched)",
+    "skill_review": "Skill name review",
+    "resume_build": "Resume build",
+    "resume_edit": "Resume edit",
+    "pagefit_trim": "Page-fit trimming",
+    "job_extract": "Job posting extraction",
+    "job_screenshot_extract": "Job screenshot extraction",
+    "resume_extract": "Resume import",
+    "role_family": "Role family match",
+    "groundedness_eval": "Groundedness eval",
+}
 
 
 class RateLimitEventOut(BaseModel):
@@ -122,6 +144,10 @@ class UsageBreakdown(BaseModel):
     by_account: list[UsageBucket]
     by_tier: list[UsageBucket]
     by_model: list[UsageBucket]
+    # Which feature the spend went to (LLMCall.purpose). The one grouping
+    # that answers "what is costing us money", as opposed to "which model
+    # or key was it billed through".
+    by_purpose: list[UsageBucket]
 
 
 class LLMCallOut(BaseModel):
@@ -135,6 +161,7 @@ class LLMCallOut(BaseModel):
     account_name: str | None
     key_id: int | None
     key_label: str | None
+    purpose: str | None
     tokens_in: int
     tokens_out: int
     cost_usd: float
@@ -250,7 +277,9 @@ def status() -> MonitorStatus:
     )
 
 
-def _filtered_calls_query(*, days: int, account_id: int | None, key_id: int | None):
+def _filtered_calls_query(
+    *, days: int, account_id: int | None, key_id: int | None, purpose: str | None = None
+) -> Select[tuple[LLMCall]]:
     """Every filter except `provider` applies here: `provider` isn't its
     own column, it's derived from the litellm model-string prefix (see
     app/core/llm_providers.py), so callers filter rows by it in Python
@@ -262,6 +291,8 @@ def _filtered_calls_query(*, days: int, account_id: int | None, key_id: int | No
         stmt = stmt.where(LLMCall.account_id == account_id)
     if key_id is not None:
         stmt = stmt.where(LLMCall.key_id == key_id)
+    if purpose is not None:
+        stmt = stmt.where(LLMCall.purpose == purpose)
     return stmt
 
 
@@ -270,7 +301,7 @@ def _provider_label(model: str) -> str:
     return PROVIDER_LABELS.get(provider, provider)
 
 
-def _account_names(db) -> dict[int, str]:
+def _account_names(db: Session) -> dict[int, str]:
     return {
         a.id: f"{a.first_name} {a.last_name}".strip()
         for a in db.execute(select(Account)).scalars()
@@ -281,7 +312,11 @@ def _key_labels() -> dict[int, str]:
     return {k["id"]: k["label"] for k in api_keys_store.list_keys()}
 
 
-def _bucketize(rows: list[LLMCall], key_fn, label_fn) -> list[UsageBucket]:
+def _bucketize(
+    rows: list[LLMCall],
+    key_fn: Callable[[LLMCall], Any],
+    label_fn: Callable[[Any], str],
+) -> list[UsageBucket]:
     buckets: dict[str, list] = {}
     for row in rows:
         k = key_fn(row)
@@ -314,9 +349,12 @@ def llm_usage(
     account_id: int | None = None,
     provider: str | None = None,
     key_id: int | None = None,
+    purpose: str | None = None,
 ) -> UsageBreakdown:
     days = max(1, min(days, 365))
-    stmt = _filtered_calls_query(days=days, account_id=account_id, key_id=key_id)
+    stmt = _filtered_calls_query(
+        days=days, account_id=account_id, key_id=key_id, purpose=purpose
+    )
     db = get_db()
     try:
         rows = list(db.execute(stmt).scalars().all())
@@ -353,6 +391,11 @@ def llm_usage(
     )
     by_tier = _bucketize(rows, lambda r: r.tier, lambda r: r.tier)
     by_model = _bucketize(rows, lambda r: r.model, lambda r: r.model)
+    by_purpose = _bucketize(
+        rows,
+        lambda r: r.purpose or "none",
+        lambda r: _PURPOSE_LABELS.get(r.purpose or "", r.purpose or _UNATTRIBUTED),
+    )
 
     return UsageBreakdown(
         days=days,
@@ -362,6 +405,7 @@ def llm_usage(
         by_account=by_account,
         by_tier=by_tier,
         by_model=by_model,
+        by_purpose=by_purpose,
     )
 
 
@@ -372,12 +416,15 @@ def llm_calls(
     provider: str | None = None,
     key_id: int | None = None,
     tier: str | None = None,
+    purpose: str | None = None,
     limit: int = 50,
 ) -> list[LLMCallOut]:
     """Individual LLMCall rows, newest first: the drill-down under the
     aggregate /llm/usage breakdown, same filter set plus `tier`."""
     limit = max(1, min(limit, 200))
-    stmt = _filtered_calls_query(days=days, account_id=account_id, key_id=key_id)
+    stmt = _filtered_calls_query(
+        days=days, account_id=account_id, key_id=key_id, purpose=purpose
+    )
     if tier is not None:
         stmt = stmt.where(LLMCall.tier == tier)
     stmt = stmt.order_by(LLMCall.id.desc())
@@ -410,6 +457,7 @@ def llm_calls(
             account_name=accounts.get(r.account_id) if r.account_id is not None else None,
             key_id=r.key_id,
             key_label=keys.get(r.key_id) if r.key_id is not None else None,
+            purpose=r.purpose,
             tokens_in=r.tokens_in,
             tokens_out=r.tokens_out,
             cost_usd=r.cost_usd,

@@ -13,12 +13,15 @@ One FastAPI process serves both the JSON API and server-rendered pages. SQLite h
 | `db.py` | SQLAlchemy models, engine, `get_db()`, `init_db()`. |
 | `llm.py` | The only module that calls an LLM provider. |
 | `llm_providers.py` | Provider registry: credential fields, which fields are secret, a cheap validation request, and the extra LiteLLM arguments. |
-| `api_keys_store.py` | Encrypted provider credentials and dispatch key resolution. |
+| `api_keys_store.py` | Encrypted provider credentials, dispatch key resolution, and the recheck pass for keys that ran out of quota. |
+| `key_cooldown.py` | How long an exhausted key waits before a recheck is worth making, read from the provider's own refusal (Gemini in detail, a default interval elsewhere). |
+| `key_refresh.py` | Background thread that runs the due-key recheck at startup and on an interval. |
 | `auth_sources_store.py` | Encrypted login profiles for authenticated job fetching. |
 | `crypto.py` | Fernet encryption. The key comes from `APP_SECRET_KEY`, or from `data/.secret_key` (created with 0600 permissions). |
-| `embeddings.py` | Local sentence-transformers embeddings (`EMBEDDING_MODEL`, fixed in code), cached by content hash in `embedding_cache`. |
+| `embeddings.py` | Local sentence-transformers embeddings (`EMBEDDING_MODEL`, fixed in code), cached by content hash and model in `embedding_cache`. `embed(model_name=)` overrides the model for callers whose vectors never meet the retrieval ones; only the skill map does. |
 | `jobs.py` | In-process registry of background jobs (daemon threads with pollable state). |
-| `rate_limits.py` | Append-only log of rate-limit and budget events. Writes are best-effort. |
+| `rate_limits.py` | Append-only log of rate-limit, budget, key-failover, and run-stopped events. Writes are best-effort. |
+| `pipeline.py` | Names the step a multi-step run stopped at, and the steps that had already finished, without changing the error's type. |
 
 **Database setup.** SQLite runs in WAL mode with a 30-second busy timeout. `init_db()` does three things in order:
 
@@ -28,18 +31,29 @@ One FastAPI process serves both the JSON API and server-rendered pages. SQLite h
 
 To restore a snapshot, run `cp data/backups/<snapshot>.db data/open_to_work.db`.
 
-**LLM client.** `complete(tier, messages, schema=None, account_id=None) -> LLMResponse` handles each call in this order:
+**LLM client.** `complete(tier, messages, schema=None, account_id=None, purpose=None) -> LLMResponse` handles each call in this order:
 
-1. Look up the cache by a hash of tier, model (the one picked for that tier in `app_settings`), messages, and schema.
+1. Look up the cache by a hash of the model (the one picked for that tier in `app_settings`), the messages, and the schema. The tier is not part of the key, so the same model set for both tiers is one prompt, not two. Message text is normalized first (line endings, trailing spaces, blank lines), so the same README or job posting read twice is one prompt even when the whitespace moved.
 2. Check the global monthly budget from `app_settings`.
-3. Resolve a key for the tier's provider and the account.
-4. Check that key's own budget, if it has one.
-5. Dispatch through LiteLLM.
-6. Record an `LLMCall` row with cost, tokens, latency, `account_id`, and `key_id`.
+3. Resolve every key for the tier's provider that may serve the account, in the order to try them.
+4. For each key in turn: check that key's own budget, if it has one, then dispatch with it. A key that the provider blames (quota used up, credential rejected, model not permitted) is set aside and the next key takes over the same request. Only when every key is spent does the call fail, with one line per key saying what happened to it.
+5. Mark the system message for provider-side prompt caching where the provider needs that said explicitly (Anthropic, Bedrock; Gemini and OpenAI match a repeated prefix themselves). The marking is applied to the dispatched copy only, after the cache key is computed.
+6. Dispatch through LiteLLM.
+7. Record an `LLMCall` row with cost, tokens, latency, `account_id`, `key_id`, and `purpose`.
+
+`purpose` is a short label for the feature that spent the call (`repo_facts`, `resume_build`, `pagefit_trim`, ...). `/monitor`'s usage breakdown groups by it, which is what answers "what is costing money", as opposed to "which model or key was it billed through".
 
 It raises `BudgetExceededError` before dispatch, `ApiKeyMissingError` when no usable key exists, and `LLMRateLimitedError`, which wraps LiteLLM's `RateLimitError` so callers don't need to import LiteLLM. Messages are built with `user_message(text, images=, files=)` and `system_message(text)`.
 
-**Keys.** Each provider can have several keys. At most one key per provider is active. A key can be disabled or restricted to a list of account ids. `resolve_dispatch_key()` prefers the active key and otherwise falls back to the next enabled key that covers the account. An authentication or rate-limit error during dispatch updates the key's stored status.
+**Key failover.** A provider blaming the key is not the end of a request: `complete()` tries each stored key for that provider in turn. Errors that every key would hit the same way (the provider overloaded, a prompt too long, refused content) skip failover, so a doomed request fails once instead of once per key. `is_out_of_keys(error)` is the signal for a caller working through a batch: true means every remaining item is about to fail identically, so stop rather than spend a doomed call per item. Items never attempted keep their pending status, which is what lets the next run continue from where the last one stopped.
+
+This matters most inside a multi-step run. A run is many separate `complete()` calls, each committing its own work, so a key dying at step three leaves steps one and two done: switching keys lets step three finish rather than stranding the run there. `app/core/pipeline.py` adds the reporting half, naming the step that stopped and the steps that had already finished, without changing the exception type the API routes map to a status.
+
+**Keys.** Each provider can have several keys. At most one key per provider is active. A key can be disabled or restricted to a list of account ids. `resolve_dispatch_keys()` returns every enabled key that covers the account, ordered by how likely it is to answer: a key nobody has complained about, then an exhausted key whose cooldown has elapsed, then one still inside its cooldown, then one the provider rejected or blocked. Nothing is dropped, since a device with one unhappy key must still get to try it. An authentication, forbidden, or rate-limit error during dispatch updates the key's stored status, and every swap is logged to `rate_limit_events` (`key_failover`, `keys_exhausted`) so a request that survived a dying key still leaves a trail on `/monitor`.
+
+**Exhausted keys come back on their own.** `status` splits into two groups that are handled differently. `rate_limited` is temporary: the key filled a quota window that rolls over, so the row also records `exhausted_at`, the `exhaustion_kind` (`per_minute`, `per_day`, `quota`, `unknown`) and a `retry_at` planned by `key_cooldown.py` from the provider's own refusal. Gemini's 429 body names the quota it hit and often a retry delay, so a per-minute burst waits a minute and a used-up daily allowance waits for midnight Pacific; every other provider gets a one-hour default rather than a guess at its limits. `key_refresh.py` rechecks the keys whose `retry_at` has passed, five seconds after startup and every 30 minutes after that, and `/apis` exposes the same pass (`POST /api/api-keys/recheck`, scope `due` or `exhausted`). A key that answers again loses its cooldown and goes straight back into normal rotation. `invalid` (credential rejected) and `blocked` (suspended, revoked, or the provider's API not enabled, told apart from a per-model permission error by `is_blocked_detail()`) are never rechecked automatically: waiting does not fix either, so they sit in their own section on `/apis` until someone rechecks them explicitly (scope `blocked`, or the per-key button).
+
+The cheap check lists models rather than generating, so it proves a credential is live and cannot see how much quota is left. A recheck after the cooldown therefore means "stop treating this key as dead", and the next real call is what settles the quota; `record_dispatch_outcome()` is the only thing that learns about quota for real.
 
 ### `app/ingest/github`
 
@@ -57,12 +71,12 @@ It raises `BudgetExceededError` before dispatch, `ApiKeyMissingError` when no us
 ### `app/profile`
 
 - `manifest_skills.py`: turns manifest dependencies into skill claims deterministically, with confidence 1.0.
-- `extract.py`: makes bulk-tier LLM calls that extract skills and project links from the README, or from the description when there is no README. If neither exists, it raises `NoSourceTextError` and the repository is marked `no_signal`.
+- `extract.py`: one bulk-tier LLM call per repository extracts both skills and project links from the README, or from the description when there is no README. If neither exists, it raises `NoSourceTextError` and the repository is marked `no_signal`. The README is cleaned before it is sent (badges, raw HTML, fenced code blocks, and boilerplate tail sections such as License and Contributing are dropped) and then cut to a character limit, so the budget is spent on prose rather than on markup that carries no skill signal. `prefetch_repo_facts()` covers several repositories per call; `build.py` runs it ahead of its per-repository loop, and anything it misses falls back to a single call, so nothing depends on the batched pass succeeding.
 - `weighting.py`: computes evidence weight from evidence type, fork status, commit recency, and commit volume.
 - `build.py`: `build_profile`, `build_profile_progress`, and `reprocess_repo`. Behavior:
   - Each repository commits independently.
   - A failure marks only that repository.
-  - A rate limit or budget error stops the batch.
+  - A rate limit, a budget error, or running out of usable keys stops the batch.
   - The repository's writes are committed before the LLM call, because `complete()` writes through its own session and would otherwise block on SQLite's write lock.
   - Manual evidence and manually entered links survive reprocessing.
   - Evidence is re-indexed into Qdrant on a best-effort basis.
@@ -70,6 +84,7 @@ It raises `BudgetExceededError` before dispatch, `ApiKeyMissingError` when no us
 - `evidence.py`: skill-evidence CRUD shared by projects and experience.
 - `resume_extract.py`, `resume_ingest.py`, `resume_profile_merge.py`: take a resume upload through multimodal extraction (PDF and images) into `Skill` and `Experience` rows. Skills are deduplicated by casefolded name. Roles are matched on company and title, and dates are filled in only where they are empty.
 - `job_extract.py`, `job_screenshot_extract.py`: extract structured fields from postings. `skills_required` is stored as a list of `{skill, level}`; `parse_skills_required()` also reads the older plain list-of-strings format.
+- `skill_map.py`: builds the 2D skill map. Each skill is embedded together with its evidence context (the languages of the repositories it came from and the skills it appears beside), because bare names embed by spelling: without context, `ElasticNet` and `EfficientNet` land on top of each other. It embeds with `bge-small`, not the `EMBEDDING_MODEL` retrieval uses: the map never writes to Qdrant, and `embedding_cache` is keyed by model, so the two coexist without a reindex. Vectors are projected with t-SNE, not PCA, which preserved under a fifth of each skill's true nearest neighbours here, then clustered on the projected coordinates so the drawn groups match what is on screen. The finished layout is stored whole in `skill_map_cache` against a fingerprint of the exact texts that produced it, so `GET /api/skills/map` normally embeds nothing. `scripts/benchmark_embeddings.py` is what these choices are measured with.
 - `role_family.py`: searches the `role_families` collection (cosine similarity of at least 0.86) before creating a new family with a bulk-tier LLM call. `canonical_name` is unique; if a concurrent insert wins, the existing row is reused.
 
 ### `app/retrieval`
@@ -84,14 +99,16 @@ It raises `BudgetExceededError` before dispatch, `ApiKeyMissingError` when no us
 - `orchestrator.py`: `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`. Steps:
   1. Candidate projects and skills come from semantic search over the posting text.
   2. Experience points are selected per role (up to 5 per role, falling back to all of the role's points if the search returns nothing).
-  3. One quality-tier call returns JSON with the summary, projects, and skills, guided by length rules for the chosen template.
+  3. One quality-tier call returns JSON with the summary, projects, and skills, guided by length rules for the chosen template. Those rules aim slightly over the target, since the page-fit loop trims more cheaply than it fills.
   4. Any repository id or skill that wasn't a candidate is dropped.
+  5. Everything left over goes into a `reserve` on the returned dict for `pagefit.py` to draw on. It never reaches a prompt or the rendered `.tex`, and the page-fit loop strips it before the content is saved.
 
   Job text is always a separate user message. Experience, education, and the header are rebuilt from the database and never sent to an edit call.
 - `latex.py`: a Jinja2 environment with LaTeX-safe delimiters (`\BLOCK{}`, `\VAR{}`, `\#{}`), plus `escape_latex()` and `escape_latex_url()`.
 - `compile.py`: runs Tectonic as a subprocess. It raises `TectonicNotInstalledError` when the binary is missing and `CompileError` when compilation fails.
-- `pagefit.py`: compiles, counts pages with pypdf, and asks a multimodal model for one cut at a time until the resume fits. `PageFitNotAchievedError` carries the best PDF reached.
-- `templates/`: `onepage.tex.j2` and `twopage.tex.j2`. The preamble is adapted from RenderCV (MIT).
+- `layout.py`: the geometry the templates read (margins, section and bullet spacing, type size, leading) as parameters rather than hardcoded lengths, plus `DENSITY_LADDER`, 13 rungs from tight (9pt on `extarticle`, 0.72 cm margins) to airy (12pt, 1.5 cm). Density 1.0 reproduces each template's original geometry exactly.
+- `pagefit.py`: renders at exactly the requested page count, one page or two, in both directions. It walks the density ladder for the loosest layout that still fits, which is what stops a resume from trailing off half way down its last page. Over the target after the tightest rung, it asks a multimodal model for an ordered plan of cuts (a skill, then a project bullet, then an experience bullet, never a role) and applies them one at a time, recompiling between each and only going back for a new plan once the plan runs out. One look at the PDF covers several cuts, and the PDF is the expensive part of that prompt. Under the target at the loosest rung, it adds back the account's own held-back content from the `reserve` the orchestrator hands over: candidate projects the model passed over, experience points retrieval narrowed away, unselected candidate skills. Nothing is invented, so growth costs no LLM call. `PageFitNotAchievedError` (overflow only) carries the best PDF reached; coming up short returns a `FitResult` with `fit_exact` false, since an account can legitimately not have two pages of real material.
+- `templates/`: `onepage.tex.j2` and `twopage.tex.j2`. The preamble is adapted from RenderCV (MIT). Both read their geometry from `layout.py` through a `layout` dict, so `render_resume()` can produce the same content tighter or looser.
 
 ### `app/evals`
 
@@ -158,9 +175,10 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `auth_sources` | Encrypted login profiles and CSS selectors. |
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |
 | `app_settings` | One row per setting picked in the app: bulk model, quality model, monthly budget. A missing row means the default. |
-| `llm_calls` | Cached responses plus cost, token, and latency records for every call. |
-| `rate_limit_events` | Rate-limit and budget event log. |
+| `llm_calls` | Cached responses plus cost, token, and latency records for every call, each tagged with the feature (`purpose`) that spent it. |
+| `rate_limit_events` | Event log: rate limits, budget caps, keys swapped out or exhausted, runs stopped. |
 | `embedding_cache` | Embedding vectors by content hash and model. |
+| `skill_map_cache` | One stored skill-map layout per account, with the fingerprint of the skills it was built from. |
 | `detections`, `match_results` | Reserved; not yet written to. |
 
 ## Conventions

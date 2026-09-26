@@ -83,16 +83,12 @@
       </form>
     </section>
 
-    <!-- Stored keys -->
-    <section class="mt-10" x-cloak x-show="!loading">
-      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Stored keys</h2>
-
-      <p class="mt-4 text-sm text-[color:var(--muted)]" x-show="keys.length === 0">
-        No keys stored yet. Add one below.
-      </p>
-
+    {# One key's tile. Three groups render it (working, waiting on a quota,
+       needs attention), so the markup lives here once and each group passes
+       the Alpine collection to loop over. #}
+    {% macro key_tiles(collection) %}
       <div class="mt-4 space-y-3">
-        <template x-for="key in keys" :key="key.id">
+        <template x-for="key in {{ collection }}" :key="key.id">
           <div class="otw-tile px-5 py-4" :style="key.enabled ? '' : 'opacity: 0.55;'">
             <div class="flex items-start justify-between gap-4">
               <div>
@@ -112,10 +108,14 @@
 
                 <p class="mt-2 text-xs">
                   <span x-show="key.status === 'valid'" class="otw-tick"><span>✓</span> Working</span>
-                  <span x-show="key.status === 'invalid'" class="otw-error inline-flex items-center gap-1"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg> Invalid</span>
-                  <span x-show="key.status === 'rate_limited'" style="color: var(--accent);">○ Rate-limited / exhausted</span>
+                  <span x-show="key.status === 'invalid'" class="otw-error inline-flex items-center gap-1"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg> Rejected</span>
+                  <span x-show="key.status === 'blocked'" class="otw-error inline-flex items-center gap-1"><svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="4.9" y1="4.9" x2="19.1" y2="19.1"></line></svg> Blocked by the provider</span>
+                  <span x-show="key.status === 'rate_limited'" style="color: var(--accent);" x-text="'○ Out of quota (' + limitLabel(key.exhaustion_kind) + ')'"></span>
                   <span x-show="key.status === 'unknown'" class="text-[color:var(--muted)]">Unchecked</span>
                   <span x-show="key.budget_cap_usd" class="text-[color:var(--muted)]" x-text="' · budget cap $' + key.budget_cap_usd"></span>
+                </p>
+                <p class="mt-1 text-xs" style="color: var(--accent);" x-show="key.status === 'rate_limited'">
+                  <span x-show="key.exhausted_at" x-text="'Ran out ' + formatTime(key.exhausted_at) + '. '"></span><span x-text="retryNote(key)"></span>
                 </p>
                 <p class="mt-1 text-xs text-[color:var(--muted)]" x-show="key.last_checked_at">
                   Last checked <span x-text="formatTime(key.last_checked_at)"></span><span x-show="key.last_check_detail" x-text="': ' + key.last_check_detail"></span>
@@ -127,7 +127,7 @@
               </div>
               <div class="flex flex-col items-end gap-2 shrink-0">
                 <div class="flex gap-2 flex-wrap justify-end">
-                  <button type="button" @click="checkKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost px-3 py-1.5 text-xs">Check</button>
+                  <button type="button" @click="checkKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost px-3 py-1.5 text-xs" x-text="busy[key.id] ? 'Checking...' : 'Check now'"></button>
                   <button type="button" x-show="!key.is_active" @click="activateKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost px-3 py-1.5 text-xs">Set active</button>
                   <button type="button" @click="key.enabled ? disableKey(key) : enableKey(key)" :disabled="busy[key.id]" class="otw-btn-ghost px-3 py-1.5 text-xs" x-text="key.enabled ? 'Turn off' : 'Turn on'"></button>
                   <button type="button" @click="openEdit(key)" class="otw-btn-ghost px-3 py-1.5 text-xs">Edit access</button>
@@ -166,6 +166,71 @@
           </div>
         </template>
       </div>
+    {% endmacro %}
+
+    <!-- Stored keys: the healthy ones. Keys waiting on a quota reset and
+         keys the provider has shut off get their own sections below, since
+         one comes back by itself and the other never does. -->
+    <section class="mt-10" x-cloak x-show="!loading">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Stored keys</h2>
+
+      <p class="mt-3 text-sm text-[color:var(--muted)]" x-show="keys.length > 1">
+        Keys for the same provider back each other up. The active one is tried first; if it runs out of
+        quota or gets rejected partway through a job, the next one takes over that same request and the
+        job carries on. A job only stops once every key for the provider is spent, and it says which key
+        failed and why. A key that is out of quota is tried last rather than skipped, since quotas reset.
+      </p>
+
+      <p class="mt-4 text-sm text-[color:var(--muted)]" x-show="keys.length === 0">
+        No keys stored yet. Add one below.
+      </p>
+      <p class="mt-4 text-sm text-[color:var(--muted)]" x-show="keys.length > 0 && healthyKeys.length === 0">
+        Every stored key is either out of quota or blocked right now. See below.
+      </p>
+
+      {{ key_tiles("healthyKeys") }}
+    </section>
+
+    <!-- Out of quota: temporary by definition, so this group is rechecked
+         on its own (app/core/key_refresh.py). -->
+    <section class="mt-10" x-cloak x-show="!loading && waitingKeys.length > 0">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Waiting on a quota reset</h2>
+        <button type="button" @click="recheck('exhausted')" :disabled="rechecking" class="otw-btn-ghost px-3 py-1.5 text-xs" x-text="rechecking === 'exhausted' ? 'Checking...' : 'Recheck these now'"></button>
+      </div>
+      <p class="mt-3 text-sm text-[color:var(--muted)]">
+        These keys hit a limit that resets by itself. Each one is checked again when the app starts and
+        every half hour after that, once the wait for its own limit is over: a per-minute burst comes back
+        in a minute, a used-up daily allowance when the provider's day rolls over. A key that answers
+        again goes straight back into normal rotation. Nothing here needs you to do anything; the button
+        above only skips the wait.
+      </p>
+      <p class="mt-2 text-xs text-[color:var(--muted)]">
+        A check confirms the key still works, not how much quota is left: no provider gives that away for
+        free. Once the wait is over the key is treated as good again, and the next real call is what
+        settles it.
+      </p>
+      <p class="mt-2 text-sm" style="color: var(--accent);" x-show="recheckNote" x-text="recheckNote"></p>
+
+      {{ key_tiles("waitingKeys") }}
+    </section>
+
+    <!-- Rejected or blocked: no amount of waiting fixes either, so nothing
+         rechecks them without being asked. -->
+    <section class="mt-10" x-cloak x-show="!loading && attentionKeys.length > 0">
+      <div class="flex items-start justify-between gap-4 flex-wrap">
+        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Needs your attention</h2>
+        <button type="button" @click="recheck('blocked')" :disabled="rechecking" class="otw-btn-ghost px-3 py-1.5 text-xs" x-text="rechecking === 'blocked' ? 'Checking...' : 'Check these now'"></button>
+      </div>
+      <p class="mt-3 text-sm text-[color:var(--muted)]">
+        The provider rejected these keys outright, or shut them off: a wrong or deleted key, a suspended
+        project, billing not set up, or the provider's API never enabled. Waiting changes nothing, so
+        these are never rechecked on their own. Fix the key in the provider's console, or replace it here,
+        then use the button above (or Check now on the key) to look again.
+      </p>
+      <p class="mt-2 text-sm" style="color: var(--accent);" x-show="blockedNote" x-text="blockedNote"></p>
+
+      {{ key_tiles("attentionKeys") }}
     </section>
 
     <!-- Add a key -->
@@ -264,6 +329,9 @@
       submitting: false,
       addError: '',
       busy: {},
+      rechecking: '',
+      recheckNote: '',
+      blockedNote: '',
       editing: null,
       editForm: { budget_cap_usd: '', allowed_account_ids: [] },
       tiers: [
@@ -359,6 +427,38 @@
       isUnlistedModel({ provider, name }) {
         const names = this.modelNames(provider);
         return Boolean(name) && names.length > 0 && !names.includes(name) && !this.looksLikeApiKey(name);
+      },
+
+      // The three groups the stored keys split into, and the reason the
+      // page is shaped this way: a key that is out of quota comes back on
+      // its own, a key the provider rejected or blocked does not.
+      get waitingKeys() {
+        return this.keys.filter((k) => k.status === 'rate_limited');
+      },
+
+      get attentionKeys() {
+        return this.keys.filter((k) => k.status === 'invalid' || k.status === 'blocked');
+      },
+
+      get healthyKeys() {
+        return this.keys.filter(
+          (k) => !['rate_limited', 'invalid', 'blocked'].includes(k.status)
+        );
+      },
+
+      // app/core/key_cooldown.py's exhaustion kinds, in words.
+      limitLabel(kind) {
+        return {
+          per_minute: 'per-minute limit',
+          per_day: 'daily limit',
+          quota: 'quota',
+        }[kind] || 'limit';
+      },
+
+      retryNote(key) {
+        if (!key.retry_at) return 'Due for a recheck.';
+        if (key.recheck_due) return 'The wait is over; it is rechecked on the next pass.';
+        return `Rechecked after ${this.formatTime(key.retry_at)}.`;
       },
 
       hasUsableKey(provider) {
@@ -520,6 +620,38 @@
           }
         } finally {
           this.busy[key.id] = false;
+        }
+      },
+
+      // One pass over a whole group. "exhausted" ignores each key's own
+      // wait (the button is someone saying they do not want to wait for
+      // it); "blocked" is the only thing that ever looks at a rejected or
+      // blocked key without being told to key by key.
+      async recheck(scope) {
+        this.rechecking = scope;
+        this.recheckNote = '';
+        this.blockedNote = '';
+        try {
+          const res = await fetch('/api/api-keys/recheck', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ scope }),
+          });
+          if (!res.ok) throw new Error('recheck failed');
+          const data = await res.json();
+          const updated = new Map(data.keys.map((k) => [k.id, k]));
+          this.keys = this.keys.map((k) => updated.get(k.id) || k);
+          const note = data.checked === 0
+            ? 'Nothing to check right now.'
+            : `Checked ${data.checked} key(s); ${data.recovered} back in rotation.`;
+          if (scope === 'blocked') this.blockedNote = note;
+          else this.recheckNote = note;
+        } catch (e) {
+          const note = 'Could not reach the server, try again.';
+          if (scope === 'blocked') this.blockedNote = note;
+          else this.recheckNote = note;
+        } finally {
+          this.rechecking = '';
         }
       },
 

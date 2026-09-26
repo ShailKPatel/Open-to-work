@@ -9,10 +9,33 @@ hand-build that JSON: `user_message(text, images=...)` constructs one, with or
 without attachments, and the same `complete()` call handles both. No separate
 multimodal client, no per-modality wrapper to keep in sync.
 
-Content-hash cache: identical (tier, model, messages, schema) never bills
-twice. Budget cap: enforced before dispatch, not after. Every call, cached or
-not, gets a row in LLMCall so the dashboard shows real call volume alongside
-real spend.
+Content-hash cache: identical (model, messages, schema) never bills twice,
+with the messages' text normalized for whitespace first so a prompt that
+differs only in blank lines or line endings is still one prompt. Keyed on
+the model rather than the tier, since that is what decides the answer.
+Budget cap: enforced before dispatch, not after. Every call, cached or not,
+gets a row in LLMCall, tagged with the `purpose` its caller passed, so the
+dashboard shows real call volume and which feature spent it alongside real
+spend.
+
+Key failover: a provider blaming the key it was handed (quota used up,
+credential rejected, this key not allowed near that model) is not the end
+of the request. Every key stored for that provider is tried in turn, and
+the request only fails once they are all spent, with one line per key
+saying what happened to each. That matters most in the middle of a long
+job: a multi-step job is many separate complete() calls, so a key dying at
+step three leaves steps one and two already done and committed, and
+switching keys lets step three finish rather than stranding the job there.
+Errors that every key would hit identically (an overloaded provider, a
+prompt that is too long, refused content) skip failover entirely, so a
+doomed request fails once instead of once per key. See
+_dispatch_over_keys().
+
+Prompt caching: the dispatch copy of a prompt gets the system message
+marked for provider-side caching where that needs saying explicitly
+(_with_prompt_caching below). The local cache above only helps an identical
+repeat; this is what makes the shared instructions in front of every
+per-item prompt cheap the second time.
 """
 
 from __future__ import annotations
@@ -23,7 +46,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import func, select
 
@@ -31,11 +54,14 @@ from app.core.app_settings import Tier, get_llm_settings
 from app.core.db import LLMCall, get_db
 from app.core.llm_providers import (
     PROVIDER_LABELS,
+    is_blocked_detail,
     litellm_kwargs,
-    model_prefix_for_provider,
     provider_of_model,
 )
 from app.core.rate_limits import record_event
+
+if TYPE_CHECKING:  # imported for types only; the real import stays deferred
+    from app.core.api_keys_store import DispatchKey
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +72,29 @@ class BudgetExceededError(RuntimeError):
 
 class ApiKeyMissingError(RuntimeError):
     """Raised right before a real (non-injected) LLM dispatch when no
-    active key is stored for the tier's provider yet (see
+    usable key is stored for the tier's provider yet (see
     app/core/api_keys_store.py and the /apis page). Not raised any earlier
     in complete(): a cache hit or a test's injected _completion_fn never
     needs a key."""
 
 
-class LLMRateLimitedError(RuntimeError):
+class LLMDispatchError(RuntimeError):
+    """Base for the errors raised about one dispatch attempt.
+
+    `blames_key` is what drives key failover: True means the provider
+    blamed the credential we dispatched with (quota used up, key
+    rejected, this key not allowed near that model), so the next stored
+    key is worth trying. False means the next key would fail identically
+    (the provider is down, the prompt is too long, the content was
+    refused), so trying one would only waste a call and delay the real
+    error. Set per instance in _readable_provider_error(), which is the
+    one place that knows which of the two a provider exception is.
+    """
+
+    blames_key = False
+
+
+class LLMRateLimitedError(LLMDispatchError):
     """The provider itself rate-limited us (HTTP 429 / quota exceeded).
     Wraps litellm's own exception so callers never need to import litellm
     to tell "try again later" apart from "this input failed." Distinct
@@ -71,9 +113,33 @@ class LLMUnavailableError(LLMRateLimitedError):
     means the same thing to every caller: stop, and try again later."""
 
 
-class LLMProviderError(RuntimeError):
+class LLMProviderError(LLMDispatchError):
     """The provider refused the request for a reason retrying won't fix: a
     rejected key, an unknown model name, or input it can't handle."""
+
+
+def is_out_of_keys(error: Exception) -> bool:
+    """True when this error means there is nothing left to dispatch with
+    for that provider: no key stored, a budget used up, or every stored
+    key tried and spent (quota gone, credential rejected, model not
+    permitted).
+
+    For a caller working through a batch, that is the difference between
+    "this item failed" and "every remaining item is about to fail the
+    same way". Batches use it to stop after the first one rather than
+    spending a doomed call per item and filling each with the same
+    message (app/profile/build.py, app/profile/extract.py,
+    app/profile/skill_review.py). Stopping is also what makes the run
+    resumable: items never attempted keep their pending status, so the
+    next run carries on from there instead of redoing what worked.
+
+    False for a failure that is about this one request (a prompt too
+    long, content refused) or about the provider's own health, which a
+    later item might not hit.
+    """
+    if isinstance(error, (ApiKeyMissingError, BudgetExceededError)):
+        return True
+    return isinstance(error, LLMDispatchError) and error.blames_key
 
 
 # Every exception message raised here is shown to the person using the app
@@ -101,9 +167,59 @@ class LLMResponse:
     tokens_out: int = 0
 
 
-def _prompt_hash(tier: str, model: str, messages: list[dict], schema: dict | None) -> str:
+def _canonical_text(text: str) -> str:
+    """Whitespace-insensitive form of one text block: line endings
+    normalized, trailing spaces gone, blank lines dropped. Used for cache
+    keying only, never for the request itself, which always carries the
+    caller's original text unchanged.
+
+    Blank lines go rather than getting collapsed to one, because the
+    differences this exists to absorb are not tidy: the same README read
+    twice, once before and once after a cleaning pass that left a
+    different number of gaps behind, is one prompt to a model and should
+    be one prompt here.
+    """
+    lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n")]
+    return "\n".join(line for line in lines if line)
+
+
+def _canonical_messages(messages: list[dict]) -> list[dict]:
+    """The messages as the cache key sees them: same roles, same order,
+    same attachments, text normalized by _canonical_text.
+
+    Why normalize at all: two prompts that differ only in trailing
+    spaces, line endings, or a run of blank lines get the same response
+    from the provider, so the second one should be served from the first
+    one's row instead of being billed again. That difference is not
+    hypothetical: a job posting pasted twice, or a README fetched twice
+    from GitHub, routinely differs by exactly that much and nothing else.
+    """
+    canonical: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            canonical.append({"role": message.get("role"), "content": _canonical_text(content)})
+        elif isinstance(content, list):
+            parts: list[Any] = []
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    parts.append({"type": "text", "text": _canonical_text(part.get("text", ""))})
+                else:
+                    parts.append(part)
+            canonical.append({"role": message.get("role"), "content": parts})
+        else:
+            canonical.append(message)
+    return canonical
+
+
+def _prompt_hash(model: str, messages: list[dict], schema: dict | None) -> str:
+    """Keyed on the model, not the tier. What comes back depends on the
+    model and the messages; the tier is only how this app routed there. A
+    device with the same model set for both tiers would otherwise pay
+    twice for one prompt, once under "bulk" and once under "quality".
+    """
     payload = json.dumps(
-        {"tier": tier, "model": model, "messages": messages, "schema": schema},
+        {"model": model, "messages": _canonical_messages(messages), "schema": schema},
         sort_keys=True,
         default=str,
     )
@@ -135,15 +251,18 @@ def month_spend_usd() -> float:
     return _month_spend_usd()
 
 
-def _provider_month_spend_usd(provider: str) -> float:
-    """Spend attributed to one provider this month, for that provider's
-    optional per-key budget_cap_usd (app/core/db.py's ApiKey). Derived
-    from LLMCall.model's own "<provider>/..." prefix rather than a
-    separate column. Accurate as long as at most one key per provider is
-    active at a time, which app/core/api_keys_store.py enforces. If the
-    active key for a provider is swapped mid-month, this reads as that
-    provider's total spend across whichever keys were active. It is an
-    approximation, not a per-key ledger.
+def _key_month_spend_usd(key_id: int) -> float:
+    """This month's spend charged to one stored key, for that key's
+    optional budget_cap_usd (app/core/db/models.py's ApiKey). Read off
+    LLMCall.key_id, the same column /monitor's per-key breakdown uses, so
+    a cap and the number shown next to it always agree.
+
+    Keyed on the key rather than on the provider because keys now
+    genuinely rotate within a single request (see _dispatch_over_keys
+    below): a provider-wide total would charge every key for every other
+    key's calls and retire the whole provider as soon as the cheapest cap
+    was reached. Calls recorded before key attribution existed carry no
+    key_id and count against no cap.
     """
     import datetime as dt
 
@@ -155,12 +274,59 @@ def _provider_month_spend_usd(provider: str) -> float:
         total = db.execute(
             select(func.coalesce(func.sum(LLMCall.cost_usd), 0.0)).where(
                 LLMCall.created_at >= month_start,
-                LLMCall.model.like(f"{model_prefix_for_provider(provider)}/%"),
+                LLMCall.key_id == key_id,
             )
         ).scalar_one()
         return float(total)
     finally:
         db.close()
+
+
+# Providers that need an explicit marker on the part of the prompt worth
+# caching on their side. Gemini and OpenAI match a repeated prefix by
+# themselves with nothing extra in the request, and would reject a marker
+# they do not define, so they are deliberately absent here.
+_EXPLICIT_CACHE_PROVIDERS = {"anthropic", "bedrock"}
+
+
+def _with_prompt_caching(provider: str, messages: list[dict]) -> list[dict]:
+    """The messages to dispatch, with the system prompt marked for
+    provider-side prompt caching where that needs saying explicitly.
+
+    Every call site here puts its fixed instructions in a system message
+    and the per-item text after it, so the system message is a real shared
+    prefix across an entire batch: one repo's extraction and the next
+    repo's send the identical bytes. Marked, a provider bills that prefix
+    at its cached rate on every call after the first.
+
+    Returns a copy; the caller's own list is never mutated. Applied after
+    the cache key is computed, so a marker can never change which local
+    rows a prompt matches. Below a provider's minimum cacheable prefix
+    (1024 tokens on Anthropic's larger models, 2048 on the small ones) the
+    marker is ignored rather than rejected, so short prompts are not a
+    special case here.
+    """
+    if provider not in _EXPLICIT_CACHE_PROVIDERS:
+        return messages
+    marked: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        if message.get("role") == "system" and isinstance(content, str):
+            marked.append(
+                {
+                    "role": "system",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": content,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                }
+            )
+        else:
+            marked.append(message)
+    return marked
 
 
 def _lookup_cache(prompt_hash: str) -> LLMCall | None:
@@ -188,6 +354,7 @@ def _record(
     cached: bool,
     account_id: int | None = None,
     key_id: int | None = None,
+    purpose: str | None = None,
 ) -> None:
     db = get_db()
     try:
@@ -204,6 +371,7 @@ def _record(
                 cached=cached,
                 account_id=account_id,
                 key_id=key_id,
+                purpose=purpose,
             )
         )
         db.commit()
@@ -216,10 +384,18 @@ def complete(
     messages: list[dict],
     schema: dict | None = None,
     account_id: int | None = None,
+    purpose: str | None = None,
     _completion_fn: Any = None,
 ) -> LLMResponse:
     """_completion_fn is an injection point for tests; production callers
     never pass it; it defaults to litellm.completion.
+
+    purpose is a short stable label for which feature spent this call
+    ("repo_facts", "resume_build", "pagefit_trim", ...). Recorded on the
+    LLMCall row and grouped by /monitor's usage breakdown, so spend can be
+    attributed to a feature rather than only to a model or a tier. Never
+    part of the cache key: the same prompt reached from two features is
+    still one prompt.
 
     account_id is optional context for app/core/api_keys_store.py's
     per-key allow-list (a key can be restricted to specific profiles on
@@ -227,10 +403,16 @@ def complete(
     account this call is for (most do, e.g. app/profile/extract.py and
     app/resume_build/orchestrator.py). None means "no account context",
     which only unrestricted keys can serve.
+
+    A caller never sees or picks a key. Every key stored for the tier's
+    provider that may serve this account is tried in order until one
+    answers (see _dispatch_over_keys), and the LLMCall row records which
+    one actually paid, so a swap mid-job shows up on /monitor without the
+    caller doing anything.
     """
     settings = get_llm_settings()
     model = settings.model_for(tier)
-    prompt_hash = _prompt_hash(tier, model, messages, schema)
+    prompt_hash = _prompt_hash(model, messages, schema)
 
     cached_row = _lookup_cache(prompt_hash)
     if cached_row is not None:
@@ -249,6 +431,7 @@ def complete(
             latency_ms=0,
             cached=True,
             account_id=account_id,
+            purpose=purpose,
         )
         content = cached_response.get("content", "")
         parsed = _try_parse(content) if schema else None
@@ -267,36 +450,10 @@ def complete(
     provider = provider_of_model(model)
     label = PROVIDER_LABELS.get(provider, provider)
     key_id: int | None = None
-    kwargs: dict[str, Any] = {"model": model, "messages": messages}
-
-    if _completion_fn is None:
-        from app.core.api_keys_store import resolve_dispatch_key
-
-        resolved = resolve_dispatch_key(provider, account_id)
-        if resolved is None:
-            raise ApiKeyMissingError(
-                f"No {label} API key is available"
-                f"{' for this account' if account_id is not None else ''}. "
-                "Add one, or turn an existing one on, from Manage APIs."
-            )
-        key_id, credentials, key_budget = resolved
-
-        if key_budget is not None:
-            provider_spent = _provider_month_spend_usd(provider)
-            if provider_spent >= key_budget:
-                detail = (
-                    f"The {label} key budget of ${key_budget:.2f} is used up "
-                    f"(${provider_spent:.2f} spent this month), so this request was not sent. "
-                    "Raise or remove the key's cap on Manage APIs."
-                )
-                record_event("llm", "budget_exceeded", detail, context=model, account_id=account_id)
-                raise BudgetExceededError(detail)
-
-        kwargs.update(litellm_kwargs(provider, credentials))
-
-        import litellm
-
-        _completion_fn = litellm.completion
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": _with_prompt_caching(provider, messages),
+    }
 
     if schema is not None:
         kwargs["response_format"] = {
@@ -313,26 +470,30 @@ def complete(
     if other_model != model and provider_of_model(other_model) == provider:
         candidates.append(other_model)
 
-    for i, candidate in enumerate(candidates):
-        kwargs["model"] = candidate
-        delays = _RETRY_DELAYS_S if i == 0 else _FALLBACK_RETRY_DELAYS_S
-        try:
-            response, latency_ms = _call_with_retries(_completion_fn, kwargs, delays)
-        except Exception as e:
-            if _is_transient(e) and i + 1 < len(candidates):
-                logger.warning(
-                    "%s still unavailable after retries (%s); falling back to %s",
-                    candidate, type(e).__name__, candidates[i + 1],
-                )
-                continue
-            readable = _readable_provider_error(e, candidate, label, key_id, account_id)
-            if readable is None:
-                raise
-            raise readable from e
-        if candidate != model:
-            model = candidate
-            prompt_hash = _prompt_hash(tier, model, messages, schema)
-        break
+    if _completion_fn is not None:
+        response, latency_ms, answered_model = _dispatch(
+            _completion_fn, kwargs, candidates, label, None, account_id
+        )
+    else:
+        from app.core.api_keys_store import resolve_dispatch_keys
+
+        keys = resolve_dispatch_keys(provider, account_id)
+        if not keys:
+            raise ApiKeyMissingError(
+                f"No {label} API key is available"
+                f"{' for this account' if account_id is not None else ''}. "
+                "Add one, or turn an existing one on, from Manage APIs."
+            )
+
+        import litellm
+
+        response, latency_ms, answered_model, key_id = _dispatch_over_keys(
+            litellm.completion, kwargs, candidates, provider, label, keys, account_id
+        )
+
+    if answered_model != model:
+        model = answered_model
+        prompt_hash = _prompt_hash(model, messages, schema)
 
     content = response.choices[0].message.content or ""
     usage = getattr(response, "usage", None)
@@ -353,6 +514,7 @@ def complete(
         cached=False,
         account_id=account_id,
         key_id=key_id,
+        purpose=purpose,
     )
 
     parsed = _try_parse(content) if schema else None
@@ -365,6 +527,190 @@ def complete(
         tokens_in=tokens_in,
         tokens_out=tokens_out,
     )
+
+
+def _dispatch(
+    completion_fn: Any,
+    kwargs: dict[str, Any],
+    candidates: list[str],
+    label: str,
+    key_id: int | None,
+    account_id: int | None,
+) -> tuple[Any, int, str]:
+    """One credential's worth of trying: each model in `candidates` with
+    its retries, the second one only if the first stays overloaded.
+    Returns (response, latency_ms, the model that answered).
+
+    Raises this module's own exception for a provider error (the caller
+    reads `blames_key` on it to decide whether another key is worth
+    trying) and anything else unchanged.
+    """
+    for i, candidate in enumerate(candidates):
+        attempt_kwargs = {**kwargs, "model": candidate}
+        delays = _RETRY_DELAYS_S if i == 0 else _FALLBACK_RETRY_DELAYS_S
+        try:
+            response, latency_ms = _call_with_retries(completion_fn, attempt_kwargs, delays)
+        except Exception as e:
+            if _is_transient(e) and i + 1 < len(candidates):
+                logger.warning(
+                    "%s still unavailable after retries (%s); falling back to %s",
+                    candidate, type(e).__name__, candidates[i + 1],
+                )
+                continue
+            readable = _readable_provider_error(e, candidate, label, key_id, account_id)
+            if readable is None:
+                raise
+            raise readable from e
+        return response, latency_ms, candidate
+    raise AssertionError("unreachable")
+
+
+@dataclass
+class _KeyAttempt:
+    """One stored key that did not serve this request, and why. Kept so
+    the error raised once they are all gone can name every key and its
+    own reason rather than only the last one's."""
+
+    label: str
+    error: Exception
+
+
+def _key_budget_error(
+    key: DispatchKey, label: str, model: str, account_id: int | None
+) -> BudgetExceededError | None:
+    """This key's own monthly cap, checked before spending a call on it.
+    None means it has room (or has no cap)."""
+    if key.budget_cap_usd is None:
+        return None
+    spent = _key_month_spend_usd(key.id)
+    if spent < key.budget_cap_usd:
+        return None
+    detail = (
+        f"The {label} key budget of ${key.budget_cap_usd:.2f} is used up "
+        f"(${spent:.2f} spent this month), so this request was not sent. "
+        "Raise or remove the key's cap on Manage APIs."
+    )
+    record_event("llm", "budget_exceeded", detail, context=model, account_id=account_id)
+    return BudgetExceededError(detail)
+
+
+def _dispatch_over_keys(
+    completion_fn: Any,
+    kwargs: dict[str, Any],
+    candidates: list[str],
+    provider: str,
+    label: str,
+    keys: list[DispatchKey],
+    account_id: int | None,
+) -> tuple[Any, int, str, int]:
+    """The same request against each stored key for this provider in
+    turn, stopping at the first that answers. Returns (response,
+    latency_ms, the model that answered, the key id that paid for it).
+
+    This is what keeps a long job alive. A multi-step job (extract, then
+    select, then trim) is many separate complete() calls, and a key that
+    dies partway leaves every step before it already done and committed.
+    Failing here would strand the job at that step; switching keys and
+    answering means the step finishes and the job simply carries on to
+    the next one, with the swap visible in the log and on /monitor rather
+    than silent.
+
+    A key is only abandoned when the provider blamed the key itself
+    (`blames_key`, see LLMDispatchError) or its own budget cap is used
+    up. An overloaded provider, a prompt that is too long, or content the
+    provider refused would fail identically on every key, so those are
+    raised straight away instead of burning the rest of the keys on a
+    request that cannot succeed.
+
+    Raises only once every key is spent, with one line per key saying
+    what happened to it.
+    """
+    from app.core.api_keys_store import record_dispatch_outcome
+
+    attempts: list[_KeyAttempt] = []
+    for position, key in enumerate(keys):
+        remaining = len(keys) - position - 1
+        budget_error = _key_budget_error(key, label, kwargs["model"], account_id)
+        if budget_error is not None:
+            attempts.append(_KeyAttempt(key.label, budget_error))
+            _log_key_gave_up(label, key, budget_error, remaining, account_id)
+            continue
+
+        try:
+            response, latency_ms, answered = _dispatch(
+                completion_fn,
+                {**kwargs, **litellm_kwargs(provider, key.credentials)},
+                candidates,
+                label,
+                key.id,
+                account_id,
+            )
+        except LLMDispatchError as e:
+            if not e.blames_key:
+                raise
+            attempts.append(_KeyAttempt(key.label, e))
+            _log_key_gave_up(label, key, e, remaining, account_id)
+            continue
+
+        if attempts:
+            logger.info(
+                "%s key %r answered after %d key(s) failed; the request went through",
+                label, key.label, len(attempts),
+            )
+        # Clears a "rate_limited"/"invalid" mark left by an earlier run
+        # on a key that plainly works again; a healthy key is not written.
+        record_dispatch_outcome(key.id, ok=True)
+        return response, latency_ms, answered, key.id
+
+    raise _keys_exhausted_error(attempts, label, kwargs["model"], account_id)
+
+
+def _log_key_gave_up(
+    label: str, key: DispatchKey, error: Exception, remaining: int, account_id: int | None
+) -> None:
+    what_next = (
+        f"switching to the next {label} key ({remaining} left)"
+        if remaining
+        else "no other key left to try"
+    )
+    logger.warning(
+        "%s key %r (id=%s) is out: %s; %s", label, key.label, key.id, error, what_next
+    )
+    record_event(
+        "llm",
+        "key_failover" if remaining else "keys_exhausted",
+        f"{key.label}: {error}",
+        context=f"{label} key id={key.id}",
+        account_id=account_id,
+    )
+
+
+def _keys_exhausted_error(
+    attempts: list[_KeyAttempt], label: str, model: str, account_id: int | None
+) -> Exception:
+    """The one exception raised once every key is spent.
+
+    A single stored key keeps that key's own message and type verbatim:
+    with nothing to fall back to there is no failover to explain, and the
+    message already says what to do. Several keys get one line each, so
+    the answer to "why did this stop?" is the whole list (this one is out
+    of quota, that one was rejected, this one hit its cap) and not just
+    whichever happened to be tried last. The type comes from the last
+    attempt, which keeps the HTTP status each API route already maps it
+    to (app/api/resume_build.py's _map_llm_error).
+    """
+    last = attempts[-1].error
+    if len(attempts) == 1:
+        return last
+    lines = "\n".join(f"- {a.label}: {a.error}" for a in attempts)
+    detail = (
+        f"All {len(attempts)} {label} keys failed on this request, so it could not be "
+        f"finished:\n{lines}\n"
+        "Add another key, or fix one of these, on Manage APIs, then run it again: "
+        "the steps that already finished are kept and will not be redone."
+    )
+    record_event("llm", "keys_exhausted", detail, context=model, account_id=account_id)
+    return type(last)(detail)
 
 
 def _call_with_retries(
@@ -421,15 +767,43 @@ def _provider_detail(e: Exception) -> str:
     return text if len(text) <= 240 else text[:237] + "..."
 
 
+def _blames_key(error: LLMDispatchError) -> LLMDispatchError:
+    """Marks an error as the key's fault, so _dispatch_over_keys() tries
+    the next stored key instead of giving up here."""
+    error.blames_key = True
+    return error
+
+
+def _key_blocked(label: str, detail: str, key_id: int | None) -> LLMDispatchError:
+    """The provider has shut this key off rather than refused one request.
+    Worth a failover (another stored key may be healthy), never worth an
+    automatic recheck (see app/core/api_keys_store.py's recheck_keys)."""
+    from app.core.api_keys_store import record_dispatch_outcome
+
+    message = (
+        f"{label} has blocked this key: it looks suspended, revoked, or not enabled for its "
+        f"project. Waiting will not fix it, so fix or replace it in your {label} account and "
+        f"then recheck it on Manage APIs. ({detail})"
+    )
+    if key_id is not None:
+        record_dispatch_outcome(key_id, ok=False, blocked=True, detail=message)
+    return _blames_key(LLMProviderError(message))
+
+
 def _readable_provider_error(
     e: Exception, model: str, label: str, key_id: int | None, account_id: int | None
-) -> Exception | None:
+) -> LLMDispatchError | None:
     """A litellm exception as one of this module's exceptions, with a
     message for the person using the app, recording what it says about the
     key on the way. Only a rejected key or a rate limit says anything about
     the key itself; every other error leaves its stored status alone. None
     for anything that isn't a provider error, which the caller re-raises
-    unchanged."""
+    unchanged.
+
+    Whether the returned error carries `blames_key` is what decides
+    failover: a quota, a rejected credential, or a model this key may not
+    use are all worth retrying on the next key; an overloaded provider or
+    a prompt the model cannot accept are not."""
     import litellm
 
     from app.core.api_keys_store import record_dispatch_outcome
@@ -447,9 +821,18 @@ def _readable_provider_error(
             f"the key's limits in your {label} account."
         )
         if key_id is not None:
-            record_dispatch_outcome(key_id, ok=False, rate_limited=True, detail=message)
+            # The untruncated exception text goes along as provider_detail:
+            # that is where a provider says which quota window was hit and
+            # how long it wants us to wait (app/core/key_cooldown.py).
+            record_dispatch_outcome(
+                key_id,
+                ok=False,
+                rate_limited=True,
+                detail=message,
+                provider_detail=str(e),
+            )
         record_event("llm", "rate_limited", detail, context=model, account_id=account_id)
-        return LLMRateLimitedError(message)
+        return _blames_key(LLMRateLimitedError(message))
     if isinstance(e, (litellm.Timeout, litellm.APIConnectionError)):
         return LLMUnavailableError(
             f"Couldn't reach {label}: the connection failed or timed out, even after several "
@@ -463,15 +846,26 @@ def _readable_provider_error(
             "pick a different model on Manage APIs."
         )
     if isinstance(e, litellm.AuthenticationError):
+        if is_blocked_detail(str(e)):
+            return _key_blocked(label, detail, key_id)
         message = f"{label} rejected the API key. Check it, or add a new one, on Manage APIs."
         if key_id is not None:
             record_dispatch_outcome(key_id, ok=False, detail=message)
-        return LLMProviderError(message)
+        return _blames_key(LLMProviderError(message))
     if isinstance(e, litellm.PermissionDeniedError):
-        return LLMProviderError(
+        if is_blocked_detail(str(e)):
+            # A forbidden key, not a forbidden model: suspended, revoked,
+            # or its API never enabled. Marked `blocked` so it lands in the
+            # needs-attention group on /apis and no automatic recheck
+            # keeps asking a question only the provider's console can answer.
+            return _key_blocked(label, detail, key_id)
+        # Not marked at all: the key is fine, it just may not use this
+        # model. Another stored key for the same provider may be allowed
+        # to, so this is still worth a failover.
+        return _blames_key(LLMProviderError(
             f"{label} says this key isn't allowed to use \"{name}\". Pick a different model "
             f"on Manage APIs, or check the key's permissions. ({detail})"
-        )
+        ))
     if isinstance(e, litellm.NotFoundError):
         return LLMProviderError(
             f"{label} doesn't recognize the model \"{name}\". Pick a different model on "

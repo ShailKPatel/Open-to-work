@@ -15,8 +15,7 @@ from app.profile.skill_review import approve, rejected_keys, review_names
 def _reset_db(tmp_path: Path):
     import app.retrieval.vectorstore as vectorstore_module
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     vectorstore_module.get_client.cache_clear()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     os.environ["QDRANT_URL"] = ":memory:"
@@ -38,7 +37,7 @@ def _fake_review(monkeypatch, remove=(), fail_with=None):
     """Patches the LLM call; records the names sent in each batch."""
     batches: list[list[str]] = []
 
-    def fake_complete(tier, messages, schema=None, account_id=None):
+    def fake_complete(tier, messages, schema=None, account_id=None, purpose=None):
         if fail_with is not None:
             raise fail_with
         names = messages[-1]["content"].split("\n")[1:]
@@ -99,6 +98,32 @@ def test_failed_review_leaves_names_unjudged_for_next_time(tmp_path, monkeypatch
     assert review_names(db, account_id, ["blinker"]) == set()
     assert db.execute(select(SkillVerdict)).scalars().all() == []
     db.close()
+
+
+def test_review_stops_asking_once_the_keys_are_gone(tmp_path, monkeypatch):
+    """A spent key set reaches here as a provider error, not a 429, so
+    is_out_of_keys() is what stops it. 155 names would otherwise cost
+    four identical doomed calls instead of one."""
+    from app.core.llm import LLMProviderError
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    calls: list = []
+
+    def every_key_spent(tier, messages, schema=None, account_id=None, purpose=None):
+        calls.append(messages)
+        error = LLMProviderError("All 2 OpenAI keys failed on this request.")
+        error.blames_key = True
+        raise error
+
+    monkeypatch.setattr("app.profile.skill_review.complete", every_key_spent)
+
+    db = get_db()
+    assert review_names(db, account_id, [f"skill-{i}" for i in range(155)]) == set()
+    # Nothing judged, so the names come back round next time unchanged.
+    assert db.execute(select(SkillVerdict)).scalars().all() == []
+    db.close()
+    assert len(calls) == 1
 
 
 def test_manual_approval_overrules_rejection(tmp_path, monkeypatch):

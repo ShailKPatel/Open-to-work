@@ -15,8 +15,7 @@ from app.evals.groundedness import score_groundedness
 def _reset(tmp_path: Path):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     get_settings.cache_clear()
     init_db()
@@ -87,7 +86,7 @@ def test_grounded_and_ungrounded_bullets_scored(tmp_path, monkeypatch):
         points=["Built a Python web scraper", "Deployed a fleet of autonomous drones"],
     )
 
-    def _fake_complete(tier, messages, schema=None, account_id=None):
+    def _fake_complete(tier, messages, schema=None, account_id=None, purpose=None):
         content = messages[-1]["content"]
         response = MagicMock()
         response.parsed = {"grounded": "drone" not in content.lower()}
@@ -113,7 +112,7 @@ def test_missing_api_key_stops_early_but_keeps_partial_score(tmp_path, monkeypat
 
     call_count = {"n": 0}
 
-    def _fake_complete(tier, messages, schema=None, account_id=None):
+    def _fake_complete(tier, messages, schema=None, account_id=None, purpose=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             response = MagicMock()

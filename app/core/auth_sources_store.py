@@ -1,4 +1,4 @@
-"""Encrypted credential store for AuthSource rows (app/core/db.py): the
+"""Encrypted credential store for AuthSource rows (app/core/db/models.py): the
 login profiles app/ingest/jobs/auth_fetch.py uses to fetch a job posting
 from a login-walled site via a real automated browser login. Same
 shape/reasoning as app/core/api_keys_store.py: nothing outside this module

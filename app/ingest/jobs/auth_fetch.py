@@ -1,7 +1,7 @@
 """Automated-login job-posting fetch for sites that require being signed
 in to see a posting (Wellfound, LinkedIn, and similar). Real headless
 Chromium via Playwright, driven by the CSS selectors and credentials
-stored in an AuthSource row (app/core/db.py, app/core/auth_sources_store.py).
+stored in an AuthSource row (app/core/db/models.py, app/core/auth_sources_store.py).
 
 Intended for a person's own job search with their own credentials. It is
 not a scraping-at-scale tool: one fetch is one

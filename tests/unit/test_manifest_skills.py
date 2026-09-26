@@ -36,7 +36,13 @@ def test_related_packages_fold_into_one_claim():
     manifests = {
         "package.json": {
             "ecosystem": "npm",
-            "dependencies": ["@types/react", "@types/react-dom", "@vitejs/plugin-react", "react", "react-dom"],
+            "dependencies": [
+                "@types/react",
+                "@types/react-dom",
+                "@vitejs/plugin-react",
+                "react",
+                "react-dom",
+            ],
         }
     }
     claims = skills_from_manifests(manifests)

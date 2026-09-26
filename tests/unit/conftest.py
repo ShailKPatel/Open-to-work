@@ -19,12 +19,12 @@ def _no_real_skill_review(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _dispose_db_engine():
-    """Tests swap in a fresh SQLite file by resetting app.core.db._engine.
-    Dispose the engine each test leaves behind so its pooled connections
-    are closed instead of leaking until garbage collection."""
+    """Tests swap in a fresh SQLite file per test via reset_engine().
+    Reset again on the way out so the engine a test leaves behind has its
+    pooled connections closed instead of leaking until garbage
+    collection."""
     yield
-    if db_module._engine is not None:
-        db_module._engine.dispose()
+    db_module.reset_engine()
 
 
 @pytest.fixture(autouse=True)
@@ -48,3 +48,20 @@ def _default_github_username_exists(monkeypatch):
             return 1
 
     monkeypatch.setattr("app.api.accounts.GitHubClient", _FakeGitHubClient)
+
+
+@pytest.fixture(autouse=True)
+def _no_background_startup_work(monkeypatch):
+    """The app lifespan starts two background threads: one builds missing
+    skill-map layouts (app/api/skills.py's warm_skill_maps), which loads a
+    real embedding model, and one rechecks keys whose quota cooldown has
+    elapsed (app/core/key_refresh.py), which calls providers. Every test
+    that builds a TestClient would pay for both and hit the network, so
+    both are off unless a test asks for them."""
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("SKILL_MAP_WARM_START", "0")
+    monkeypatch.setenv("KEY_REFRESH_ON_START", "0")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()

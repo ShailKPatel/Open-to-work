@@ -30,14 +30,24 @@ def _get_model(model_name: str) -> Any:
     return SentenceTransformer(model_name)
 
 
-def embed(texts: list[str], _encode_fn: Any = None) -> list[list[float]]:
+def embed(
+    texts: list[str], _encode_fn: Any = None, model_name: str | None = None
+) -> list[list[float]]:
     """_encode_fn is an injection point for tests; production callers never
     pass it; it defaults to the sentence-transformers model's .encode().
+
+    model_name overrides EMBEDDING_MODEL for callers whose vectors never
+    meet the retrieval ones. The skill map is the only one: it compares
+    skills to each other inside a single layout and never touches Qdrant,
+    so it can use a model chosen for that job (see
+    app/profile/skill_map.py) without the collections having to be
+    rebuilt at a new width. The cache is keyed by model already, so two
+    models coexist row for row.
     """
     if not texts:
         return []
 
-    model_name = EMBEDDING_MODEL
+    model_name = model_name or EMBEDDING_MODEL
     hashes = [_content_hash(t) for t in texts]
 
     db = get_db()

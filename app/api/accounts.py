@@ -16,6 +16,7 @@ from github import UnknownObjectException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
+from app.api.deps import DbSession
 from app.core.db import (
     Account,
     AuthSource,
@@ -33,7 +34,6 @@ from app.core.db import (
     SkillVerdict,
     SocialLink,
     SyncSource,
-    get_db,
 )
 from app.core.settings import get_settings
 from app.ingest.github.client import GitHubClient
@@ -62,13 +62,9 @@ class AccountSummary(BaseModel):
 
 
 @router.get("/accounts", response_model=list[AccountSummary])
-def list_accounts() -> list[AccountSummary]:
-    db = get_db()
-    try:
-        accounts = db.execute(select(Account).order_by(Account.created_at)).scalars().all()
-        return [AccountSummary.from_account(a) for a in accounts]
-    finally:
-        db.close()
+def list_accounts(db: DbSession) -> list[AccountSummary]:
+    accounts = db.execute(select(Account).order_by(Account.created_at)).scalars().all()
+    return [AccountSummary.from_account(a) for a in accounts]
 
 
 def _github_user_exists(username: str) -> bool | None:
@@ -97,6 +93,8 @@ def create_account(
     last_name: str = Form(...),
     github_username: str = Form(""),
     resume: UploadFile | None = File(None),
+    *,
+    db: DbSession,
 ) -> AccountSummary:
     # GitHub is optional at signup, non-technical users, or anyone without
     # a GitHub account, leave it blank and build their profile by hand
@@ -105,43 +103,39 @@ def create_account(
     if username and _github_user_exists(username) is False:
         raise HTTPException(status_code=422, detail=f"GitHub user '{username}' not found")
 
-    db = get_db()
-    try:
-        account = Account(
-            first_name=first_name.strip(),
-            last_name=last_name.strip(),
-            github_username=username,
+    account = Account(
+        first_name=first_name.strip(),
+        last_name=last_name.strip(),
+        github_username=username,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    if username:
+        # Seed one sync source with the signup username so the
+        # fetch-data page (see app/api/sources.py) isn't empty on
+        # first visit, it's just the first row from there on,
+        # editable/removable like any other, and separate from
+        # account.github_username itself.
+        db.add(
+            SyncSource(
+                account_id=account.id,
+                raw_input=username,
+                kind="user",
+                github_username=username,
+            )
         )
-        db.add(account)
         db.commit()
+
+    if resume is not None and resume.filename:
+        # Same ingestion path POST /api/resume uses (app/api/resume.py):
+        # saves the file, creates its Resume row, mirrors it onto
+        # account.resume_filename/resume_path, and runs extraction.
+        ingest_resume(db, account.id, resume)
         db.refresh(account)
 
-        if username:
-            # Seed one sync source with the signup username so the
-            # fetch-data page (see app/api/sources.py) isn't empty on
-            # first visit, it's just the first row from there on,
-            # editable/removable like any other, and separate from
-            # account.github_username itself.
-            db.add(
-                SyncSource(
-                    account_id=account.id,
-                    raw_input=username,
-                    kind="user",
-                    github_username=username,
-                )
-            )
-            db.commit()
-
-        if resume is not None and resume.filename:
-            # Same ingestion path POST /api/resume uses (app/api/resume.py):
-            # saves the file, creates its Resume row, mirrors it onto
-            # account.resume_filename/resume_path, and runs extraction.
-            ingest_resume(db, account.id, resume)
-            db.refresh(account)
-
-        return AccountSummary.from_account(account)
-    finally:
-        db.close()
+    return AccountSummary.from_account(account)
 
 
 def _delete_qdrant_points(skill_evidence_ids: list[int]) -> None:
@@ -217,7 +211,7 @@ def _delete_job_posting_qdrant_points(posting_ids: list[int]) -> None:
 
 
 @router.delete("/accounts/{account_id}")
-def delete_account(account_id: int) -> dict:
+def delete_account(account_id: int, *, db: DbSession) -> dict:
     """Erases everything tied to this account: synced repos, skill
     evidence (SQLite and Qdrant), experience, its skill evidence and its
     points (SQLite and Qdrant), education, contact-adjacent social links,
@@ -228,121 +222,117 @@ def delete_account(account_id: int) -> dict:
     soft-delete, this is what "delete" means here, per the confirmation
     prompt the client shows before calling this.
     """
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
 
-        repo_ids = list(
+    repo_ids = list(
+        db.execute(
+            select(Repository.id).where(Repository.account_id == account_id)
+        ).scalars()
+    )
+    evidence_ids = (
+        list(
             db.execute(
-                select(Repository.id).where(Repository.account_id == account_id)
+                select(SkillEvidence.id).where(SkillEvidence.repo_id.in_(repo_ids))
             ).scalars()
         )
-        evidence_ids = (
-            list(
-                db.execute(
-                    select(SkillEvidence.id).where(SkillEvidence.repo_id.in_(repo_ids))
-                ).scalars()
-            )
-            if repo_ids
-            else []
-        )
+        if repo_ids
+        else []
+    )
 
-        experience_ids = list(
+    experience_ids = list(
+        db.execute(
+            select(Experience.id).where(Experience.account_id == account_id)
+        ).scalars()
+    )
+    experience_evidence_ids = (
+        list(
             db.execute(
-                select(Experience.id).where(Experience.account_id == account_id)
-            ).scalars()
-        )
-        experience_evidence_ids = (
-            list(
-                db.execute(
-                    select(ExperienceSkillEvidence.id).where(
-                        ExperienceSkillEvidence.experience_id.in_(experience_ids)
-                    )
-                ).scalars()
-            )
-            if experience_ids
-            else []
-        )
-
-        # Both evidence tables share the skill_evidence Qdrant collection
-        # (see app/retrieval/index.py). Experience-linked points are stored
-        # at evidence.id + an offset (fixes a real numeric collision with
-        # repo-linked ids sharing the same collection, see index.py's
-        # _EXPERIENCE_EVIDENCE_ID_OFFSET), passing the raw id here would
-        # either delete nothing (no point exists at that id) or, worse,
-        # delete an unrelated repo-evidence point that happens to share
-        # that raw number. Must go through experience_evidence_point_id().
-        from app.retrieval.index import experience_evidence_point_id
-
-        _delete_qdrant_points(
-            evidence_ids + [experience_evidence_point_id(i) for i in experience_evidence_ids]
-        )
-
-        point_ids = (
-            list(
-                db.execute(
-                    select(ExperiencePoint.id).where(
-                        ExperiencePoint.experience_id.in_(experience_ids)
-                    )
-                ).scalars()
-            )
-            if experience_ids
-            else []
-        )
-        _delete_point_qdrant_vectors(point_ids)
-
-        resume_ids = list(
-            db.execute(select(Resume.id).where(Resume.account_id == account_id)).scalars()
-        )
-        _delete_resume_qdrant_points(resume_ids)
-
-        posting_ids = list(
-            db.execute(select(JobPosting.id).where(JobPosting.account_id == account_id)).scalars()
-        )
-        _delete_job_posting_qdrant_points(posting_ids)
-
-        if repo_ids:
-            db.execute(delete(SkillEvidence).where(SkillEvidence.repo_id.in_(repo_ids)))
-            db.execute(delete(Repository).where(Repository.account_id == account_id))
-        if experience_ids:
-            db.execute(
-                delete(ExperienceSkillEvidence).where(
+                select(ExperienceSkillEvidence.id).where(
                     ExperienceSkillEvidence.experience_id.in_(experience_ids)
                 )
-            )
+            ).scalars()
+        )
+        if experience_ids
+        else []
+    )
+
+    # Both evidence tables share the skill_evidence Qdrant collection
+    # (see app/retrieval/index.py). Experience-linked points are stored
+    # at evidence.id + an offset (fixes a real numeric collision with
+    # repo-linked ids sharing the same collection, see index.py's
+    # _EXPERIENCE_EVIDENCE_ID_OFFSET), passing the raw id here would
+    # either delete nothing (no point exists at that id) or, worse,
+    # delete an unrelated repo-evidence point that happens to share
+    # that raw number. Must go through experience_evidence_point_id().
+    from app.retrieval.index import experience_evidence_point_id
+
+    _delete_qdrant_points(
+        evidence_ids + [experience_evidence_point_id(i) for i in experience_evidence_ids]
+    )
+
+    point_ids = (
+        list(
             db.execute(
-                delete(ExperiencePoint).where(
+                select(ExperiencePoint.id).where(
                     ExperiencePoint.experience_id.in_(experience_ids)
                 )
+            ).scalars()
+        )
+        if experience_ids
+        else []
+    )
+    _delete_point_qdrant_vectors(point_ids)
+
+    resume_ids = list(
+        db.execute(select(Resume.id).where(Resume.account_id == account_id)).scalars()
+    )
+    _delete_resume_qdrant_points(resume_ids)
+
+    posting_ids = list(
+        db.execute(select(JobPosting.id).where(JobPosting.account_id == account_id)).scalars()
+    )
+    _delete_job_posting_qdrant_points(posting_ids)
+
+    if repo_ids:
+        db.execute(delete(SkillEvidence).where(SkillEvidence.repo_id.in_(repo_ids)))
+        db.execute(delete(Repository).where(Repository.account_id == account_id))
+    if experience_ids:
+        db.execute(
+            delete(ExperienceSkillEvidence).where(
+                ExperienceSkillEvidence.experience_id.in_(experience_ids)
             )
-            db.execute(delete(Experience).where(Experience.account_id == account_id))
-        db.execute(delete(Education).where(Education.account_id == account_id))
-        db.execute(delete(SocialLink).where(SocialLink.account_id == account_id))
-        db.execute(delete(Skill).where(Skill.account_id == account_id))
-        db.execute(delete(SkillStar).where(SkillStar.account_id == account_id))
-        db.execute(delete(SkillVerdict).where(SkillVerdict.account_id == account_id))
-        db.execute(delete(Profile).where(Profile.account_id == account_id))
-        db.execute(delete(SyncSource).where(SyncSource.account_id == account_id))
-        db.execute(delete(Resume).where(Resume.account_id == account_id))
-        db.execute(delete(JobPosting).where(JobPosting.account_id == account_id))
-        db.execute(delete(AuthSource).where(AuthSource.account_id == account_id))
+        )
+        db.execute(
+            delete(ExperiencePoint).where(
+                ExperiencePoint.experience_id.in_(experience_ids)
+            )
+        )
+        db.execute(delete(Experience).where(Experience.account_id == account_id))
+    db.execute(delete(Education).where(Education.account_id == account_id))
+    db.execute(delete(SocialLink).where(SocialLink.account_id == account_id))
+    db.execute(delete(Skill).where(Skill.account_id == account_id))
+    db.execute(delete(SkillStar).where(SkillStar.account_id == account_id))
+    db.execute(delete(SkillVerdict).where(SkillVerdict.account_id == account_id))
+    db.execute(delete(Profile).where(Profile.account_id == account_id))
+    db.execute(delete(SyncSource).where(SyncSource.account_id == account_id))
+    db.execute(delete(Resume).where(Resume.account_id == account_id))
+    db.execute(delete(JobPosting).where(JobPosting.account_id == account_id))
+    db.execute(delete(AuthSource).where(AuthSource.account_id == account_id))
 
-        # Removes every resume file for this account too: they all live
-        # under this one per-account directory (app/profile/resume_ingest.py).
-        resume_dir = Path(get_settings().resume_storage_dir) / str(account_id)
-        if resume_dir.exists():
-            shutil.rmtree(resume_dir, ignore_errors=True)
+    # Removes every resume file for this account too: they all live
+    # under this one per-account directory (app/profile/resume_ingest.py).
+    resume_dir = Path(get_settings().resume_storage_dir) / str(account_id)
+    if resume_dir.exists():
+        shutil.rmtree(resume_dir, ignore_errors=True)
 
-        # Same per-account-directory shape for job-posting screenshots
-        # (app/api/job_postings.py's from_screenshot).
-        screenshot_dir = Path(get_settings().job_screenshot_storage_dir) / str(account_id)
-        if screenshot_dir.exists():
-            shutil.rmtree(screenshot_dir, ignore_errors=True)
+    # Same per-account-directory shape for job-posting screenshots
+    # (app/api/job_postings.py's from_screenshot).
+    screenshot_dir = Path(get_settings().job_screenshot_storage_dir) / str(account_id)
+    if screenshot_dir.exists():
+        shutil.rmtree(screenshot_dir, ignore_errors=True)
 
-        db.delete(account)
-        db.commit()
-        return {"deleted": True, "account_id": account_id}
-    finally:
-        db.close()
+    db.delete(account)
+    db.commit()
+    return {"deleted": True, "account_id": account_id}

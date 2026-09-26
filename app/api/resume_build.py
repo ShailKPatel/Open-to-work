@@ -18,6 +18,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 
+from app.api.deps import DbSession
+from app.api.skills import skill_groups_for_account
 from app.core.db import JobPosting, Resume, get_db
 from app.core.llm import (
     ApiKeyMissingError,
@@ -25,6 +27,7 @@ from app.core.llm import (
     LLMProviderError,
     LLMRateLimitedError,
 )
+from app.core.pipeline import Pipeline
 from app.core.settings import get_settings
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
 from app.resume_build.orchestrator import build_resume_data, generate_resume
@@ -110,6 +113,17 @@ def _validate_template(template: str) -> None:
         )
 
 
+_MAX_HEADER_CHARS = 400
+
+
+def _header_safe(text: str) -> str:
+    """One line, bounded, for an HTTP response header. A header value
+    cannot carry the newlines these messages use to list one key per
+    line, and an over-long one gets dropped by proxies."""
+    flat = " ".join(text.split())
+    return flat if len(flat) <= _MAX_HEADER_CHARS else flat[: _MAX_HEADER_CHARS - 3] + "..."
+
+
 def _map_llm_error(e: Exception) -> HTTPException:
     if isinstance(e, ApiKeyMissingError):
         return HTTPException(status_code=422, detail=str(e))
@@ -131,96 +145,105 @@ class ResumeBuildOptionsResponse(BaseModel):
 
 
 @router.get("/options", response_model=ResumeBuildOptionsResponse)
-def get_resume_build_options(account_id: int, job_posting_id: int | None = None) -> ResumeBuildOptionsResponse:
+def get_resume_build_options(
+    account_id: int, job_posting_id: int | None = None
+,
+    *,
+    db: DbSession,) -> ResumeBuildOptionsResponse:
     from sqlalchemy import select
-    from app.core.db import Account, ContactEmail, ContactPhone, JobPosting, Repository, get_db
+
+    from app.core.db import Account, ContactEmail, ContactPhone, JobPosting, Repository
     from app.resume_build.context import build_experience_context
     from app.resume_build.orchestrator import _candidate_projects, _candidate_skills
 
-    db = get_db()
-    try:
-        account = db.get(Account, account_id)
-        if account is None:
-            raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
-        
-        posting = db.get(JobPosting, job_posting_id) if job_posting_id is not None else None
+    account = db.get(Account, account_id)
+    if account is None:
+        raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
 
-        emails_rows = list(
-            db.execute(
-                select(ContactEmail)
-                .where(ContactEmail.account_id == account_id)
-                .order_by(ContactEmail.created_at)
-            ).scalars()
+    posting = db.get(JobPosting, job_posting_id) if job_posting_id is not None else None
+
+    emails_rows = list(
+        db.execute(
+            select(ContactEmail)
+            .where(ContactEmail.account_id == account_id)
+            .order_by(ContactEmail.created_at)
+        ).scalars()
+    )
+    emails = [{"id": e.id, "email": e.email, "is_primary": e.is_primary} for e in emails_rows]
+    if not emails and account.contact_email:
+        emails = [{"id": 0, "email": account.contact_email, "is_primary": True}]
+
+    phones_rows = list(
+        db.execute(
+            select(ContactPhone)
+            .where(ContactPhone.account_id == account_id)
+            .order_by(ContactPhone.created_at)
+        ).scalars()
+    )
+    phones = [{"id": p.id, "phone": p.phone, "is_primary": p.is_primary} for p in phones_rows]
+    if not phones and account.contact_phone:
+        phones = [{"id": 0, "phone": account.contact_phone, "is_primary": True}]
+
+    cand_projects = (
+        _candidate_projects(db, account_id, posting.raw_text_quarantined) if posting else []
+    )
+    recommended_repo_ids = {c["repo_id"] for c in cand_projects[:4]}
+
+    all_repos = list(
+        db.execute(
+            select(Repository)
+            .where(Repository.account_id == account_id)
+            .order_by(Repository.starred.desc(), Repository.name)
+        ).scalars()
+    )
+    projects = []
+    for r in all_repos:
+        is_rec = r.id in recommended_repo_ids
+        projects.append({
+            "repo_id": r.id,
+            "name": r.name,
+            "description": r.description or "",
+            "url": r.url,
+            "starred": r.starred,
+            "recommended": is_rec,
+        })
+
+    cand_skills = _candidate_skills(account_id, posting.raw_text_quarantined) if posting else []
+    # Every retrieval candidate is a recommendation: the loop below the
+    # skills list appends whatever is left over with recommended=True
+    # anyway, so narrowing this set would only disagree with itself.
+    cand_skills_folded = {s.casefold() for s in cand_skills}
+
+    all_skills_data = skill_groups_for_account(db, account_id)
+    skills = []
+    seen_skill_names = set()
+    for sk_obj in all_skills_data:
+        sk_name = (
+            sk_obj.get("name") if isinstance(sk_obj, dict) else getattr(sk_obj, "name", "")
         )
-        emails = [{"id": e.id, "email": e.email, "is_primary": e.is_primary} for e in emails_rows]
-        if not emails and account.contact_email:
-            emails = [{"id": 0, "email": account.contact_email, "is_primary": True}]
-
-        phones_rows = list(
-            db.execute(
-                select(ContactPhone)
-                .where(ContactPhone.account_id == account_id)
-                .order_by(ContactPhone.created_at)
-            ).scalars()
-        )
-        phones = [{"id": p.id, "phone": p.phone, "is_primary": p.is_primary} for p in phones_rows]
-        if not phones and account.contact_phone:
-            phones = [{"id": 0, "phone": account.contact_phone, "is_primary": True}]
-
-        cand_projects = _candidate_projects(db, account_id, posting.raw_text_quarantined) if posting else []
-        recommended_repo_ids = {c["repo_id"] for c in cand_projects[:4]}
-
-        all_repos = list(
-            db.execute(
-                select(Repository).where(Repository.account_id == account_id).order_by(Repository.starred.desc(), Repository.name)
-            ).scalars()
-        )
-        projects = []
-        for r in all_repos:
-            is_rec = r.id in recommended_repo_ids
-            projects.append({
-                "repo_id": r.id,
-                "name": r.name,
-                "description": r.description or "",
-                "url": r.url,
-                "starred": r.starred,
-                "recommended": is_rec,
+        if sk_name and sk_name.casefold() not in seen_skill_names:
+            seen_skill_names.add(sk_name.casefold())
+            skills.append({
+                "name": sk_name,
+                "recommended": sk_name.casefold() in cand_skills_folded,
+            })
+    for c_sk in cand_skills:
+        if c_sk.casefold() not in seen_skill_names:
+            seen_skill_names.add(c_sk.casefold())
+            skills.append({
+                "name": c_sk,
+                "recommended": True,
             })
 
-        cand_skills = _candidate_skills(account_id, posting.raw_text_quarantined) if posting else []
-        rec_skills_set = set(cand_skills[:12])
+    experience = build_experience_context(db, account_id)
 
-        from app.api.skills import list_skills
-        all_skills_data = list_skills(account_id)
-        skills = []
-        seen_skill_names = set()
-        for sk_obj in all_skills_data:
-            sk_name = sk_obj.get("name") if isinstance(sk_obj, dict) else getattr(sk_obj, "name", "")
-            if sk_name and sk_name.casefold() not in seen_skill_names:
-                seen_skill_names.add(sk_name.casefold())
-                skills.append({
-                    "name": sk_name,
-                    "recommended": sk_name in rec_skills_set or sk_name.casefold() in {s.casefold() for s in cand_skills},
-                })
-        for c_sk in cand_skills:
-            if c_sk.casefold() not in seen_skill_names:
-                seen_skill_names.add(c_sk.casefold())
-                skills.append({
-                    "name": c_sk,
-                    "recommended": True,
-                })
-
-        experience = build_experience_context(db, account_id)
-
-        return ResumeBuildOptionsResponse(
-            emails=emails,
-            phones=phones,
-            projects=projects,
-            skills=skills,
-            experience=experience,
-        )
-    finally:
-        db.close()
+    return ResumeBuildOptionsResponse(
+        emails=emails,
+        phones=phones,
+        projects=projects,
+        skills=skills,
+        experience=experience,
+    )
 
 
 
@@ -271,38 +294,67 @@ def generate(body: GenerateRequest) -> Response:
     loop, returns the PDF bytes directly (Content-Type: application/pdf),
     same "serve the raw file" convention app/api/resume.py's
     GET /{id}/file already uses.
+
+    The page count the caller picks (one page or two, or an explicit
+    max_pages) is an exact target, not a ceiling: the page-fit loop
+    tightens or opens up the layout, and adds back the account's own
+    held-back content, to land on it in both directions. X-Page-Fit-
+    Achieved reports whether it got there, X-Page-Count what it actually
+    produced.
     """
     _validate_template(body.template)
     max_pages = body.max_pages or _DEFAULT_MAX_PAGES[body.template]
 
+    # Two LLM steps, and the second one is worth finishing even if it
+    # cannot: the content step's work is already paid for by the time the
+    # page-fit step runs. Naming the steps means a stop says which one
+    # stopped and what had already finished, instead of one flat message.
+    run = Pipeline("The resume build", account_id=body.account_id)
+    fit_note: str | None = None
+
     try:
-        data = build_resume_data(
-            body.account_id,
-            body.job_posting_id,
-            template=body.template,
-            selected_email=body.selected_email,
-            selected_phone=body.selected_phone,
-            selected_project_ids=body.selected_project_ids,
-            project_instructions=body.project_instructions,
-            selected_skills=body.selected_skills,
-            selected_experience_ids=body.selected_experience_ids,
-            custom_instruction=body.custom_instruction,
-        )
+        with run.stage("tailoring the content to the job"):
+            data = build_resume_data(
+                body.account_id,
+                body.job_posting_id,
+                template=body.template,
+                selected_email=body.selected_email,
+                selected_phone=body.selected_phone,
+                selected_project_ids=body.selected_project_ids,
+                project_instructions=body.project_instructions,
+                selected_skills=body.selected_skills,
+                selected_experience_ids=body.selected_experience_ids,
+                custom_instruction=body.custom_instruction,
+            )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError) as e:
         raise _map_llm_error(e) from e
 
     try:
-        result = fit_to_page_limit(data, body.template, max_pages, account_id=body.account_id)
+        with run.stage("fitting the resume to the page count"):
+            result = fit_to_page_limit(
+                data, body.template, max_pages, account_id=body.account_id
+            )
         pdf_bytes = result.pdf_bytes
         page_count = result.page_count
-        achieved = True
+        achieved = result.fit_exact
+        content = result.data or data
+        if not achieved:
+            logger.warning(
+                "page-fit came up short for account_id=%s: %s page(s) against a target of %s",
+                body.account_id, page_count, max_pages,
+            )
     except PageFitNotAchievedError as e:
+        # Includes the case where the page-fit step lost every key
+        # partway: the content is written and compiled, so the resume is
+        # saved and returned with the reason attached rather than lost.
         logger.warning("page-fit did not reach target for account_id=%s: %s", body.account_id, e)
         pdf_bytes = e.best_pdf_bytes
         page_count = e.best_page_count
         achieved = False
+        content = e.best_data or data
+        fit_note = str(e)
     except TectonicNotInstalledError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except CompileError as e:
@@ -310,8 +362,12 @@ def generate(body: GenerateRequest) -> Response:
     except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError) as e:
         raise _map_llm_error(e) from e
 
+    # What gets saved is the content that was actually rendered, after
+    # the page-fit loop's cuts and additions, not the pre-fit draft: the
+    # library row and the PDF beside it have to describe the same resume.
+    content.pop("reserve", None)
     resume_id = _save_generated_resume(
-        body.account_id, body.job_posting_id, body.template, data, pdf_bytes
+        body.account_id, body.job_posting_id, body.template, content, pdf_bytes
     )
 
     return Response(
@@ -320,7 +376,12 @@ def generate(body: GenerateRequest) -> Response:
         headers={
             "Content-Disposition": "inline; filename=resume.pdf",
             "X-Page-Fit-Achieved": "true" if achieved else "false",
+            # Only set when the fit fell short for a reason worth telling
+            # the person (ran out of safe cuts, or ran out of keys).
+            # Header-safe: newlines flattened, length bounded.
+            **({"X-Page-Fit-Note": _header_safe(fit_note)} if fit_note else {}),
             "X-Page-Count": str(page_count),
+            "X-Page-Target": str(max_pages),
             "X-Resume-Id": str(resume_id) if resume_id is not None else "",
         },
     )

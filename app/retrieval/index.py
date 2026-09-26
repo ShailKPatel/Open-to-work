@@ -13,7 +13,7 @@ index_experience_points() is the newest of these, and the one the whole
 "one paragraph vs many points" redesign was for: each ExperiencePoint is
 its own embedded unit in its own collection, so a resume-building pass
 can pull back whichever points actually match a target job instead of
-reading one fixed block of text. See app/core/db.py's ExperiencePoint
+reading one fixed block of text. See app/core/db/models.py's ExperiencePoint
 docstring.
 
 app/retrieval/search.py is the read side of all of this: the query layer

@@ -9,8 +9,7 @@ from app.core.settings import get_settings
 def _reset_db(tmp_path: Path):
     import os
 
-    db_module._engine = None
-    db_module._SessionLocal = None
+    db_module.reset_engine()
     # Job posting creation now also resolves a role family (embeds the
     # title, searches Qdrant) and indexes the posting itself. Without
     # pointing this at the in-memory test collection, these tests would

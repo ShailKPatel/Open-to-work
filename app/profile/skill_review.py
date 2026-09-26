@@ -2,7 +2,7 @@
 extraction, resume tags), so junk like transitive packages, type stubs, or a
 class inside a library doesn't land on the skills list.
 
-Each account keeps a verdict per name (SkillVerdict in app/core/db.py):
+Each account keeps a verdict per name (SkillVerdict in app/core/db/models.py):
 "rejected" or "approved". Only names with no verdict yet go to the LLM,
 deduplicated and split into batches of BATCH_SIZE, and the model is asked
 for just the names to remove: a short list back is cheaper than a label for
@@ -25,9 +25,17 @@ import datetime as dt
 import logging
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.db import SkillVerdict
-from app.core.llm import BudgetExceededError, LLMRateLimitedError, complete, system_message, user_message
+from app.core.llm import (
+    BudgetExceededError,
+    LLMRateLimitedError,
+    complete,
+    is_out_of_keys,
+    system_message,
+    user_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +68,7 @@ def name_key(name: str) -> str:
     return " ".join(name.split()).casefold()
 
 
-def rejected_keys(db, account_id: int | None) -> set[str]:
+def rejected_keys(db: Session, account_id: int | None) -> set[str]:
     if account_id is None:
         return set()
     return set(
@@ -72,7 +80,7 @@ def rejected_keys(db, account_id: int | None) -> set[str]:
     )
 
 
-def approve(db, account_id: int, name: str) -> None:
+def approve(db: Session, account_id: int, name: str) -> None:
     """Records a person's own "this is a skill". Commits."""
     key = name_key(name)
     if not key:
@@ -102,7 +110,9 @@ def _names_to_remove(names: list[str], account_id: int) -> set[str]:
         system_message(_SYSTEM_PROMPT),
         user_message(f"Skill names, one per line:\n{listing}"),
     ]
-    response = complete("bulk", messages, schema=_SCHEMA, account_id=account_id)
+    response = complete(
+        "bulk", messages, schema=_SCHEMA, account_id=account_id, purpose="skill_review"
+    )
     if response.parsed is None:
         raise ValueError("skill review returned no parseable JSON")
     asked = {name_key(n) for n in names}
@@ -110,7 +120,7 @@ def _names_to_remove(names: list[str], account_id: int) -> set[str]:
     return {name_key(str(n)) for n in response.parsed.get("remove", [])} & asked
 
 
-def review_names(db, account_id: int, names: list[str]) -> set[str]:
+def review_names(db: Session, account_id: int, names: list[str]) -> set[str]:
     """Judges every name in `names` that has no verdict yet, stores the
     verdicts, and returns the keys of all rejected names among `names`
     (new and previously rejected alike).
@@ -146,7 +156,12 @@ def review_names(db, account_id: int, names: list[str]) -> set[str]:
         except (BudgetExceededError, LLMRateLimitedError) as e:
             logger.warning("skill review stopped for account %s: %s", account_id, e)
             break
-        except Exception:
+        except Exception as e:
+            if is_out_of_keys(e):
+                logger.warning(
+                    "skill review stopped for account %s, no key left: %s", account_id, e
+                )
+                break
             logger.exception("skill review batch failed for account %s", account_id)
             continue
         for name in batch:

@@ -12,6 +12,7 @@ Each skill links back to the evidence behind it: a dependency manifest, a README
 - **Skill extraction** per repository. Dependencies come from manifests for Python, JavaScript, Go, Rust, Ruby, and JVM (Maven/Gradle) projects with no LLM involved. One LLM call reads the README, or the repository description if there is no README, and repositories with neither make no LLM call.
 - **Evidence weighting** by source type, fork status, commit recency, and commit volume. Evidence for the same skill across repositories is combined with a noisy-OR.
 - **Per-repository status** (pending, extracted, failed, rate limited, no signal) with manual reprocessing. A provider rate limit or budget cap stops the batch. The next run continues from there without repeating completed repositories.
+- **Skill map**: every skill placed on one plane, with related skills near each other and groups named after their most central member. Each name is embedded together with the evidence around it, so placement follows what a skill was used with rather than how it is spelled. The layout is cached and rebuilt only when the skills change.
 - **Manual portfolio data**: projects, work experience as individual bullet points, education, skills, contact details, social links, and starred projects and skills.
 - **Resume library**: upload PDF or image resumes. Tags, target roles, a summary, and work history are extracted, then merged into the profile without duplicating existing skills or roles.
 
@@ -33,7 +34,8 @@ Each skill links back to the evidence behind it: a dependency manifest, a README
 
 - Multiple local profiles on one machine, with no login.
 - LLM provider keys are entered in the app and encrypted at rest. Supported providers are Gemini (the default), OpenAI, Anthropic, Mistral, Azure OpenAI, AWS Bedrock, and Ollama. Keys can be disabled, limited to specific profiles, or given their own monthly budget. The model for each tier and the overall monthly budget are picked on the same page.
-- Every LLM call goes through a single client. The client caches responses by content hash, checks the monthly budget before sending a request, and records cost, tokens, and latency for each call.
+- Keys for the same provider back each other up. A key that runs out of quota or gets rejected halfway through a long job is set aside and the next key takes over the same request, so the job carries on from where it was instead of starting over. The job only stops once every key is spent, and it then says which step it stopped at, what had already finished, and what happened to each key. Work already done is kept, so running it again continues rather than repeats.
+- Every LLM call goes through a single client. The client caches responses by content hash, checks the monthly budget before sending a request, and records cost, tokens, latency, and which feature spent the call. The usage page breaks spend down by feature, so it is clear what the month went on.
 - A monitor page shows GitHub rate-limit headroom, LLM spend broken down by provider, key, profile, tier, and model, and a log of rate-limit events.
 - The SQLite database is snapshotted to `data/backups/` on every startup, and the 10 most recent snapshots are kept.
 
@@ -85,9 +87,9 @@ On the **Manage APIs** page (`/apis`):
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| Provider keys | none | Encrypted at rest. Any number of keys per provider. |
+| Provider keys | none | Encrypted at rest. Any number of keys per provider, used as failover for each other. A key that runs out of quota is rechecked by itself once its limit has had time to reset; a key the provider blocked waits for you to fix it. |
 | Bulk model | `gemini/gemini-flash-lite-latest` | Per-repository extraction, role-family naming, and groundedness checks. |
-| Quality model | `gemini/gemini-flash-latest` | Resume generation, page fitting, and job and resume extraction. |
+| Quality model | `gemini/gemini-flash-latest` | Resume generation, page-fit cuts, and job and resume extraction. |
 | Monthly budget | $20 | Cap across all LLM calls, checked before each request. |
 
 Gemini is the default because its keys are free and quick to get. The `-latest` aliases follow Google's current Flash models, so the defaults keep working after older versions are retired. To use another provider, add its key and pick its models on the same page. The model field suggests models from LiteLLM's catalog and accepts any LiteLLM model name, such as `ollama/llama3.1`.
@@ -145,7 +147,7 @@ app/
   ingest/jobs/    public URL fetch and authenticated browser fetch
   profile/        skill extraction and weighting, resume and job extraction, role families
   retrieval/      Qdrant indexing and search
-  resume_build/   resume assembly, LaTeX templates, compilation, page fitting
+  resume_build/   resume assembly, LaTeX templates, compilation, exact page fitting
   evals/          golden set, BM25 baseline, metrics, groundedness
   web/templates/  Jinja2 pages
 scripts/          golden-set labeling and one-off migrations
