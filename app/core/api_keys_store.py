@@ -410,7 +410,11 @@ def recheck_keys(scope: str = "due") -> list[dict]:
                 # of the pass, which often runs unattended at startup.
                 logger.exception("could not recheck key id=%s; leaving it as it was", row.id)
         db.commit()
-        return [_to_out(db.get(ApiKey, r.id)) for r in targets]
+        # db.get re-reads each row after the commit expired it. None means
+        # the key was deleted while the pass was running (the /apis page
+        # stays usable during the background recheck), so it is dropped
+        # from the report rather than reloaded into an error.
+        return [_to_out(k) for r in targets if (k := db.get(ApiKey, r.id)) is not None]
     finally:
         db.close()
 
