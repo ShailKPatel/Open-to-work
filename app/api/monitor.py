@@ -12,7 +12,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -228,7 +228,10 @@ def _key_usage_this_month() -> dict[int, tuple[int, float]]:
             .where(LLMCall.created_at >= _month_start(), LLMCall.key_id.is_not(None))
             .group_by(LLMCall.key_id)
         ).all()
-        return {key_id: (calls, float(cost)) for key_id, calls, cost in rows}
+        # key_id is nullable on the model, but the where clause above keeps
+        # only the rows where it is set, which is what makes the int key of
+        # the returned mapping sound.
+        return {cast(int, key_id): (calls, float(cost)) for key_id, calls, cost in rows}
     finally:
         db.close()
 
@@ -279,7 +282,7 @@ def status() -> MonitorStatus:
 
 def _filtered_calls_query(
     *, days: int, account_id: int | None, key_id: int | None, purpose: str | None = None
-) -> Select[tuple[LLMCall]]:
+) -> Select[LLMCall]:
     """Every filter except `provider` applies here: `provider` isn't its
     own column, it's derived from the litellm model-string prefix (see
     app/core/llm_providers.py), so callers filter rows by it in Python
