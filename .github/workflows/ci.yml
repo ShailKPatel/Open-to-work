@@ -143,11 +143,11 @@ jobs:
       HF_HUB_OFFLINE: "0"
       TRANSFORMERS_OFFLINE: "0"
       DATABASE_URL: sqlite:///${{ github.workspace }}/ci-eval.db
-      EVALS_RESULTS_DIR: ${{ runner.temp }}/eval-results
+      EVALS_RESULTS_DIR: ${{ github.workspace }}/ci-eval-results
       # app/evals/run.py loads "golden_set.yaml" from this directory. The
       # committed fixture has a name of its own so it cannot be confused with
       # a real golden set, so it is copied into place below.
-      EVALS_GOLDEN_DIR: ${{ runner.temp }}/eval-golden
+      EVALS_GOLDEN_DIR: ${{ github.workspace }}/ci-eval-golden
 
     steps:
       - uses: actions/checkout@v4
@@ -199,8 +199,8 @@ jobs:
           # is free. The account id is the fixture's, see the constant in
           # scripts/seed_eval_fixture.py.
           set -o pipefail
-          python -m app.evals 9001 --no-groundedness | tee "$RUNNER_TEMP/eval.txt"
-          echo "EVAL_REPORT=$(sed -n 's/^Written to //p' "$RUNNER_TEMP/eval.txt")" >> "$GITHUB_ENV"
+          python -m app.evals 9001 --no-groundedness | tee eval.txt
+          echo "EVAL_REPORT=$(sed -n 's/^Written to //p' eval.txt)" >> "$GITHUB_ENV"
 
       - name: Check against the committed baseline
         run: python -m scripts.check_eval_baseline --report "$EVAL_REPORT" --baseline evals/ci_baseline.json
@@ -210,4 +210,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: eval-report
-          path: ${{ runner.temp }}/eval-results/
+          path: ci-eval-results/
