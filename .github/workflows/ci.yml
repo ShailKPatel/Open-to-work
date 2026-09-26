@@ -113,3 +113,101 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
+  # Not on push: the eval job pulls a service container and a 400MB embedding
+  # model, and the retrieval numbers only need to be defended at the point a
+  # change would land. Keeping it off the push path keeps the inner loop at
+  # the three minutes the two jobs above take.
+  eval:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+
+    services:
+      # The real server, not qdrant-client's local mode. Seeding and scoring
+      # are two separate processes (the same shape as `make ingest` then
+      # `make eval`), and an in-process client cannot carry an index between
+      # them. Same image docker-compose.yml runs, so the gate measures what a
+      # developer measures. The floating tag is deliberate for that reason;
+      # it also means a Qdrant release can move these numbers, which the
+      # baseline's tolerance is not there to absorb. Read a failure here
+      # before assuming the code caused it.
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+
+    env:
+      QDRANT_URL: http://localhost:6333
+      # The eval runs the real embedding model, unlike the unit suite, so the
+      # offline flags set at the workflow level have to come back off here.
+      HF_HUB_OFFLINE: "0"
+      TRANSFORMERS_OFFLINE: "0"
+      DATABASE_URL: sqlite:///${{ github.workspace }}/ci-eval.db
+      EVALS_RESULTS_DIR: ${{ runner.temp }}/eval-results
+      # app/evals/run.py loads "golden_set.yaml" from this directory. The
+      # committed fixture has a name of its own so it cannot be confused with
+      # a real golden set, so it is copied into place below.
+      EVALS_GOLDEN_DIR: ${{ runner.temp }}/eval-golden
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          # EMBEDDING_MODEL is a constant in embeddings.py, and changing it
+          # invalidates every stored vector, so keying on that file means the
+          # cache is dropped exactly when the model changes.
+          key: hf-${{ runner.os }}-${{ hashFiles('app/core/embeddings.py') }}
+
+      - name: Install dependencies
+        run: |
+          # Same CPU-only torch reasoning as the jobs above.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+
+      - name: Wait for Qdrant
+        run: |
+          # The service container is started before the job, but readiness is
+          # not the same as started, and seeding fails confusingly if it wins
+          # the race.
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:6333/readyz > /dev/null && exit 0
+            sleep 2
+          done
+          echo "qdrant did not become ready" >&2
+          exit 1
+
+      - name: Seed the synthetic fixture
+        run: |
+          mkdir -p "$EVALS_GOLDEN_DIR"
+          cp evals/golden/ci_fixture.yaml "$EVALS_GOLDEN_DIR/golden_set.yaml"
+          python -m scripts.seed_eval_fixture
+
+      - name: Run the eval
+        shell: bash
+        run: |
+          # --no-groundedness skips the LLM-judge pass: it needs a key and
+          # spends money, while the retrieval comparison this gate is built on
+          # is free. The account id is the fixture's, see the constant in
+          # scripts/seed_eval_fixture.py.
+          set -o pipefail
+          python -m app.evals 9001 --no-groundedness | tee "$RUNNER_TEMP/eval.txt"
+          echo "EVAL_REPORT=$(sed -n 's/^Written to //p' "$RUNNER_TEMP/eval.txt")" >> "$GITHUB_ENV"
+
+      - name: Check against the committed baseline
+        run: python -m scripts.check_eval_baseline --report "$EVAL_REPORT" --baseline evals/ci_baseline.json
+
+      - name: Upload the eval report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: ${{ runner.temp }}/eval-results/
