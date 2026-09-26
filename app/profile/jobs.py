@@ -14,8 +14,15 @@ quit; it re-checks after each pass. That's what lets it run in
 parallel with an in-flight GitHub sync: sync commits repos one at a time,
 marking each "pending" as it lands, and this worker picks them up as they
 appear rather than only seeing whatever was already there when it started.
-It gives up after a few consecutive empty passes (nothing pending, several
-checks in a row) rather than polling forever.
+
+Each repo is attempted at most once per run. Re-checking is for repos that
+appeared since the last pass, not for repos this run already tried: a
+"failed" repo stays eligible for the *next* run (that is what makes a
+transient failure retryable) but is not offered to this one again, so a
+repo that fails for a reason no retry fixes cannot turn the re-check loop
+into an endless one. The run ends when a pass finds nothing new, after a
+few consecutive empty checks so it isn't fooled by the gap between two
+sync commits.
 """
 
 from __future__ import annotations
@@ -72,9 +79,20 @@ def _eligible_repos(account_id: int) -> list[Repository]:
 def _worker(account_id: int, job: Job) -> None:
     total_done = 0
     empty_passes = 0
+    # Repos this run has already handed to build_profile_progress. A repo
+    # left "failed" stays eligible on purpose (see _eligible_repos, and
+    # Repository.skill_extraction_status), which is right across runs and
+    # wrong inside one: without this set, a repo that fails for a reason no
+    # retry fixes (a README the provider refuses, a model name that does
+    # not exist, a prompt too long) is re-fetched by the next pass, fails
+    # the same way, and the loop never ends, spending one provider request
+    # per pass for the life of the process. Tried once here, retried by the
+    # next run. A repo the concurrent sync commits while this run is going
+    # is not in the set, so the re-check loop still does its real job.
+    attempted: set[int] = set()
     job.set_state(stage="running", index=0, total=0, name="")
     while True:
-        repos = _eligible_repos(account_id)
+        repos = [r for r in _eligible_repos(account_id) if r.id not in attempted]
         if not repos:
             empty_passes += 1
             if empty_passes >= _EMPTY_PASSES_BEFORE_STOP:
@@ -82,6 +100,7 @@ def _worker(account_id: int, job: Job) -> None:
             time.sleep(_EMPTY_PASS_DELAY_SECONDS)
             continue
         empty_passes = 0
+        attempted.update(r.id for r in repos)
 
         for event in build_profile_progress(repos):
             if event["stage"] == "repo_progress":
