@@ -355,3 +355,64 @@ def test_llm_calls_carry_and_filter_by_purpose(tmp_path):
 
     assert [r["id"] for r in rows] == [facts_call]
     assert rows[0]["purpose"] == "repo_facts"
+
+
+def _set_cap(key_id: int, cap: float | None) -> None:
+    db = get_db()
+    try:
+        row = db.get(ApiKey, key_id)
+        assert row is not None
+        row.budget_cap_usd = cap
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_status_reports_spend_as_measurable_on_a_priced_model(tmp_path):
+    _reset_db(tmp_path)
+    _make_key()
+    body = _client().get("/api/monitor/status").json()
+
+    assert body["llm"]["spend_measurable"] is True
+    assert body["llm"]["unpriced_models"] == []
+
+
+def test_status_separates_zero_spend_from_unmeasurable_spend(tmp_path):
+    """$0.00 spent and "spending is not being measured" are the same number
+    and opposite facts. An unpriceable model records 0.00 per call, so the
+    distinction has to be carried rather than inferred from the figure.
+    """
+    from app.core import app_settings
+
+    _reset_db(tmp_path)
+    app_settings.update_llm_settings(bulk_model="openai/my-finetune-2027")
+    body = _client().get("/api/monitor/status").json()
+
+    assert body["llm"]["spent_usd"] == 0.0
+    assert body["llm"]["spend_measurable"] is False
+    assert body["llm"]["unpriced_models"] == ["openai/my-finetune-2027"]
+
+
+def test_a_per_key_cap_is_reported_unenforceable_on_an_unpriceable_model(tmp_path):
+    """The per-key cap has the same root as the global one and is easier to
+    miss, since only the global one is warned about on /apis."""
+    from app.core import app_settings
+
+    _reset_db(tmp_path)
+    capped = _make_key(label="capped")
+    uncapped = _make_key(label="uncapped")
+    _set_cap(capped, 5.0)
+
+    def caps() -> dict[str, bool]:
+        keys = _client().get("/api/monitor/status").json()["keys"]
+        return {k["id"]: k["cap_enforceable"] for k in keys}
+
+    assert caps() == {capped: True, uncapped: True}
+
+    app_settings.update_llm_settings(bulk_model="openai/my-finetune-2027")
+    # the capped key can no longer enforce it; the uncapped one has nothing
+    # to enforce and is not reported as broken
+    assert caps() == {capped: False, uncapped: True}
+
+    app_settings.update_llm_settings(bulk_model=app_settings.DEFAULT_BULK_MODEL)
+    assert caps() == {capped: True, uncapped: True}

@@ -186,3 +186,56 @@ def test_invalid_stored_model_is_never_dispatched(tmp_path):
         db.close()
 
     assert app_settings.get_llm_settings().bulk_model == app_settings.DEFAULT_BULK_MODEL
+
+
+def test_a_priced_model_reports_no_budget_warning(tmp_path):
+    _reset_db(tmp_path)
+
+    assert app_settings.is_model_priced("gemini/gemini-flash-lite-latest") is True
+    assert app_settings.unpriced_models_in_use() == []
+
+
+def test_a_model_litellm_cannot_price_is_saved_but_flagged(tmp_path):
+    """The budget is a sum over recorded cost, and an unpriceable model
+    records 0.00 per call, so every cap stops working. Saving it is still
+    right: a new release or a local model is a real choice, and
+    suggested_models() promises any provider-prefixed string can be picked.
+    """
+    _reset_db(tmp_path)
+    unpriceable = "gemini/gemini-4-ultra-preview-2027"
+
+    assert app_settings.is_model_priced(unpriceable) is False
+
+    updated = app_settings.update_llm_settings(bulk_model=unpriceable)
+    assert updated.bulk_model == unpriceable  # accepted, not rejected
+    assert app_settings.unpriced_models_in_use() == [unpriceable]
+
+
+def test_the_settings_endpoint_warns_about_an_unpriceable_model(tmp_path):
+    _reset_db(tmp_path)
+    client = _client()
+    unpriceable = "openai/my-finetune-2027"
+
+    healthy = client.get("/api/app-settings/llm").json()
+    assert healthy["unpriced_models"] == []
+    assert healthy["budget_warning"] is None
+
+    response = client.put("/api/app-settings/llm", json={"bulk_model": unpriceable})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bulk_model"] == unpriceable
+    assert body["unpriced_models"] == [unpriceable]
+    assert "$0.00" in body["budget_warning"]
+    assert unpriceable in body["budget_warning"]
+
+    # and it stays flagged on a later read, not only on the save that set it
+    assert client.get("/api/app-settings/llm").json()["unpriced_models"] == [unpriceable]
+
+
+def test_both_tiers_unpriceable_are_listed_once_each(tmp_path):
+    _reset_db(tmp_path)
+    app_settings.update_llm_settings(
+        bulk_model="openai/my-finetune-2027", quality_model="openai/my-finetune-2027"
+    )
+
+    assert app_settings.unpriced_models_in_use() == ["openai/my-finetune-2027"]
