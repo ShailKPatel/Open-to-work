@@ -20,6 +20,7 @@ checks in a row) rather than polling forever.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 from collections.abc import Iterator
@@ -123,3 +124,98 @@ def extraction_snapshot(account_id: int) -> dict | None:
 
 def extraction_stream(account_id: int) -> Iterator[dict[str, Any]]:
     return job_stream(_job_key(account_id))
+
+
+_STOP_NOTE = " Processing stopped here"
+
+
+def _earliest_key_retry() -> dt.datetime | None:
+    """When the soonest out-of-quota API key is due back, if any."""
+    from app.core import api_keys_store
+
+    times = [
+        dt.datetime.fromisoformat(key["retry_at"])
+        for key in api_keys_store.list_keys()
+        if key["enabled"] and key["status"] == "rate_limited" and key["retry_at"]
+    ]
+    return min(times) if times else None
+
+
+def extraction_reminder(account_id: int) -> dict[str, Any]:
+    """Where this account's skill extraction stands, for the reminder
+    widget and the sync page. Rebuilt from each repo's saved
+    skill_extraction_status, so it still knows where a run stopped after
+    the app was closed part way: repos already done stay done, and the
+    first one still waiting is where Continue picks up.
+
+    `reason` is the saved error of the repo a limit stopped on (budget cap,
+    rate limit, or out of keys), without the generic "stopped here" tail.
+    `retry_at` is when the soonest exhausted API key is due back; the key
+    refresh pass continues the run on its own then
+    (resume_rate_limited_extractions below)."""
+    db = get_db()
+    try:
+        repos = list(
+            db.execute(
+                select(Repository)
+                .where(Repository.account_id == account_id)
+                .order_by(Repository.id)
+            ).scalars()
+        )
+    finally:
+        db.close()
+
+    by_status: dict[str, list[Repository]] = {}
+    for repo in repos:
+        by_status.setdefault(repo.skill_extraction_status, []).append(repo)
+    limited = by_status.get("rate_limited", [])
+    waiting = limited + by_status.get("pending", [])
+    failed = by_status.get("failed", [])
+
+    reason = None
+    if limited:
+        error = limited[0].skill_extraction_error or ""
+        reason = error.split(_STOP_NOTE)[0].strip() or None
+    elif failed and not waiting:
+        reason = failed[0].skill_extraction_error
+
+    next_up = (waiting or failed)[:1]
+    snapshot = extraction_snapshot(account_id) or {}
+    running = bool(snapshot.get("running"))
+    return {
+        "running": running,
+        "index": snapshot.get("index") if running else None,
+        "total": snapshot.get("total") if running else None,
+        "current": snapshot.get("name") if running else None,
+        "total_repos": len(repos),
+        "done": len(by_status.get("extracted", [])) + len(by_status.get("no_signal", [])),
+        "waiting": len(waiting),
+        "failed": len(failed),
+        "rate_limited": len(limited),
+        "next_repo": next_up[0].full_name if next_up else None,
+        "reason": reason,
+        "retry_at": _earliest_key_retry() if limited else None,
+    }
+
+
+def resume_rate_limited_extractions() -> list[int]:
+    """Continues every account's extraction that a limit stopped, once an
+    API key is back in rotation (called from app/core/key_refresh.py).
+    Only runs that were cut off by a limit: an app closed mid-run waits
+    for the person to press Continue, since each call costs money."""
+    db = get_db()
+    try:
+        account_ids = sorted(
+            {
+                account_id
+                for account_id in db.execute(
+                    select(Repository.account_id).where(
+                        Repository.skill_extraction_status == "rate_limited",
+                        Repository.account_id.is_not(None),
+                    )
+                ).scalars()
+            }
+        )
+    finally:
+        db.close()
+    return [account_id for account_id in account_ids if start_extraction(account_id)]

@@ -167,6 +167,16 @@ def _candidate_projects(
         if repo_id not in best_score:
             order.append(repo_id)
         best_score[repo_id] = max(best_score.get(repo_id, hit.score), hit.score)
+    # The profile README's evidence is indexed like any repo's (it is a
+    # skill source), but it is never a project to put on a resume.
+    profile_ids = set(
+        db.execute(
+            select(Repository.id).where(
+                Repository.account_id == account_id, Repository.is_profile_readme.is_(True)
+            )
+        ).scalars()
+    )
+    order = [rid for rid in order if rid not in profile_ids]
     order.sort(key=lambda rid: best_score[rid], reverse=True)
     top_repo_ids = order[:_MAX_CANDIDATE_PROJECTS]
 
@@ -179,7 +189,7 @@ def _candidate_projects(
         all_repos = list(
             db.execute(
                 select(Repository)
-                .where(Repository.account_id == account_id)
+                .where(Repository.account_id == account_id, Repository.is_profile_readme.is_(False))
                 .limit(_MAX_CANDIDATE_PROJECTS)
             ).scalars()
         )
@@ -188,7 +198,9 @@ def _candidate_projects(
     repos_by_id = {
         r.id: r
         for r in db.execute(
-            select(Repository).where(Repository.id.in_(top_repo_ids))
+            select(Repository).where(
+                Repository.id.in_(top_repo_ids), Repository.is_profile_readme.is_(False)
+            )
         ).scalars()
     }
     skills_by_repo: dict[int, list[str]] = {}

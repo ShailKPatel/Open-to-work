@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Authenticated sources · Open to Work{% endblock %}
 {% block content %}
 <div x-data="authSourcesApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -79,7 +80,7 @@
               <button @click="toggleEnabled(source)" class="text-xs underline">
                 <span x-text="source.enabled ? 'Disable' : 'Enable'"></span>
               </button>
-              <button @click="remove(source)" class="text-xs otw-btn-danger-text">Delete</button>
+              {{ ui.bin_button("remove(source)", label="Delete login", size="sm") }}
             </div>
           </div>
         </div>
@@ -177,7 +178,7 @@
       },
 
       async remove(source) {
-        if (!confirm(`Delete "${source.label}"? Its stored credentials are removed too.`)) return;
+        if (!(await otwConfirm({ title: `Delete "${source.label}"?`, body: 'Its stored credentials are removed too.' }))) return;
         await fetch(`/api/auth-sources/${source.id}`, { method: 'DELETE' });
         this.sources = this.sources.filter((s) => s.id !== source.id);
       },

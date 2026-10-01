@@ -37,7 +37,7 @@ _PAGES = [
     "/monitor",
     "/explanation",
     "/settings",
-    "/settings/sources",
+    "/monitor/sync",
     "/settings/auth-sources",
     "/apis",
 ]

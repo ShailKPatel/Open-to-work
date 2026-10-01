@@ -1,6 +1,8 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Links · Open to Work{% endblock %}
 {% block content %}
+{% set platforms = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("instagram", "Instagram"), ("website", "Website"), ("other", "Other")] %}
 <div x-data="contactApp()" x-init="init()" class="min-h-screen flex flex-col">
 
   {% set top_active = 'portfolio' %}
@@ -10,20 +12,30 @@
     {% set data_active = 'contact' %}
     {% include "_portfolio_subnav.html" %}
 
-    <h1 class="font-display text-3xl mt-8">Links</h1>
+    <h1 class="font-display text-4xl mt-8">Links</h1>
+    <p class="text-sm text-[color:var(--muted)] mt-2">How you appear at the top of every resume.</p>
 
-    <a
-      x-show="githubUsername"
-      x-cloak
-      :href="'https://github.com/' + githubUsername"
-      target="_blank"
-      rel="noopener"
-      class="inline-flex items-center gap-1.5 mt-3 text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)] underline"
-    ><span x-html="icon('github')" class="otw-icon"></span>GitHub ↗ <span x-text="'@' + githubUsername"></span></a>
-
-    <div class="otw-tile p-5 mt-6">
-      <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Name & Location</p>
-      <div class="mt-3 grid gap-3 sm:grid-cols-2">
+    <div class="otw-tile p-6 mt-8">
+      <div class="flex items-center gap-4 flex-wrap">
+        <div class="otw-avatar shrink-0" x-text="otwMonogram(fullName || accountName)"></div>
+        <div class="min-w-0 flex-1">
+          <p class="font-display text-2xl truncate" x-text="fullName || 'Your name'"></p>
+          <div class="otw-meta mt-1.5">
+            <span x-show="contact.contact_location" class="otw-meta-item">
+              <span x-html="otwIcon('pin')"></span><span x-text="contact.contact_location"></span>
+            </span>
+            <a
+              x-show="githubUsername"
+              x-cloak
+              :href="'https://github.com/' + githubUsername"
+              target="_blank"
+              rel="noopener"
+              class="otw-meta-item hover:text-[color:var(--ink)] transition-colors"
+            ><span x-html="icon('github')"></span><span x-text="'@' + githubUsername"></span> ↗</a>
+          </div>
+        </div>
+      </div>
+      <div class="mt-6 grid gap-3 sm:grid-cols-2">
         <div class="otw-input-icon">
           <span x-html="icon('user')" class="otw-icon"></span>
           <input x-model="contact.first_name" placeholder="First name" class="otw-input" />
@@ -47,20 +59,22 @@
     </div>
 
     <!-- Email addresses -->
-    <div class="mt-6">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="font-display text-lg">Contact Emails</h2>
-          <p class="text-xs text-[color:var(--muted)] mt-0.5">
-            Starred email is your default for resumes. You can pick between multiple when creating a resume.
-          </p>
+    <div class="mt-12">
+      <div class="otw-section-head">
+        <div class="flex items-center gap-3">
+          <span class="otw-icon-badge" x-html="icon('mail')"></span>
+          <div>
+            <h2 class="font-display text-xl">Emails</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-0.5">The primary one goes on resumes by default; you can pick another per resume.</p>
+          </div>
         </div>
+        <span class="otw-count" x-text="emails.length + ' saved'"></span>
       </div>
 
-      <div x-cloak class="mt-3 space-y-2">
+      <div x-cloak class="mt-4 space-y-2">
         <template x-for="e in emails" :key="e.id">
-          <div class="otw-tile p-3 flex items-center gap-3 flex-wrap">
-            <span x-html="icon('mail')" class="otw-icon shrink-0"></span>
+          <div class="otw-tile px-4 py-3 flex items-center gap-3 flex-wrap">
+            <span x-html="icon('mail')" class="otw-icon-badge"></span>
             <input x-model="e.email" type="email" placeholder="email@example.com" class="otw-input text-sm flex-1 min-w-[12rem]" />
             <button
               @click="setPrimaryEmail(e)"
@@ -73,13 +87,13 @@
               <span x-text="e.is_primary ? 'Primary' : 'Make primary'"></span>
             </button>
             <button @click="saveEmail(e)" :disabled="!emailDirty(e) || Boolean(emailBusy[e.id])" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Save</button>
-            <button @click="removeEmail(e)" :disabled="Boolean(emailBusy[e.id])" class="otw-btn-danger-text text-xs shrink-0">Remove</button>
+            {{ ui.bin_button("removeEmail(e)", label="Delete email", disabled="Boolean(emailBusy[e.id])", size="sm") }}
           </div>
         </template>
       </div>
 
-      <div class="otw-tile p-3 mt-3 flex items-center gap-3 flex-wrap">
-        <span x-html="icon('mail')" class="otw-icon shrink-0"></span>
+      <div class="otw-add-row mt-3 flex items-center gap-3 flex-wrap">
+        <span x-html="icon('mail')" class="otw-icon-badge"></span>
         <input x-model="newEmail.email" type="email" placeholder="Add new email address…" class="otw-input text-sm flex-1 min-w-[12rem]" />
         <label class="flex items-center gap-1.5 text-xs text-[color:var(--muted)] cursor-pointer">
           <input type="checkbox" x-model="newEmail.is_primary" class="otw-checkbox" />
@@ -94,20 +108,22 @@
     </div>
 
     <!-- Phone numbers -->
-    <div class="mt-6">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="font-display text-lg">Phone Numbers</h2>
-          <p class="text-xs text-[color:var(--muted)] mt-0.5">
-            Starred phone number is your default for resumes. You can pick between multiple when creating a resume.
-          </p>
+    <div class="mt-12">
+      <div class="otw-section-head">
+        <div class="flex items-center gap-3">
+          <span class="otw-icon-badge" x-html="icon('phone')"></span>
+          <div>
+            <h2 class="font-display text-xl">Phone numbers</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-0.5">The primary one goes on resumes by default; you can pick another per resume.</p>
+          </div>
         </div>
+        <span class="otw-count" x-text="phones.length + ' saved'"></span>
       </div>
 
-      <div x-cloak class="mt-3 space-y-2">
+      <div x-cloak class="mt-4 space-y-2">
         <template x-for="p in phones" :key="p.id">
-          <div class="otw-tile p-3 flex items-center gap-3 flex-wrap">
-            <span x-html="icon('phone')" class="otw-icon shrink-0"></span>
+          <div class="otw-tile px-4 py-3 flex items-center gap-3 flex-wrap">
+            <span x-html="icon('phone')" class="otw-icon-badge"></span>
             <input x-model="p.phone" placeholder="+1 (555) 000-0000" class="otw-input text-sm flex-1 min-w-[12rem]" />
             <button
               @click="setPrimaryPhone(p)"
@@ -120,13 +136,13 @@
               <span x-text="p.is_primary ? 'Primary' : 'Make primary'"></span>
             </button>
             <button @click="savePhone(p)" :disabled="!phoneDirty(p) || Boolean(phoneBusy[p.id])" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Save</button>
-            <button @click="removePhone(p)" :disabled="Boolean(phoneBusy[p.id])" class="otw-btn-danger-text text-xs shrink-0">Remove</button>
+            {{ ui.bin_button("removePhone(p)", label="Delete phone", disabled="Boolean(phoneBusy[p.id])", size="sm") }}
           </div>
         </template>
       </div>
 
-      <div class="otw-tile p-3 mt-3 flex items-center gap-3 flex-wrap">
-        <span x-html="icon('phone')" class="otw-icon shrink-0"></span>
+      <div class="otw-add-row mt-3 flex items-center gap-3 flex-wrap">
+        <span x-html="icon('phone')" class="otw-icon-badge"></span>
         <input x-model="newPhone.phone" placeholder="Add new phone number…" class="otw-input text-sm flex-1 min-w-[12rem]" />
         <label class="flex items-center gap-1.5 text-xs text-[color:var(--muted)] cursor-pointer">
           <input type="checkbox" x-model="newPhone.is_primary" class="otw-checkbox" />
@@ -140,23 +156,23 @@
       <p x-show="phoneAddError" class="otw-error text-xs mt-2" x-text="phoneAddError"></p>
     </div>
 
-    <div class="mt-8">
-      <h2 class="font-display text-lg">Social links</h2>
-      <p class="text-xs text-[color:var(--muted)] mt-1">
-        LinkedIn, GitHub, Instagram, whatever's relevant. "Other" takes a label.
-      </p>
+    <div class="mt-12">
+      <div class="otw-section-head">
+        <div class="flex items-center gap-3">
+          <span class="otw-icon-badge" x-html="icon('other')"></span>
+          <div>
+            <h2 class="font-display text-xl">Social links</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-0.5">LinkedIn, GitHub, a personal site, whatever is relevant. "Other" takes a label.</p>
+          </div>
+        </div>
+        <span class="otw-count" x-text="links.length + ' saved'"></span>
+      </div>
 
-      <div x-cloak class="mt-3 space-y-2">
+      <div x-cloak class="mt-4 space-y-2">
         <template x-for="link in links" :key="link.id">
-          <div class="otw-tile p-3 flex items-center gap-3 flex-wrap">
-            <span x-html="icon(link.platform)" class="otw-icon shrink-0"></span>
-            <select x-model="link.platform" class="otw-input text-xs w-28">
-              <option value="linkedin">LinkedIn</option>
-              <option value="github">GitHub</option>
-              <option value="instagram">Instagram</option>
-              <option value="website">Website</option>
-              <option value="other">Other</option>
-            </select>
+          <div class="otw-tile px-4 py-3 flex items-center gap-3 flex-wrap">
+            <span x-html="icon(link.platform)" class="otw-icon-badge"></span>
+            {{ ui.select("link.platform", platforms, size="sm", class="w-28", label="Platform") }}
             <input x-show="link.platform === 'other'" x-model="link.label" placeholder="Label" class="otw-input text-sm w-28" />
             <input x-model="link.url" placeholder="https://…" class="otw-input text-sm flex-1 min-w-[10rem]" />
             <a
@@ -167,20 +183,14 @@
               class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] underline shrink-0"
             >Open ↗</a>
             <button @click="saveLink(link)" :disabled="!linkDirty(link) || Boolean(linkBusy[link.id])" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Save</button>
-            <button @click="removeLink(link)" :disabled="Boolean(linkBusy[link.id])" class="otw-btn-danger-text text-xs shrink-0">Remove</button>
+            {{ ui.bin_button("removeLink(link)", label="Delete link", disabled="Boolean(linkBusy[link.id])", size="sm") }}
           </div>
         </template>
       </div>
 
-      <div class="otw-tile p-3 mt-3 flex items-center gap-3 flex-wrap">
-        <span x-html="icon(newLink.platform)" class="otw-icon shrink-0"></span>
-        <select x-model="newLink.platform" class="otw-input text-xs w-28">
-          <option value="linkedin">LinkedIn</option>
-          <option value="github">GitHub</option>
-          <option value="instagram">Instagram</option>
-          <option value="website">Website</option>
-          <option value="other">Other</option>
-        </select>
+      <div class="otw-add-row mt-3 flex items-center gap-3 flex-wrap">
+        <span x-html="icon(newLink.platform)" class="otw-icon-badge"></span>
+        {{ ui.select("newLink.platform", platforms, size="sm", class="w-28", label="Platform") }}
         <input x-show="newLink.platform === 'other'" x-model="newLink.label" placeholder="Label" class="otw-input text-sm w-28" />
         <input x-model="newLink.url" placeholder="https://…" class="otw-input text-sm flex-1 min-w-[10rem]" />
         <button @click="addLink" :disabled="!newLink.url.trim() || addingLink" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
@@ -194,11 +204,9 @@
 </div>
 
 <style>
-  .otw-icon { display: inline-flex; color: var(--muted); flex-shrink: 0; }
-  .otw-icon svg { width: 16px; height: 16px; }
-  .otw-input-icon { display: flex; align-items: center; gap: 0.6rem; border-bottom: 1px solid var(--line); }
-  .otw-input-icon .otw-input { border-bottom: none; padding-left: 0; }
-  .otw-input-icon:focus-within { border-bottom-color: var(--line-strong); }
+  .otw-add-row { border: 1px dashed var(--line); padding: 0.75rem 1rem; transition: border-color 0.15s ease; }
+  .otw-add-row:focus-within { border-color: var(--line-strong); }
+  .otw-add-row .otw-icon-badge { color: var(--muted); border-style: dashed; }
 </style>
 
 <script>
@@ -268,6 +276,10 @@
         } finally {
           this.loading = false;
         }
+      },
+
+      get fullName() {
+        return [this.contact.first_name, this.contact.last_name].filter(Boolean).join(' ');
       },
 
       get contactDirty() {
@@ -404,6 +416,7 @@
       },
 
       async removeEmail(e) {
+        if (!(await otwConfirm({ title: 'Delete this email?', body: e.email }))) return;
         this.emailBusy[e.id] = true;
         try {
           await fetch(`/api/accounts/${this.accountId}/emails/${e.id}`, { method: 'DELETE' });
@@ -475,6 +488,7 @@
       },
 
       async removePhone(p) {
+        if (!(await otwConfirm({ title: 'Delete this phone number?', body: p.phone }))) return;
         this.phoneBusy[p.id] = true;
         try {
           await fetch(`/api/accounts/${this.accountId}/phones/${p.id}`, { method: 'DELETE' });
@@ -508,6 +522,7 @@
       },
 
       async removeLink(link) {
+        if (!(await otwConfirm({ title: 'Delete this link?', body: link.url }))) return;
         this.linkBusy[link.id] = true;
         try {
           await fetch(`/api/accounts/${this.accountId}/social-links/${link.id}`, { method: 'DELETE' });

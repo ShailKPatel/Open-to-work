@@ -1,10 +1,12 @@
 """The /skills aggregate view: one row per skill name, unioned across
 three sources for an account: project-linked evidence (SkillEvidence, via
 Repository), experience-linked evidence (ExperienceSkillEvidence, via
-Experience), and freestanding manual entries (Skill, no evidence at all).
-Nothing here writes evidence rows; that's app/api/projects.py's and
-app/api/experience.py's job; this router only reads across both and owns
-CRUD for the freestanding Skill table.
+Experience), and freestanding entries (Skill, no evidence at all), either
+typed in by hand or pulled from a resume.
+Evidence rows are added and edited by app/api/projects.py and
+app/api/experience.py; this router reads across both, owns CRUD for the
+freestanding Skill table, and has the one delete that clears a skill
+from every source at once (POST /api/skills/remove).
 
 Grouping key is name.strip().casefold(), so "Python" and "python" land in
 one group, displayed using whichever casing was seen first. This is a
@@ -28,12 +30,14 @@ from app.core.db import (
     Experience,
     ExperienceSkillEvidence,
     Repository,
+    Resume,
     Skill,
     SkillEvidence,
     SkillStar,
     SkillVerdict,
     get_db,
 )
+from app.profile.resume_profile_merge import unlink_profile_rows
 from app.profile.skill_map import (
     build_layout,
     layout_fingerprint,
@@ -42,7 +46,7 @@ from app.profile.skill_map import (
     skill_text,
     store_cached,
 )
-from app.profile.skill_review import approve
+from app.profile.skill_review import approve, reject
 
 logger = logging.getLogger(__name__)
 
@@ -50,18 +54,29 @@ router = APIRouter(prefix="/api/skills")
 
 
 class SkillSource(BaseModel):
-    type: str  # "project" | "experience"
+    type: str  # "project" | "github_profile" | "experience"
     evidence_id: int
     ref_id: int  # repo_id or experience_id, for linking to its detail page
-    name: str  # repo full_name, or "title @ company"
+    name: str  # repo name without its owner, or "title @ company"
     evidence_type: str
     weight: float
     confidence: float
 
 
+class SkillResumeRef(BaseModel):
+    """The resume a freestanding skill was extracted from. The name is
+    read from the resume row on every request, so a rename shows up here
+    without touching the skill.
+    """
+
+    id: int
+    name: str  # the resume's label, or its filename when it has none
+
+
 class SkillGroup(BaseModel):
     name: str
     manual_skill_id: int | None = None
+    source_resume: SkillResumeRef | None = None
     sources: list[SkillSource] = []
     starred: bool = False
 
@@ -89,10 +104,12 @@ def _load_groups(db: Session, account_id: int) -> dict[str, SkillGroup]:
     for evidence, repo in project_rows:
         _group_for(evidence.skill).sources.append(
             SkillSource(
-                type="project",
+                type="github_profile" if repo.is_profile_readme else "project",
                 evidence_id=evidence.id,
                 ref_id=repo.id,
-                name=repo.full_name,
+                # The repo's own name, not owner/name: every repo here is
+                # the account's own, so the owner is noise on the page.
+                name=repo.name or repo.full_name.rsplit("/", 1)[-1],
                 evidence_type=evidence.evidence_type,
                 weight=evidence.weight,
                 confidence=evidence.confidence,
@@ -117,10 +134,18 @@ def _load_groups(db: Session, account_id: int) -> dict[str, SkillGroup]:
             )
         )
 
-    manual_rows = db.execute(select(Skill).where(Skill.account_id == account_id)).scalars()
-    for skill in manual_rows:
+    manual_rows = db.execute(
+        select(Skill, Resume)
+        .outerjoin(Resume, Skill.source_resume_id == Resume.id)
+        .where(Skill.account_id == account_id)
+    ).all()
+    for skill, resume in manual_rows:
         group = _group_for(skill.name)
         group.manual_skill_id = skill.id
+        if resume is not None:
+            group.source_resume = SkillResumeRef(
+                id=resume.id, name=(resume.name or "").strip() or resume.filename
+            )
 
     # Stars never create a group, only mark one that exists from the
     # sources above.
@@ -158,6 +183,7 @@ class SkillMapNode(BaseModel):
     cluster_color: str
     starred: bool
     manual_skill_id: int | None = None
+    source_resume: SkillResumeRef | None = None
     sources: list[SkillSource] = []
 
 
@@ -231,7 +257,8 @@ def get_skills_map(account_id: int, *, db: DbSession) -> SkillMapResponse:
     presentation choice that can change without every cached layout
     becoming wrong.
     """
-    groups = list(_load_groups(db, account_id).values())
+    groups_by_key = _load_groups(db, account_id)
+    groups = list(groups_by_key.values())
     if not groups:
         return SkillMapResponse(clusters=[], nodes=[])
 
@@ -255,9 +282,28 @@ def get_skills_map(account_id: int, *, db: DbSession) -> SkillMapResponse:
             for c in payload["clusters"]
         ],
         nodes=[
-            SkillMapNode(cluster_color=color_for(n["cluster_id"]), **n) for n in payload["nodes"]
+            SkillMapNode(
+                cluster_color=color_for(n["cluster_id"]),
+                **{**n, **_live_fields(groups_by_key.get(_name_key(n["name"])))},
+            )
+            for n in payload["nodes"]
         ],
     )
+
+
+def _live_fields(group: SkillGroup | None) -> dict:
+    """What a cached map node shows that is not part of its layout: a
+    star, a resume rename or a new source never changes the fingerprint,
+    so these are read fresh instead of from the cache.
+    """
+    if group is None:
+        return {}
+    return {
+        "starred": group.starred,
+        "manual_skill_id": group.manual_skill_id,
+        "source_resume": group.source_resume,
+        "sources": group.sources,
+    }
 
 
 class SkillStarUpdate(BaseModel):
@@ -362,6 +408,78 @@ def list_rejected_skills(account_id: int, *, db: DbSession) -> list[RejectedSkil
     )
 
 
+class SkillRemove(BaseModel):
+    account_id: int
+    name: str
+
+
+@router.post("/remove")
+def remove_skill_everywhere(body: SkillRemove, *, db: DbSession) -> dict:
+    """Deletes a whole skill group, the Skills page's bin button: every
+    project and experience evidence row with this name, the freestanding
+    Skill row, and the tag on each resume it came from. The name is then
+    marked rejected by the user, so the next GitHub sync or resume
+    reprocess does not quietly add it back; it shows up under "filtered
+    out" instead, where "Add back" undoes all of this except the removed
+    evidence rows.
+    """
+    key = _name_key(body.name)
+    if not key:
+        raise HTTPException(status_code=422, detail="name is required")
+
+    project_ids: list[int] = []
+    project_rows = db.execute(
+        select(SkillEvidence)
+        .join(Repository, SkillEvidence.repo_id == Repository.id)
+        .where(Repository.account_id == body.account_id)
+    ).scalars()
+    for evidence in project_rows:
+        if _name_key(evidence.skill) == key:
+            project_ids.append(evidence.id)
+            db.delete(evidence)
+
+    experience_ids: list[int] = []
+    experience_rows = db.execute(
+        select(ExperienceSkillEvidence)
+        .join(Experience, ExperienceSkillEvidence.experience_id == Experience.id)
+        .where(Experience.account_id == body.account_id)
+    ).scalars()
+    for evidence in experience_rows:
+        if _name_key(evidence.skill) == key:
+            experience_ids.append(evidence.id)
+            db.delete(evidence)
+
+    resume_ids: set[int] = set()
+    skill_ids: list[int] = []
+    for skill in db.execute(select(Skill).where(Skill.account_id == body.account_id)).scalars():
+        if _name_key(skill.name) != key:
+            continue
+        if skill.source_resume_id is not None:
+            resume_ids.add(skill.source_resume_id)
+        skill_ids.append(skill.id)
+        db.delete(skill)
+    unlink_profile_rows(db, "experience_skill", experience_ids)
+    unlink_profile_rows(db, "skill", skill_ids)
+    for resume in db.execute(select(Resume).where(Resume.id.in_(resume_ids))).scalars():
+        resume.tags_json = [t for t in resume.tags_json or [] if _name_key(str(t)) != key]
+    db.commit()
+
+    from app.api.experience import _delete_qdrant_points as delete_experience_points
+    from app.api.projects import _delete_qdrant_points as delete_project_points
+    from app.retrieval.index import experience_evidence_point_id
+
+    delete_project_points(project_ids)
+    delete_experience_points([experience_evidence_point_id(i) for i in experience_ids])
+
+    reject(db, body.account_id, body.name)
+    return {
+        "deleted": True,
+        "project_evidence": len(project_ids),
+        "experience_evidence": len(experience_ids),
+        "resumes": len(resume_ids),
+    }
+
+
 @router.delete("/{skill_id}")
 def delete_skill(skill_id: int, *, db: DbSession) -> dict:
     """Removes a freestanding Skill row only. A project- or
@@ -372,6 +490,7 @@ def delete_skill(skill_id: int, *, db: DbSession) -> dict:
     row = db.get(Skill, skill_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no skill with id={skill_id}")
+    unlink_profile_rows(db, "skill", [skill_id])
     db.delete(row)
     db.commit()
     return {"deleted": True, "id": skill_id}

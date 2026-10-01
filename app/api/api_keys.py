@@ -72,6 +72,10 @@ class UpdateKeyRequest(BaseModel):
     allowed_account_ids: list[int] = []
 
 
+class ReplaceCredentialsRequest(BaseModel):
+    credentials: dict[str, str]
+
+
 class RecheckRequest(BaseModel):
     # "due"       exhausted keys whose cooldown has elapsed (what the
     #             background pass does, app/core/key_refresh.py)
@@ -161,6 +165,19 @@ def update_key(key_id: int, payload: UpdateKeyRequest) -> ApiKeyOut:
     )
     if row is None:
         raise HTTPException(status_code=404, detail="no such key")
+    return ApiKeyOut(**row)
+
+
+@router.put("/{key_id}/credentials", response_model=ApiKeyOut)
+def replace_credentials(key_id: int, payload: ReplaceCredentialsRequest) -> ApiKeyOut:
+    """Swaps the secret on an existing key. Same check as adding one; a
+    rejected credential is a 422 and the stored one stays as it was."""
+    try:
+        row, detail = api_keys_store.replace_credentials(key_id, payload.credentials)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="no such key") from None
+    if row is None:
+        raise HTTPException(status_code=422, detail=detail)
     return ApiKeyOut(**row)
 
 

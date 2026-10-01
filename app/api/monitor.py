@@ -20,7 +20,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from app.core import api_keys_store, rate_limits
-from app.core.app_settings import get_llm_settings
+from app.core.app_settings import get_llm_settings, unpriced_models_in_use
 from app.core.db import Account, LLMCall, get_db
 from app.core.llm import month_spend_usd
 from app.core.llm_providers import PROVIDER_LABELS, provider_of_model
@@ -83,6 +83,15 @@ class LlmStatus(BaseModel):
     spent_usd: float
     bulk_model: str
     quality_model: str
+    # Selected models LiteLLM cannot price. While this is non-empty,
+    # spent_usd and every KeyStatusOut.spent_usd_month below are floors and
+    # not measurements, because a call that cannot be priced is recorded at
+    # 0.00 (app/core/llm.py's _safe_completion_cost). That makes "spent
+    # $0.00 of $20.00" and "spent an unknown amount of $20.00" the same
+    # number, so the distinction is carried here rather than inferred.
+    # Empty is the healthy case.
+    unpriced_models: list[str] = []
+    spend_measurable: bool = True
 
 
 class KeyStatusOut(BaseModel):
@@ -102,6 +111,14 @@ class KeyStatusOut(BaseModel):
     budget_cap_usd: float | None
     spent_usd_month: float
     calls_month: int
+    # False when this key has a cap that cannot currently be enforced,
+    # because the model a call would use cannot be priced and so every call
+    # through this key records 0.00 (see LlmStatus.unpriced_models). A cap
+    # shown next to a spend figure implies the cap is doing something; when
+    # the figure is structurally zero it is not, and per-key caps are the
+    # easier of the two to miss since only the global one gets a warning on
+    # /apis. True when there is no cap to enforce.
+    cap_enforceable: bool = True
 
 
 class MonitorStatus(BaseModel):
@@ -236,12 +253,17 @@ def _key_usage_this_month() -> dict[int, tuple[int, float]]:
         db.close()
 
 
-def _key_statuses() -> list[KeyStatusOut]:
+def _key_statuses(spend_measurable: bool = True) -> list[KeyStatusOut]:
     """Every configured ApiKey (app/core/api_keys_store.py), across every
     provider, not just whichever tier's model happens to be active, with
     this month's real usage merged in. The single source of truth for
     "which key did this app actually spend money through", one row per
-    key rather than the one-model-per-tier summary LlmStatus gives."""
+    key rather than the one-model-per-tier summary LlmStatus gives.
+
+    `spend_measurable` comes from the tier models, not from the key, since
+    that is what decides whether a call's cost can be priced at all; a key
+    with a cap it cannot enforce is reported as such rather than shown
+    beside a zero that looks like thrift."""
     usage = _key_usage_this_month()
     out = []
     for key in api_keys_store.list_keys():
@@ -258,6 +280,7 @@ def _key_statuses() -> list[KeyStatusOut]:
                 budget_cap_usd=key["budget_cap_usd"],
                 spent_usd_month=cost,
                 calls_month=calls,
+                cap_enforceable=spend_measurable or key["budget_cap_usd"] is None,
             )
         )
     return out
@@ -266,6 +289,7 @@ def _key_statuses() -> list[KeyStatusOut]:
 @router.get("/status", response_model=MonitorStatus)
 def status() -> MonitorStatus:
     settings = get_llm_settings()
+    unpriced = unpriced_models_in_use(settings)
     return MonitorStatus(
         github=_github_status(),
         llm=LlmStatus(
@@ -273,10 +297,12 @@ def status() -> MonitorStatus:
             spent_usd=month_spend_usd(),
             bulk_model=settings.bulk_model,
             quality_model=settings.quality_model,
+            unpriced_models=unpriced,
+            spend_measurable=not unpriced,
         ),
         counts_24h=rate_limits.count_events_since(24),
         counts_7d=rate_limits.count_events_since(24 * 7),
-        keys=_key_statuses(),
+        keys=_key_statuses(spend_measurable=not unpriced),
     )
 
 

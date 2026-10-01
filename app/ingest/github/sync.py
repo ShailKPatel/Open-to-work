@@ -4,6 +4,11 @@ Fetches repos, README, manifests, and authorship stats; upserts into SQLite
 by github_id. Skips README/manifest/stats refetch when pushed_at is
 unchanged since the last sync (cache hit); the cheap repo-list call still runs
 every time to detect what changed.
+
+A changed repo costs two REST calls: the root listing (README and manifest
+bodies then come from raw download URLs, outside the API quota) and one
+commits query for authorship. Without a token GitHub allows 60 calls an
+hour, so every call per repo matters.
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from github import GithubException, RateLimitExceededException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.db import Repository, get_db
+from app.core.db import Repository, get_db, is_profile_repo
 from app.ingest.github.cancellation import clear as clear_cancel
 from app.ingest.github.cancellation import is_cancelled
 from app.ingest.github.client import GitHubClient
@@ -34,43 +39,42 @@ class SyncSummary:
     cache_hits: int
 
 
-def _last_authored_commit(stats: list, username: str) -> tuple[int, dt.datetime | None]:
-    """(commits_authored, last_commit_at) for username from contributor stats.
-    Returns (0, None) if stats absent or username has no entry.
-    """
-    username_lower = username.lower()
-    for entry in stats:
-        author = getattr(entry, "author", None)
-        if author is None or (author.login or "").lower() != username_lower:
-            continue
-        total = getattr(entry, "total", 0) or 0
-        last: dt.datetime | None = None
-        for week in getattr(entry, "weeks", []) or []:
-            if getattr(week, "c", 0):
-                w = week.w
-                if isinstance(w, dt.datetime):
-                    candidate = w if w.tzinfo else w.replace(tzinfo=dt.UTC)
-                else:
-                    candidate = dt.datetime.fromtimestamp(w, tz=dt.UTC)
-                if last is None or candidate > last:
-                    last = candidate
-        return total, last
-    return 0, None
+def _readme_rank(name: str) -> int | None:
+    """Root README candidates, README.md first. None if not a README."""
+    lower = name.lower()
+    if lower == "readme.md":
+        return 0
+    if lower == "readme" or lower.startswith("readme."):
+        return 1
+    return None
 
 
-def _fetch_manifests(client: GitHubClient, gh_repo: Any) -> dict:
+def _fetch_readme_and_manifests(client: GitHubClient, gh_repo: Any) -> tuple[str | None, dict]:
     manifests: dict[str, dict] = {}
+    readme_entry = None
     for entry in client.root_contents(gh_repo):
-        if entry.type != "file" or entry.name not in MANIFEST_FILENAMES:
+        if entry.type != "file":
             continue
-        content = client.file_text(gh_repo, entry.path)
+        rank = _readme_rank(entry.name)
+        if rank is not None:
+            if readme_entry is None or rank < _readme_rank(readme_entry.name):
+                readme_entry = entry
+            continue
+        if entry.name not in MANIFEST_FILENAMES:
+            continue
+        content = client.entry_text(gh_repo, entry)
         if content is None:
             continue
         manifests[entry.name] = {
             "ecosystem": MANIFEST_FILENAMES[entry.name],
             "dependencies": parse_dependencies(entry.name, content),
         }
-    return manifests
+    if readme_entry is not None:
+        readme = client.entry_text(gh_repo, readme_entry)
+    else:
+        # GitHub also finds a README under docs/ or .github/
+        readme = client.readme_text(gh_repo)
+    return readme, manifests
 
 
 def _upsert(
@@ -97,13 +101,12 @@ def _upsert(
 
     if existing is not None and _naive_utc(existing.pushed_at) == _naive_utc(pushed_at):
         existing.stars = gh_repo.stargazers_count
+        existing.is_profile_readme = is_profile_repo(gh_repo.full_name)
         existing.fetched_at = dt.datetime.now(dt.UTC)
         return True
 
-    readme = client.readme_text(gh_repo)
-    manifests = _fetch_manifests(client, gh_repo)
-    stats = client.contributor_stats(gh_repo)
-    commits_authored, last_commit_at = _last_authored_commit(stats, username)
+    readme, manifests = _fetch_readme_and_manifests(client, gh_repo)
+    authored = client.authored_commits(gh_repo, username)
 
     if existing is None:
         existing = Repository(github_id=gh_repo.id, account_id=account_id)
@@ -113,6 +116,7 @@ def _upsert(
 
     existing.name = gh_repo.name
     existing.full_name = gh_repo.full_name
+    existing.is_profile_readme = is_profile_repo(gh_repo.full_name)
     existing.url = gh_repo.html_url
     existing.is_fork = gh_repo.fork
     existing.primary_language = gh_repo.language
@@ -120,11 +124,9 @@ def _upsert(
     existing.readme = readme
     existing.description = gh_repo.description
     existing.manifests_json = manifests
-    # stats/contributors can return [] while GitHub is still computing;
-    # don't clobber a previously known value with zero in that case.
-    if stats:
-        existing.commits_authored = commits_authored
-        existing.last_commit_at = last_commit_at
+    # None means GitHub couldn't say; don't clobber a known value with zero.
+    if authored is not None:
+        existing.commits_authored, existing.last_commit_at = authored
     existing.pushed_at = pushed_at
     existing.fetched_at = dt.datetime.now(dt.UTC)
     # content changed (or this is a new repo): any prior extraction is
@@ -132,6 +134,31 @@ def _upsert(
     existing.skill_extraction_status = "pending"
     existing.skill_extraction_error = None
     return False
+
+
+def _rate_limited_event(e: GithubException, completed: int, total_hint: int) -> dict[str, Any]:
+    """reset_at is set when the hourly quota is spent, so the UI can say
+    when a retry will work instead of just "later"."""
+    reset_at = getattr(e, "reset_at", None)
+    if reset_at is not None:
+        detail = (
+            f"GitHub's hourly request limit is used up: {completed} of "
+            f"{total_hint} repos saved. Sync again after the limit resets "
+            "to pick up the rest; saved repos are skipped."
+        )
+    else:
+        detail = (
+            f"GitHub may be rate-limiting us: {completed} of "
+            f"{total_hint} repos saved. Try syncing again "
+            "later to pick up the rest."
+        )
+    return {
+        "stage": "rate_limited",
+        "completed": completed,
+        "total_hint": total_hint,
+        "detail": detail,
+        "reset_at": reset_at.isoformat() if reset_at is not None else None,
+    }
 
 
 def sync_account_progress(
@@ -223,16 +250,7 @@ def sync_account_progress(
             if isinstance(e, RateLimitExceededException) or (
                 isinstance(e, GithubException) and e.status in (403, 429)
             ):
-                yield {
-                    "stage": "rate_limited",
-                    "completed": total,
-                    "total_hint": total_hint,
-                    "detail": (
-                        f"GitHub may be rate-limiting us: {total} of "
-                        f"{total_hint} repos saved. Try syncing again "
-                        "later to pick up the rest."
-                    ),
-                }
+                yield _rate_limited_event(e, total, total_hint)
                 return
             raise
     finally:

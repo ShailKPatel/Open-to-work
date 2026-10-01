@@ -1,0 +1,7 @@
+<!-- Tab strip for the "Monitor" section: everything the app does in the
+     background and what it costs. Pass `monitor_active` ('usage' |
+     'sync') before including this to highlight the current tab. -->
+<nav class="otw-subnav">
+  <a href="/monitor" class="otw-subnav-tab {{ 'active' if monitor_active == 'usage' }}">Usage</a>
+  <a href="/monitor/sync" class="otw-subnav-tab {{ 'active' if monitor_active == 'sync' }}">Sync</a>
+</nav>

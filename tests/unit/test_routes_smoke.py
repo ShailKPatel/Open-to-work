@@ -27,6 +27,7 @@ _SKIP_JSON_GETS = {
     "/api/resume/search": "loads the local embedding model",
     "/api/projects/process-pending/stream": "long-lived SSE stream",
     "/sync/github/stream": "SSE stream that syncs from GitHub",
+    "/sync/github/status": "needs a username, covered in test_api.py",
 }
 
 

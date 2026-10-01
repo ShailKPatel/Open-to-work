@@ -11,7 +11,8 @@ never sent again: rejected names are dropped on write without another call,
 approved ones pass straight through.
 
 A person always wins. Adding a skill by hand calls approve(), which flips a
-"rejected" verdict to "approved" and marks it user-decided.
+"rejected" verdict to "approved" and marks it user-decided; deleting one from
+the Skills page calls reject(), the same flip the other way.
 
 Callers must commit their own pending writes before review_names(): each
 LLM call records itself through its own session, and SQLite would deadlock
@@ -82,6 +83,17 @@ def rejected_keys(db: Session, account_id: int | None) -> set[str]:
 
 def approve(db: Session, account_id: int, name: str) -> None:
     """Records a person's own "this is a skill". Commits."""
+    _decide(db, account_id, name, "approved")
+
+
+def reject(db: Session, account_id: int, name: str) -> None:
+    """Records a person's own "this is not a skill", so a later sync or
+    resume extraction does not bring back a skill they deleted. Commits.
+    """
+    _decide(db, account_id, name, "rejected")
+
+
+def _decide(db: Session, account_id: int, name: str, verdict: str) -> None:
     key = name_key(name)
     if not key:
         return
@@ -94,11 +106,11 @@ def approve(db: Session, account_id: int, name: str) -> None:
         db.add(
             SkillVerdict(
                 account_id=account_id, name_key=key, name=name.strip(),
-                verdict="approved", decided_by="user",
+                verdict=verdict, decided_by="user",
             )
         )
     else:
-        row.verdict = "approved"
+        row.verdict = verdict
         row.decided_by = "user"
         row.decided_at = dt.datetime.now(dt.UTC)
     db.commit()

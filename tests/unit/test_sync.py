@@ -1,36 +1,17 @@
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import app.core.db as db_module
-from app.core.db import Account, Repository, init_db
+from app.core.db import Account, Repository, init_db, is_profile_repo
 from app.core.settings import get_settings
 from app.ingest.github.cancellation import is_cancelled, request_cancel
 from app.ingest.github.sync import (
-    _last_authored_commit,
     sync_account,
     sync_account_progress,
     sync_single_repo,
     sync_single_repo_progress,
 )
-
-
-@dataclass
-class FakeAuthor:
-    login: str
-
-
-@dataclass
-class FakeWeek:
-    w: dt.datetime
-    c: int
-
-
-@dataclass
-class FakeStatsEntry:
-    author: FakeAuthor
-    total: int
-    weeks: list = field(default_factory=list)
 
 
 @dataclass
@@ -98,15 +79,14 @@ class FakeClient:
     def file_text(self, repo, path: str):
         return self._manifest_files.get(path)
 
-    def contributor_stats(self, repo):
+    def entry_text(self, repo, entry):
+        return self.file_text(repo, entry.path)
+
+    def authored_commits(self, repo, username: str):
         self.stats_calls += 1
-        return [
-            FakeStatsEntry(
-                author=FakeAuthor(login="octocat"),
-                total=5,
-                weeks=[FakeWeek(w=dt.datetime(2024, 1, 1, tzinfo=dt.UTC), c=5)],
-            )
-        ]
+        if username.lower() != "octocat":
+            return 0, None
+        return 5, dt.datetime(2024, 1, 1, tzinfo=dt.UTC)
 
 
 def _reset_db(tmp_path: Path):
@@ -590,47 +570,36 @@ def test_sync_single_repo_progress_cancelled_before_fetch_starts(tmp_path, monke
     assert is_cancelled("repo-run-1") is False
 
 
-def test_last_authored_commit_matches_login_case_insensitively():
-    naive_week = dt.datetime(2024, 3, 4)  # no tzinfo: treated as UTC
-    epoch_week = int(dt.datetime(2024, 5, 6, tzinfo=dt.UTC).timestamp())
-    empty_week = dt.datetime(2024, 9, 2, tzinfo=dt.UTC)
-    stats = [
-        FakeStatsEntry(author=None, total=99),  # deleted GitHub account
-        FakeStatsEntry(author=FakeAuthor(login="someone-else"), total=50),
-        FakeStatsEntry(
-            author=FakeAuthor(login="OctoCat"),
-            total=7,
-            weeks=[
-                FakeWeek(w=naive_week, c=3),
-                FakeWeek(w=epoch_week, c=4),
-                FakeWeek(w=empty_week, c=0),  # no commits that week: ignored
-            ],
-        ),
-    ]
+class _RootReadmeClient(FakeClient):
+    """README files in the root listing; the API readme lookup must not run."""
 
-    assert _last_authored_commit(stats, "octocat") == (
-        7,
-        dt.datetime(2024, 5, 6, tzinfo=dt.UTC),
-    )
+    def root_contents(self, repo):
+        return [
+            FakeContentEntry(type="file", name="readme.txt", path="readme.txt"),
+            FakeContentEntry(type="file", name="README.md", path="README.md"),
+            FakeContentEntry(type="file", name="requirements.txt", path="requirements.txt"),
+        ]
+
+    def file_text(self, repo, path):
+        return {"readme.txt": "plain", "README.md": "# from root", "requirements.txt": "flask\n"}[
+            path
+        ]
+
+    def readme_text(self, repo):
+        raise AssertionError("root README should be used without an API call")
 
 
-def test_last_authored_commit_naive_week_comes_back_as_utc():
-    stats = [
-        FakeStatsEntry(
-            author=FakeAuthor(login="octocat"),
-            total=1,
-            weeks=[FakeWeek(w=dt.datetime(2024, 3, 4), c=1)],
-        )
-    ]
+def test_sync_reads_root_readme_from_listing_preferring_markdown(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
 
-    assert _last_authored_commit(stats, "octocat") == (1, dt.datetime(2024, 3, 4, tzinfo=dt.UTC))
+    sync_account("octocat", client=_RootReadmeClient(_make_repos(1)))
 
-
-def test_last_authored_commit_without_a_matching_author_is_zero():
-    assert _last_authored_commit([], "octocat") == (0, None)
-    assert _last_authored_commit(
-        [FakeStatsEntry(author=FakeAuthor(login="someone-else"), total=3)], "octocat"
-    ) == (0, None)
+    db = db_module.get_db()
+    stored = db.query(Repository).one()
+    assert stored.readme == "# from root"
+    assert set(stored.manifests_json) == {"requirements.txt"}
+    db.close()
 
 
 class _MixedContentsClient(FakeClient):
@@ -699,14 +668,14 @@ def test_sync_refetch_moves_repo_to_the_syncing_account(tmp_path, monkeypatch):
 
 
 class _StatsPendingClient(FakeClient):
-    """GitHub still computing contributor stats: returns an empty list."""
+    """GitHub couldn't answer the commits query: authorship unknown."""
 
-    def contributor_stats(self, repo):
+    def authored_commits(self, repo, username):
         self.stats_calls += 1
-        return []
+        return None
 
 
-def test_sync_keeps_known_commit_stats_when_github_is_still_computing(tmp_path, monkeypatch):
+def test_sync_keeps_known_commit_stats_when_github_cannot_say(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _reset_db(tmp_path)
     repo = _make_repos(1)[0]
@@ -770,3 +739,32 @@ def test_sync_single_repo_progress_full_run_then_cache_hit(tmp_path, monkeypatch
     again = list(sync_single_repo_progress(repo.full_name, "octocat", client=client))
     assert again[2]["cache_hit"] is True
     assert again[-1]["fetched"] == 0
+
+
+def test_is_profile_repo():
+    assert is_profile_repo("octocat/octocat")
+    assert is_profile_repo("OctoCat/octocat")
+    assert not is_profile_repo("octocat/proj")
+    assert not is_profile_repo("octocat")
+
+
+def test_sync_flags_profile_readme_repo(tmp_path, monkeypatch):
+    """The "username/username" repo is stored (its README feeds skill
+    extraction) but flagged, so it never lists as a project."""
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    pushed = dt.datetime(2024, 6, 1, tzinfo=dt.UTC)
+    repos = [
+        FakeRepo(1, "octocat", "octocat/octocat", "", False, "", 0, pushed),
+        FakeRepo(2, "proj", "octocat/proj", "", False, "Python", 0, pushed),
+    ]
+
+    sync_account("octocat", client=FakeClient(repos))
+
+    db = db_module.get_db()
+    flags = {r.full_name: r.is_profile_readme for r in db.query(Repository)}
+    profile = db.query(Repository).filter_by(github_id=1).one()
+    assert flags == {"octocat/octocat": True, "octocat/proj": False}
+    assert profile.readme == "# octocat"
+    assert profile.skill_extraction_status == "pending"
+    db.close()

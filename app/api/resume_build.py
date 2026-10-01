@@ -192,7 +192,7 @@ def get_resume_build_options(
     all_repos = list(
         db.execute(
             select(Repository)
-            .where(Repository.account_id == account_id)
+            .where(Repository.account_id == account_id, Repository.is_profile_readme.is_(False))
             .order_by(Repository.starred.desc(), Repository.name)
         ).scalars()
     )

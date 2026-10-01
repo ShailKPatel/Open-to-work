@@ -6,7 +6,7 @@
   {% set top_active = 'portfolio' %}
   {% include "_header.html" %}
 
-  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+  <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
     {% set data_active = 'resume' %}
     {% include "_portfolio_subnav.html" %}
 
@@ -38,128 +38,265 @@
       <template x-for="resume in resumes" :key="resume.id">
         <div class="otw-tile p-6">
           <div class="flex items-start justify-between gap-4 flex-wrap">
+            <div class="otw-monogram text-xs tracking-wider" x-text="fileExt(resume.filename)"></div>
             <div class="min-w-0 flex-1">
               <input
                 x-model="editName[resume.id]"
                 @blur="saveName(resume)"
                 @keydown.enter.prevent="$event.target.blur()"
-                class="font-display text-lg bg-transparent border-none outline-none p-0 w-full focus:outline-none"
+                class="font-display text-xl bg-transparent border-none outline-none p-0 w-full focus:outline-none"
                 :placeholder="resume.filename"
                 title="Click to name this version"
               />
               <p class="text-xs text-[color:var(--muted)] mt-1">
                 <a :href="'/api/resume/' + resume.id + '/file'" target="_blank" class="hover:underline break-all" x-text="resume.filename"></a>
-                · <span x-text="new Date(resume.uploaded_at).toLocaleString()"></span>
-                · <span x-text="formatSize(resume.file_size)"></span>
               </p>
             </div>
-            <div class="flex items-center gap-3 shrink-0">
-              <span class="text-xs" :class="statusClass(resume)" x-text="statusLabel(resume)"></span>
-              <button
-                @click="openViewer(resume)"
-                title="View or download this file"
-                class="otw-btn-ghost text-xs px-3 py-1.5"
-              >View</button>
+            <div class="flex items-center gap-2 shrink-0">
+              <span x-show="statusLabel(resume)" class="otw-pill mr-1" :class="statusClass(resume)" :title="resume.extraction_error || ''" x-text="statusLabel(resume)"></span>
+              <button @click="openViewer(resume)" title="View" aria-label="View" class="otw-icon-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+              <button @click="openAiEdit(resume)" title="Edit with AI" aria-label="Edit with AI" class="otw-icon-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+              </button>
               <button
                 @click="reprocess(resume)"
                 :disabled="Boolean(reprocessing[resume.id])"
-                title="Re-run analysis on this file"
-                class="otw-btn-accent text-xs px-3 py-1.5"
+                title="Reprocess"
+                aria-label="Reprocess"
+                class="otw-icon-btn"
               >
-                <span x-show="!reprocessing[resume.id]">Reprocess</span>
-                <span x-show="reprocessing[resume.id]" class="otw-working">Working…</span>
+                <svg :class="{ 'animate-spin': reprocessing[resume.id] }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>
               </button>
-              <button @click="remove(resume)" :disabled="Boolean(deleting[resume.id])" class="text-xs otw-btn-danger-text">Delete</button>
+              <button @click="remove(resume)" :disabled="Boolean(deleting[resume.id])" title="Delete" aria-label="Delete" class="otw-icon-btn otw-icon-btn-danger">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+              </button>
             </div>
           </div>
           <p x-show="resume.extraction_error" x-text="resume.extraction_error" class="mt-2 text-xs otw-error"></p>
 
           <div class="mt-5">
-            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Summary</label>
-            <textarea x-model="editSummary[resume.id]" rows="3" class="otw-input mt-1" placeholder="What is this resume good for? Fill in by hand, or Reprocess to have it read automatically."></textarea>
-            <div class="flex justify-end mt-1">
-              <button
-                @click="saveSummary(resume)"
-                :disabled="Boolean(savingSummary[resume.id]) || editSummary[resume.id] === (resume.summary || '')"
-                class="otw-btn-ghost text-xs px-3 py-1"
-              >
-                <span x-show="!savingSummary[resume.id]">Save</span>
-                <span x-show="savingSummary[resume.id]" class="otw-working">Saving…</span>
-              </button>
-            </div>
-          </div>
-
-          <div class="mt-5">
-            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Tags</label>
-            <div class="flex flex-wrap gap-2 mt-2">
-              <template x-for="tag in resume.tags" :key="tag">
-                <span class="otw-chip">
-                  <span x-text="tag"></span>
-                  <button type="button" @click="removeTag(resume, tag)" class="otw-chip-x" aria-label="Remove tag">×</button>
-                </span>
-              </template>
-            </div>
-            <div class="flex items-center gap-2 mt-2">
-              <input x-model="newTagText[resume.id]" @keydown.enter.prevent="addTag(resume)" class="otw-input flex-1 text-sm" placeholder="Add a tag, press Enter" />
-              <button @click="addTag(resume)" :disabled="!(newTagText[resume.id] || '').trim()" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">Add</button>
-            </div>
-          </div>
-
-          <div class="mt-5">
-            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Good for these roles</label>
-            <div class="flex flex-wrap gap-2 mt-2">
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Good for</label>
+            <div class="flex flex-wrap items-center gap-2 mt-2">
               <template x-for="role in resume.target_roles" :key="role">
                 <span class="otw-chip">
                   <span x-text="role"></span>
                   <button type="button" @click="removeRole(resume, role)" class="otw-chip-x" aria-label="Remove role">×</button>
                 </span>
               </template>
-            </div>
-            <div class="flex items-center gap-2 mt-2">
-              <input x-model="newRoleText[resume.id]" @keydown.enter.prevent="addRole(resume)" class="otw-input flex-1 text-sm" placeholder="Add a role type, press Enter" />
-              <button @click="addRole(resume)" :disabled="!(newRoleText[resume.id] || '').trim()" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">Add</button>
+              <input x-model="newRoleText[resume.id]" @keydown.enter.prevent="addRole(resume)" class="otw-chip-input" placeholder="+ Add role" />
             </div>
           </div>
 
           <div class="mt-5">
-            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Edit with AI</label>
-            <p class="text-xs text-[color:var(--muted)] mt-1">
-              Write a message describing what to change. Only the summary, which
-              projects/skills are included, and their wording can change; your work
-              history and the layout never do.
-            </p>
-            <textarea x-model="editMessage[resume.id]" rows="2" class="otw-input mt-2" placeholder="e.g. Emphasize backend and Python work, drop the design projects"></textarea>
-            <div class="flex justify-end mt-1">
-              <button
-                @click="editWithAi(resume)"
-                :disabled="Boolean(editingWithAi[resume.id]) || !(editMessage[resume.id] || '').trim()"
-                class="otw-btn-accent text-xs px-3 py-1.5"
-              >
-                <span x-show="!editingWithAi[resume.id]">Update</span>
-                <span x-show="editingWithAi[resume.id]" class="otw-working">Working… this can take a minute</span>
+            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Summary</label>
+            <textarea
+              x-model="editSummary[resume.id]"
+              x-effect="editSummary[resume.id]; $nextTick(() => autoGrow($el))"
+              @input="autoGrow($el)"
+              rows="1"
+              class="otw-input otw-autogrow mt-1"
+              placeholder="What is this resume good for? Fill in by hand, or Reprocess to have it read automatically."
+            ></textarea>
+            <div x-show="editSummary[resume.id] !== (resume.summary || '')" class="flex justify-end mt-1">
+              <button @click="saveSummary(resume)" :disabled="Boolean(savingSummary[resume.id])" class="otw-btn-ghost text-xs px-3 py-1">
+                <span x-show="!savingSummary[resume.id]">Save</span>
+                <span x-show="savingSummary[resume.id]" class="otw-working">Saving…</span>
               </button>
             </div>
-            <p x-show="editError[resume.id]" x-text="editError[resume.id]" class="text-xs otw-error mt-1"></p>
           </div>
 
-          <div class="mt-5">
-            <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Notes</label>
-            <textarea x-model="editNotes[resume.id]" rows="2" class="otw-input mt-1" placeholder="Anything you want to remember about this version"></textarea>
-            <div class="flex justify-end mt-1">
-              <button
-                @click="saveNotes(resume)"
-                :disabled="Boolean(savingNotes[resume.id]) || editNotes[resume.id] === (resume.notes || '')"
-                class="otw-btn-ghost text-xs px-3 py-1"
-              >
-                <span x-show="!savingNotes[resume.id]">Save</span>
-                <span x-show="savingNotes[resume.id]" class="otw-working">Saving…</span>
-              </button>
+          <button type="button" @click="toggleDetails(resume)" class="mt-5 flex items-center gap-2 text-xs uppercase tracking-wide text-[color:var(--muted)] hover:text-[color:var(--ink)]" :aria-expanded="Boolean(expanded[resume.id])">
+            <svg class="w-3 h-3 transition-transform" :class="{ 'rotate-180': expanded[resume.id] }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            <span x-text="expanded[resume.id] ? 'Hide details' : 'Details'"></span>
+          </button>
+
+          <div x-show="expanded[resume.id]" class="mt-4 space-y-5 border-t border-[color:var(--line)] pt-5">
+            <div>
+              <div class="flex items-baseline justify-between gap-3">
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Contact</label>
+                <a href="/portfolio/contact" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Links →</a>
+              </div>
+              <p x-show="!hasContact(resume)" class="text-sm text-[color:var(--muted)] mt-2">None found in this file. Reprocess to read it again.</p>
+              <dl x-show="hasContact(resume)" class="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+                <template x-if="resume.contact.name">
+                  <dt class="text-[color:var(--muted)]">Name</dt>
+                </template>
+                <template x-if="resume.contact.name">
+                  <dd x-text="resume.contact.name"></dd>
+                </template>
+                <template x-if="resume.contact.location">
+                  <dt class="text-[color:var(--muted)]">Location</dt>
+                </template>
+                <template x-if="resume.contact.location">
+                  <dd x-text="resume.contact.location"></dd>
+                </template>
+                <template x-if="(resume.contact.emails || []).length">
+                  <dt class="text-[color:var(--muted)]">Email</dt>
+                </template>
+                <template x-if="(resume.contact.emails || []).length">
+                  <dd class="break-all" x-text="resume.contact.emails.join(', ')"></dd>
+                </template>
+                <template x-if="(resume.contact.phones || []).length">
+                  <dt class="text-[color:var(--muted)]">Phone</dt>
+                </template>
+                <template x-if="(resume.contact.phones || []).length">
+                  <dd x-text="resume.contact.phones.join(', ')"></dd>
+                </template>
+                <template x-if="(resume.contact.links || []).length">
+                  <dt class="text-[color:var(--muted)]">Links</dt>
+                </template>
+                <template x-if="(resume.contact.links || []).length">
+                  <dd>
+                    <ul class="space-y-1">
+                      <template x-for="(link, i) in resume.contact.links" :key="i">
+                        <li class="flex items-baseline gap-2 min-w-0">
+                          <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="linkLabel(link)"></span>
+                          <a :href="link.url" target="_blank" rel="noopener noreferrer" class="hover:underline break-all" x-text="link.url"></a>
+                        </li>
+                      </template>
+                    </ul>
+                  </dd>
+                </template>
+              </dl>
+            </div>
+
+            <div>
+              <div class="flex items-baseline justify-between gap-3">
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Experience</label>
+                <a href="/portfolio/experience" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Experience →</a>
+              </div>
+              <p x-show="resume.experiences.length === 0 && linkedExperiences(resume).length === 0" class="text-sm text-[color:var(--muted)] mt-2">None found in this file. Reprocess to read it again.</p>
+              <ul x-show="linkedExperiences(resume).length > 0" class="mt-2 space-y-3">
+                <template x-for="exp in linkedExperiences(resume)" :key="exp.id">
+                  <li>
+                    <div class="flex items-baseline justify-between gap-3 flex-wrap">
+                      <a :href="'/portfolio/experience/' + exp.id" class="text-sm hover:underline"><span class="font-medium" x-text="exp.title"></span> <span class="text-[color:var(--muted)]">at</span> <span x-text="exp.company"></span></a>
+                      <span class="text-xs text-[color:var(--muted)]" x-text="linkedNote(exp)"></span>
+                    </div>
+                    <div x-show="exp.skills.length > 0" class="flex flex-wrap gap-1.5 mt-1.5">
+                      <template x-for="skill in exp.skills" :key="skill.id">
+                        <span class="otw-chip text-xs" x-text="skill.skill"></span>
+                      </template>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+              <ul x-show="linkedExperiences(resume).length === 0" class="mt-2 space-y-1.5">
+                <template x-for="(exp, i) in resume.experiences" :key="i">
+                  <li class="flex items-baseline justify-between gap-3 flex-wrap">
+                    <p class="text-sm"><span class="font-medium" x-text="exp.title"></span> <span class="text-[color:var(--muted)]">at</span> <span x-text="exp.company"></span></p>
+                    <span class="text-xs text-[color:var(--muted)]" x-text="dateRange(exp.start_date, exp.end_date)"></span>
+                  </li>
+                </template>
+              </ul>
+            </div>
+
+            <div>
+              <div class="flex items-baseline justify-between gap-3">
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Education</label>
+                <a href="/portfolio/education" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Education →</a>
+              </div>
+              <p x-show="resume.education.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None found in this file. Reprocess to read it again.</p>
+              <ul class="mt-2 space-y-1.5">
+                <template x-for="(edu, i) in resume.education" :key="i">
+                  <li class="flex items-baseline justify-between gap-3 flex-wrap">
+                    <p class="text-sm"><span class="font-medium" x-text="edu.degree"></span>, <span x-text="edu.institution"></span></p>
+                    <span class="text-xs text-[color:var(--muted)]" x-text="dateRange(edu.start_date, edu.end_date)"></span>
+                  </li>
+                </template>
+              </ul>
+            </div>
+
+            <div x-show="(profiles[resume.id]?.skills || []).length > 0">
+              <div class="flex items-baseline justify-between gap-3">
+                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Skills not tied to a role</label>
+                <a href="/portfolio/skills" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Skills →</a>
+              </div>
+              <div class="flex flex-wrap gap-1.5 mt-2">
+                <template x-for="skill in (profiles[resume.id]?.skills || [])" :key="skill.id">
+                  <span class="otw-chip text-xs" x-text="skill.name"></span>
+                </template>
+              </div>
+            </div>
+
+            <div>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Tags</label>
+              <div class="flex flex-wrap items-center gap-2 mt-2">
+                <template x-for="tag in resume.tags" :key="tag">
+                  <span class="otw-chip">
+                    <span x-text="tag"></span>
+                    <button type="button" @click="removeTag(resume, tag)" class="otw-chip-x" aria-label="Remove tag">×</button>
+                  </span>
+                </template>
+                <input x-model="newTagText[resume.id]" @keydown.enter.prevent="addTag(resume)" class="otw-chip-input" placeholder="+ Add tag" />
+              </div>
+            </div>
+
+            <div>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Notes</label>
+              <textarea
+                x-model="editNotes[resume.id]"
+                x-effect="editNotes[resume.id]; expanded[resume.id]; $nextTick(() => autoGrow($el))"
+                @input="autoGrow($el)"
+                rows="1"
+                class="otw-input otw-autogrow mt-1"
+                placeholder="Anything you want to remember about this version"
+              ></textarea>
+              <div x-show="editNotes[resume.id] !== (resume.notes || '')" class="flex justify-end mt-1">
+                <button @click="saveNotes(resume)" :disabled="Boolean(savingNotes[resume.id])" class="otw-btn-ghost text-xs px-3 py-1">
+                  <span x-show="!savingNotes[resume.id]">Save</span>
+                  <span x-show="savingNotes[resume.id]" class="otw-working">Saving…</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
       </template>
     </div>
   </main>
+
+  <!-- Edit with AI popup: one prompt, one send. -->
+  <div x-show="aiEditing" x-cloak class="otw-modal-backdrop" @keydown.escape.window="closeAiEdit()" @click.self="closeAiEdit()">
+    <div class="otw-modal">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <h3 class="font-display text-2xl">Edit with AI</h3>
+          <p class="text-xs text-[color:var(--muted)] mt-1 break-all" x-text="aiEditing ? (aiEditing.name || aiEditing.filename) : ''"></p>
+        </div>
+        <button @click="closeAiEdit()" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] text-xl leading-none shrink-0">×</button>
+      </div>
+      <p class="text-xs text-[color:var(--muted)] mt-4">
+        Only the summary, which projects/skills are included, and their wording
+        can change; your work history and the layout never do.
+      </p>
+      <div class="otw-prompt mt-3">
+        <textarea
+          x-ref="aiPrompt"
+          x-model="aiMessage"
+          @input="autoGrow($el)"
+          @keydown.enter="if ($event.ctrlKey || $event.metaKey) { $event.preventDefault(); editWithAi(); }"
+          :disabled="aiWorking"
+          rows="3"
+          class="otw-autogrow flex-1 bg-transparent outline-none text-sm"
+          placeholder="e.g. Emphasize backend and Python work, drop the design projects"
+        ></textarea>
+        <button
+          @click="editWithAi()"
+          :disabled="aiWorking || !aiMessage.trim()"
+          title="Send (Ctrl+Enter)"
+          aria-label="Send"
+          class="otw-icon-btn otw-icon-btn-accent self-end"
+        >
+          <svg x-show="!aiWorking" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          <svg x-show="aiWorking" class="animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>
+        </button>
+      </div>
+      <p x-show="aiWorking" class="text-xs text-[color:var(--muted)] mt-2 otw-working">Working… this can take a minute</p>
+      <p x-show="aiError" x-text="aiError" class="text-xs otw-error mt-2"></p>
+    </div>
+  </div>
 
   <!-- View popup: preview a resume inline (PDF/image) or fall back to a
        plain Download link for anything else, without leaving this page. -->
@@ -221,6 +358,19 @@
     transition: color 0.15s ease;
   }
   .otw-chip-x:hover { color: var(--danger); }
+  .otw-chip-input {
+    background: transparent;
+    border: 1px dashed var(--line);
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    width: 8.5rem;
+    outline: none;
+    color: var(--ink);
+  }
+  .otw-chip-input:focus { border-style: solid; border-color: var(--line-strong); }
+  textarea.otw-autogrow { resize: none; overflow: hidden; field-sizing: content; }
+  .otw-prompt { display: flex; gap: 0.75rem; border: 1px solid var(--line); padding: 0.75rem; }
+  .otw-prompt:focus-within { border-color: var(--line-strong); }
 </style>
 
 <script>
@@ -245,9 +395,12 @@
       deleting: {},
       viewing: null,
       viewTab: 'original',
-      editMessage: {},
-      editingWithAi: {},
-      editError: {},
+      expanded: {},
+      profiles: {},
+      aiEditing: null,
+      aiMessage: '',
+      aiWorking: false,
+      aiError: '',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -274,19 +427,69 @@
         }
       },
 
+      toggleDetails(resume) {
+        this.expanded[resume.id] = !this.expanded[resume.id];
+        if (this.expanded[resume.id] && !this.profiles[resume.id]) this.loadProfile(resume);
+      },
+
+      // What this resume put into the profile: the experience rows it
+      // created or matched, each with the skills it tied to that role.
+      async loadProfile(resume) {
+        const res = await fetch(`/api/resume/${resume.id}/profile`);
+        if (res.ok) this.profiles[resume.id] = await res.json();
+      },
+
+      linkedExperiences(resume) {
+        return this.profiles[resume.id]?.experiences || [];
+      },
+
+      linkedNote(exp) {
+        return exp.created ? 'Added from this resume' : 'Already in profile';
+      },
+
+      // Analyzed is the default and gets no badge; anything short of
+      // that (not run yet, or cut off partway) reads as Pending.
       statusLabel(resume) {
-        switch (resume.extraction_status) {
-          case 'extracted': return '✓ Analyzed';
-          case 'failed': return '✗ Analysis failed';
-          case 'unsupported_type': return 'Not auto-analyzable';
-          default: return '⋯ Not analyzed yet';
-        }
+        if (resume.extraction_status === 'extracted') return '';
+        if (resume.extraction_status === 'unsupported_type') return 'Not auto-analyzable';
+        return 'Pending';
       },
 
       statusClass(resume) {
-        if (resume.extraction_status === 'extracted') return 'otw-good';
-        if (resume.extraction_status === 'failed') return 'otw-error';
-        return 'text-[color:var(--muted)]';
+        return resume.extraction_status === 'failed' ? 'otw-error' : '';
+      },
+
+      autoGrow(el) {
+        el.style.height = 'auto';
+        el.style.height = el.scrollHeight + 'px';
+      },
+
+      dateRange(start, end) {
+        const fmt = (iso) => {
+          const d = new Date(iso + 'T00:00:00');
+          return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+        };
+        if (!start && !end) return '';
+        if (!start) return fmt(end);
+        return `${fmt(start)} \u2013 ${end ? fmt(end) : 'Present'}`;
+      },
+
+      hasContact(resume) {
+        const c = resume.contact || {};
+        return Boolean(
+          c.name || c.location || (c.emails || []).length ||
+          (c.phones || []).length || (c.links || []).length
+        );
+      },
+
+      linkLabel(link) {
+        const names = { linkedin: 'LinkedIn', github: 'GitHub', instagram: 'Instagram', website: 'Website' };
+        return names[link.platform] || link.label || 'Link';
+      },
+
+      fileExt(name) {
+        const m = /\.([a-z0-9]{1,5})$/i.exec(name || '');
+        return m ? m[1].toUpperCase() : 'FILE';
       },
 
       previewKind(resume) {
@@ -294,13 +497,6 @@
         if (mime === 'application/pdf') return 'pdf';
         if (mime.startsWith('image/')) return 'image';
         return 'none';
-      },
-
-      formatSize(bytes) {
-        if (!bytes) return '0 B';
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / 1024 / 1024).toFixed(1) + ' MB';
       },
 
       async upload(event) {
@@ -403,6 +599,8 @@
             const idx = this.resumes.findIndex((r) => r.id === resume.id);
             if (idx !== -1) this.resumes[idx] = updated;
             this.editSummary[resume.id] = updated.summary || '';
+            if (this.expanded[resume.id]) await this.loadProfile(updated);
+            else delete this.profiles[resume.id];
           } else {
             alert(updated.detail || 'Reprocess failed.');
           }
@@ -416,11 +614,24 @@
         this.viewing = resume;
       },
 
-      async editWithAi(resume) {
-        const message = (this.editMessage[resume.id] || '').trim();
-        if (!message) return;
-        this.editingWithAi[resume.id] = true;
-        this.editError[resume.id] = '';
+      openAiEdit(resume) {
+        this.aiEditing = resume;
+        this.aiMessage = '';
+        this.aiError = '';
+        this.$nextTick(() => this.$refs.aiPrompt.focus());
+      },
+
+      closeAiEdit() {
+        if (this.aiWorking) return;
+        this.aiEditing = null;
+      },
+
+      async editWithAi() {
+        const resume = this.aiEditing;
+        const message = this.aiMessage.trim();
+        if (!resume || !message) return;
+        this.aiWorking = true;
+        this.aiError = '';
         try {
           const res = await fetch(`/api/resume/${resume.id}/edit`, {
             method: 'POST',
@@ -429,23 +640,23 @@
           });
           const updated = await res.json();
           if (!res.ok) {
-            this.editError[resume.id] = updated.detail || 'Could not apply that edit.';
+            this.aiError = updated.detail || 'Could not apply that edit.';
             return;
           }
           const idx = this.resumes.findIndex((r) => r.id === resume.id);
           if (idx !== -1) this.resumes[idx] = updated;
           this.editSummary[resume.id] = updated.summary || '';
-          this.editMessage[resume.id] = '';
-          if (this.viewing && this.viewing.id === resume.id) this.openViewer(updated);
+          this.aiEditing = null;
+          this.openViewer(updated);
         } catch (e) {
-          this.editError[resume.id] = 'Could not reach the server.';
+          this.aiError = 'Could not reach the server.';
         } finally {
-          this.editingWithAi[resume.id] = false;
+          this.aiWorking = false;
         }
       },
 
       async remove(resume) {
-        const ok = confirm(`Delete "${resume.filename}"? This cannot be undone.`);
+        const ok = await otwConfirm({ title: `Delete "${resume.name || resume.filename}"?`, body: 'This cannot be undone.' });
         if (!ok) return;
         this.deleting[resume.id] = true;
         try {

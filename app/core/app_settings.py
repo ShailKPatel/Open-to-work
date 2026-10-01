@@ -79,10 +79,79 @@ def _usable_model(value: object, default: str) -> str:
 _API_KEY_PREFIXES = ("AIza", "sk-", "gsk_", "xai-", "hf_", "AKIA", "ya29.")
 
 
+def is_model_priced(model: str) -> bool:
+    """Whether LiteLLM can put a dollar figure on a call to this model.
+
+    Matters because every budget in this app is a sum over
+    `LLMCall.cost_usd`, and app/core/llm.py's _safe_completion_cost()
+    records 0.00 for a response it cannot price. A model LiteLLM has no
+    pricing entry for therefore spends real money while reading as free:
+    the monthly cap in complete() never trips, every per-key
+    budget_cap_usd never trips, and /monitor reports $0.00 all month. The
+    only trace is one log line per call.
+
+    Not a lookup in litellm.model_cost: that table is keyed inconsistently
+    for prefixed names and a membership test can disagree with the
+    function that actually prices a response. This runs the real pricing
+    call against a synthetic response with non-zero usage, so it cannot
+    drift from what dispatch will do. Offline, no network, no provider
+    key.
+
+    False for a model nobody can price *and* for one whose pricing is
+    genuinely zero, which a local Ollama model legitimately is. Callers
+    treat this as "budgets cannot see this model", which is true either
+    way, rather than as "this model is wrong".
+    """
+    try:
+        import litellm
+        from litellm.types.utils import Choices, Message, ModelResponse, Usage
+
+        probe = ModelResponse(
+            id="probe",
+            model=model,
+            object="chat.completion",
+            created=0,
+            choices=[
+                Choices(
+                    finish_reason="stop",
+                    index=0,
+                    message=Message(content="probe", role="assistant"),
+                )
+            ],
+            usage=Usage(prompt_tokens=1000, completion_tokens=1000, total_tokens=2000),
+        )
+        return float(litellm.completion_cost(completion_response=probe)) > 0.0
+    except Exception:
+        return False
+
+
+def unpriced_models_in_use(settings: LlmSettings | None = None) -> list[str]:
+    """The models currently selected for a tier that no budget can see, in
+    tier order, deduplicated. Empty is the healthy case.
+
+    Read by /monitor (app/api/monitor.py) so a $0.00 spend figure can say
+    whether it means "nothing was spent" or "spending is not being
+    measured", which are the same number and opposite facts.
+    """
+    settings = settings or get_llm_settings()
+    models: list[str] = []
+    for model in (settings.bulk_model, settings.quality_model):
+        if model not in models and not is_model_priced(model):
+            models.append(model)
+    return models
+
+
 def validate_model(model: str) -> str:
     """Returns the trimmed model string, or raises ValueError. A model
     must name its provider ("gemini/gemini-flash-latest") so dispatch
-    knows which stored key to use."""
+    knows which stored key to use.
+
+    Says nothing about whether the model can be priced: an unpriceable
+    model is a real choice (a brand-new release, a custom deployment, a
+    local Ollama model) and rejecting it would break the one thing
+    suggested_models() promises, that any provider-prefixed string can be
+    saved. The caller warns instead, see is_model_priced().
+    """
     model = model.strip()
     prefix, _, name = model.partition("/")
     if name.strip().startswith(_API_KEY_PREFIXES) or model.startswith(_API_KEY_PREFIXES):

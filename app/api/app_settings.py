@@ -21,6 +21,13 @@ class LlmSettingsOut(BaseModel):
     default_bulk_model: str
     default_quality_model: str
     default_monthly_budget_usd: float
+    # Models selected here that LiteLLM cannot price, so no budget can see
+    # what they spend (app/core/app_settings.py's is_model_priced). Empty is
+    # the healthy case. Returned on GET and on PUT, so the page can warn at
+    # the moment someone picks one rather than leaving it to be noticed on
+    # /monitor a month later.
+    unpriced_models: list[str] = []
+    budget_warning: str | None = None
 
 
 class LlmSettingsUpdate(BaseModel):
@@ -36,12 +43,32 @@ class ProviderModelsOut(BaseModel):
     models: list[str]
 
 
+def _budget_warning(unpriced: list[str]) -> str | None:
+    """The one sentence the /apis page shows next to the budget when a
+    chosen model cannot be priced. Names the models, says which limits stop
+    working, and does not pretend the model is invalid."""
+    if not unpriced:
+        return None
+    names = ", ".join(f'"{m}"' for m in unpriced)
+    plural = "these models" if len(unpriced) > 1 else "this model"
+    return (
+        f"AI calls are being recorded as $0.00, because pricing for {names} is not "
+        f"known here. The monthly budget and every per-key budget add up recorded "
+        f"cost, so neither will stop spending while {plural} is selected, and the "
+        "usage figures will read as zero. The model still works; only the spending "
+        "limits are blind to it."
+    )
+
+
 def _out(current: app_settings.LlmSettings) -> LlmSettingsOut:
+    unpriced = app_settings.unpriced_models_in_use(current)
     return LlmSettingsOut(
         **current.as_dict(),
         default_bulk_model=app_settings.DEFAULT_BULK_MODEL,
         default_quality_model=app_settings.DEFAULT_QUALITY_MODEL,
         default_monthly_budget_usd=app_settings.DEFAULT_MONTHLY_BUDGET_USD,
+        unpriced_models=unpriced,
+        budget_warning=_budget_warning(unpriced),
     )
 
 

@@ -229,7 +229,7 @@ def test_sync_source_stream_user_kind(tmp_path, monkeypatch):
         yield {"stage": "checking_profile", "username": username}
         yield {"stage": "done", "total_repos": 0, "fetched": 0, "cache_hits": 0}
 
-    monkeypatch.setattr("app.api.sources.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
 
     sources = client.get(f"/api/sources?account_id={account['id']}").json()
     source_id = sources[0]["id"]
@@ -274,7 +274,9 @@ def test_sync_source_stream_repo_kind(tmp_path, monkeypatch):
         }
         yield {"stage": "done", "total_repos": 1, "fetched": 1, "cache_hits": 0}
 
-    monkeypatch.setattr("app.api.sources.sync_single_repo_progress", fake_single_progress)
+    monkeypatch.setattr(
+        "app.ingest.github.background.sync_single_repo_progress", fake_single_progress
+    )
 
     with client.stream("GET", f"/api/sources/{added['id']}/sync/stream") as resp:
         body = "".join(resp.iter_text())
@@ -293,7 +295,7 @@ def test_sync_source_stream_not_found_sends_error_and_does_not_mark_synced(tmp_p
         raise UnknownObjectException(404, "Not Found", {})
         yield  # pragma: no cover - unreachable, makes this a generator
 
-    monkeypatch.setattr("app.api.sources.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
 
     sources = client.get(f"/api/sources?account_id={account['id']}").json()
     source_id = sources[0]["id"]
@@ -326,7 +328,7 @@ def test_sync_source_stream_rate_limited_does_not_mark_synced(tmp_path, monkeypa
             "detail": "GitHub may be rate-limiting us: 3 of 8 repos saved.",
         }
 
-    monkeypatch.setattr("app.api.sources.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
 
     sources = client.get(f"/api/sources?account_id={account['id']}").json()
     source_id = sources[0]["id"]
@@ -351,7 +353,7 @@ def test_sync_source_stream_forwards_client_run_id(tmp_path, monkeypatch):
         seen["run_id"] = run_id
         yield {"stage": "done", "total_repos": 0, "fetched": 0, "cache_hits": 0}
 
-    monkeypatch.setattr("app.api.sources.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
 
     sources = client.get(f"/api/sources?account_id={account['id']}").json()
     source_id = sources[0]["id"]
@@ -374,7 +376,7 @@ def test_sync_source_stream_defaults_run_id_to_source_id(tmp_path, monkeypatch):
         seen["run_id"] = run_id
         yield {"stage": "done", "total_repos": 0, "fetched": 0, "cache_hits": 0}
 
-    monkeypatch.setattr("app.api.sources.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
 
     sources = client.get(f"/api/sources?account_id={account['id']}").json()
     source_id = sources[0]["id"]
@@ -423,3 +425,33 @@ def test_sync_source_stream_unknown_source_404(tmp_path):
     client = _client()
     resp = client.get("/api/sources/999999/sync/stream")
     assert resp.status_code == 404
+
+
+def test_sync_all_hands_every_source_to_the_background_in_order(tmp_path, monkeypatch):
+    from app.ingest.github import background
+
+    _reset_db(tmp_path)
+    client = _client()
+    account = _make_account(client)
+    client.post(
+        "/api/sources",
+        json={"account_id": account["id"], "raw_input": "github.com/torvalds/linux"},
+    )
+    seen = {}
+    monkeypatch.setattr(
+        background,
+        "start_all",
+        lambda account_id, targets: seen.update(account_id=account_id, targets=targets) or True,
+    )
+
+    resp = client.post(f"/api/sources/sync-all?account_id={account['id']}")
+
+    assert resp.json() == {"started": True, "sources": 2}
+    assert seen["account_id"] == account["id"]
+    assert [(t.kind, t.label, t.attribution_username) for t in seen["targets"]] == [
+        ("user", "octocat", "octocat"),
+        ("repo", "torvalds/linux", "octocat"),
+    ]
+    assert client.get(
+        f"/api/sources/sync-all/status?account_id={account['id']}"
+    ).json() == {"running": False}

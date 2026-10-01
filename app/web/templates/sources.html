@@ -1,17 +1,55 @@
 {% extends "_base.html" %}
-{% block title %}Fetch data · Open to Work{% endblock %}
+{% import "_ui.html" as ui %}
+{% block title %}Sync · Open to Work{% endblock %}
 {% block content %}
 <div x-data="sourcesApp()" x-init="init()" class="min-h-screen flex flex-col">
 
-  {% set top_active = '' %}
+  {% set top_active = 'monitor' %}
   {% include "_header.html" %}
 
   <main class="flex-1 px-10 pb-24 max-w-2xl mx-auto w-full">
-    <a href="/settings" class="mt-8 inline-block text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">← Settings</a>
+    {% set monitor_active = 'sync' %}
+    {% include "_monitor_subnav.html" %}
 
-    <h1 class="font-display text-4xl mt-4">Fetch data</h1>
+    <h1 class="font-display text-4xl mt-8">Sync</h1>
+    <p class="mt-3 text-sm text-[color:var(--muted)]">
+      Pull repos from GitHub, then extract skills from them with the LLM.
+      Both run in the background: leave this page whenever you like, and a
+      card in the corner keeps you posted.
+    </p>
 
-    <form @submit.prevent="addSource" class="mt-8 flex gap-3">
+    <!-- Skill extraction over the synced repos, including a run that
+         stopped part way. Same wording as the corner card (otwWork in
+         _header.html). -->
+    <section class="mt-10">
+      <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Skill extraction</h2>
+      <div class="otw-tile p-5 mt-3" x-show="extraction" x-cloak>
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0">
+            <p class="font-display text-lg" :class="extraction?.running && 'otw-working'"
+               x-text="otwWork.extractionPending(extraction) ? otwWork.extractionTitle(extraction) : 'Up to date'"></p>
+            <p class="text-xs text-[color:var(--muted)] mt-1" x-text="otwWork.extractionCount(extraction)"></p>
+          </div>
+          <button
+            x-show="otwWork.extractionPending(extraction) && !extraction?.running"
+            @click="continueExtraction"
+            :disabled="startingExtraction"
+            class="otw-btn-accent text-xs px-3 py-1.5 shrink-0"
+            x-text="startingExtraction ? 'Starting…' : otwWork.extractionButton(extraction)"
+          ></button>
+        </div>
+        <div class="mt-4 h-[2px] w-full bg-[color:var(--line)] overflow-hidden">
+          <div class="h-full bg-[color:var(--ink)] transition-all duration-300 ease-out" :style="`width: ${otwWork.extractionPct(extraction)}%`"></div>
+        </div>
+        <p x-show="otwWork.extractionPending(extraction)" class="mt-3 text-xs text-[color:var(--muted)]">
+          <span x-text="otwWork.extractionNote(extraction, now)"></span>
+          <a x-show="extraction?.rate_limited" href="/apis" class="underline hover:text-[color:var(--ink)]">Manage API keys</a>
+        </p>
+      </div>
+    </section>
+
+    <h2 class="mt-12 text-xs uppercase tracking-wide text-[color:var(--muted)]">GitHub</h2>
+    <form @submit.prevent="addSource" class="mt-3 flex gap-3">
       <input
         x-model="newInput"
         required
@@ -32,11 +70,15 @@
       </button>
     </div>
 
-    <p x-show="Object.values(syncing).some(Boolean)" x-cloak class="mt-4 text-xs text-[color:var(--muted)]">
-      Fetching and skill extraction both run in the background, feel free to
-      <a href="/portfolio/projects" class="underline hover:text-[color:var(--ink)]">check your projects</a>
-      now, this keeps going either way.
-    </p>
+    <div x-show="syncingAll || Object.values(syncing).some(Boolean)" x-cloak class="mt-4 otw-tile p-4 text-xs text-[color:var(--muted)]">
+      <p class="text-[color:var(--ink)]">Syncing in the background</p>
+      <p class="mt-1">
+        Fetching and skill extraction keep going if you leave this page. Look
+        around the rest of the site, for example
+        <a href="/portfolio/projects" class="underline hover:text-[color:var(--ink)]">your projects</a>,
+        and come back here any time to see how far it got.
+      </p>
+    </div>
 
     <div x-cloak class="mt-8 space-y-3">
       <template x-for="source in sources" :key="source.id">
@@ -49,6 +91,13 @@
               <p class="font-display text-lg mt-1 truncate" x-text="source.kind === 'repo' ? source.repo_full_name : source.github_username"></p>
               <p class="text-xs text-[color:var(--muted)] mt-1" x-text="source.raw_input"></p>
               <p class="text-xs text-[color:var(--muted)] mt-2" x-text="syncStatusLine(source)"></p>
+              <!-- after a reload, when this page's own messages are gone -->
+              <template x-if="!syncing[source.id] && !errors[source.id] && pausedRun(source)">
+                <p class="text-xs mt-2">
+                  <span x-text="otwWork.syncCount(pausedRun(source)) + '. '"></span>
+                  <span class="text-[color:var(--muted)]" x-text="otwWork.syncNote(pausedRun(source), now)"></span>
+                </p>
+              </template>
             </div>
             <div class="flex flex-col items-end gap-2 shrink-0">
               <button
@@ -56,13 +105,10 @@
                 :disabled="Boolean(syncing[source.id])"
                 class="otw-btn-accent text-xs px-3 py-1.5"
               >
-                <span x-show="!syncing[source.id]">Sync</span>
+                <span x-show="!syncing[source.id]" x-text="pausedRun(source) ? 'Resume' : 'Sync'"></span>
                 <span x-show="syncing[source.id]" class="otw-working">Syncing…</span>
               </button>
-              <button
-                @click="removeSource(source)"
-                class="text-xs otw-btn-danger-text"
-              >Remove</button>
+              {{ ui.bin_button("removeSource(source)", label="Delete source", size="sm") }}
             </div>
           </div>
 
@@ -104,6 +150,11 @@
       runIds: {},
       eventSources: {},
       resolvers: {},
+      runs: [],
+      extraction: null,
+      startingExtraction: false,
+      now: Date.now(),
+      bgTimer: null,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -112,7 +163,63 @@
           window.location.href = '/';
           return;
         }
+        // Signup lands here with ?new=1: Continue on the create-profile
+        // form already said "link GitHub", so sync without another click.
+        // Stripped right away so a refresh doesn't start another run.
+        const autostart = new URLSearchParams(window.location.search).get('new') === '1';
+        if (autostart) window.history.replaceState({}, '', '/monitor/sync');
+
         await this.load();
+        this.pollBackground();
+        // A sync started earlier keeps running server-side after the
+        // page is left; pick its progress back up.
+        for (const source of this.sources) {
+          if (source.syncing && !this.syncing[source.id]) this.syncOne(source, { attach: true });
+        }
+        if (autostart) {
+          this.syncAll();
+        } else {
+          // a Sync all started earlier may still be working through the list
+          fetch(`/api/sources/sync-all/status?account_id=${this.accountId}`)
+            .then((r) => r.json())
+            .then((s) => s.running && this.followSyncAll())
+            .catch(() => {});
+        }
+      },
+
+      // Paused/stopped GitHub runs (for "10 of 23 synced, resumes at ...")
+      // and extraction status, refreshed while the page is open.
+      async pollBackground() {
+        try {
+          const [runs, extraction] = await Promise.all([
+            fetch(`/api/github-sync?account_id=${this.accountId}`),
+            fetch(`/api/projects/process-pending/status?account_id=${this.accountId}`),
+          ]);
+          if (runs.ok) this.runs = await runs.json();
+          if (extraction.ok) this.extraction = await extraction.json();
+        } catch (e) {
+          // try again on the next tick
+        }
+        this.now = Date.now();
+        clearTimeout(this.bgTimer);
+        this.bgTimer = setTimeout(() => this.pollBackground(), this.extraction?.running ? 3000 : 15000);
+      },
+
+      pausedRun(source) {
+        const target = (source.kind === 'repo' ? source.repo_full_name : source.github_username) || '';
+        return this.runs.find((r) => !r.running && r.label.toLowerCase() === target.toLowerCase());
+      },
+
+      async continueExtraction() {
+        this.startingExtraction = true;
+        try {
+          await fetch(`/api/projects/process-pending/start?account_id=${this.accountId}`, { method: 'POST' });
+        } catch (e) {
+          // the next poll shows whether it started
+        } finally {
+          this.startingExtraction = false;
+          this.pollBackground();
+        }
       },
 
       async load() {
@@ -150,11 +257,18 @@
       },
 
       async removeSource(source) {
+        if (!(await otwConfirm({ title: 'Delete this source?', body: (source.kind === 'repo' ? source.repo_full_name : source.github_username) || '' }))) return;
         await fetch(`/api/sources/${source.id}`, { method: 'DELETE' });
         this.sources = this.sources.filter((s) => s.id !== source.id);
       },
 
-      syncOne(source) {
+      resetNote(event) {
+        if (!event.reset_at) return '';
+        const at = new Date(event.reset_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        return ` The limit resets at ${at}.`;
+      },
+
+      syncOne(source, { attach = false } = {}) {
         return new Promise((resolve) => {
           // stopOne() needs to be able to settle THIS promise too: a
           // syncAll() run awaits syncOne() one source at a time, and if
@@ -169,21 +283,25 @@
           // without a stale flag from a previous cancelled attempt of
           // the same source leaking into this one. See
           // app/ingest/github/sync.py's sync_account_progress docstring.
+          // Events carry the id of the run actually going, which replaces
+          // this one when the server joined an earlier run instead.
           const runId = crypto.randomUUID();
           this.runIds[source.id] = runId;
 
-          const es = new EventSource(`/api/sources/${source.id}/sync/stream?run_id=${runId}`);
+          const query = attach ? 'attach=true' : `run_id=${runId}`;
+          const es = new EventSource(`/api/sources/${source.id}/sync/stream?${query}`);
           this.eventSources[source.id] = es;
-          // Same parallel-kickoff as sync.html: skill extraction runs in
-          // its own background thread from the moment fetching starts, not
-          // chained after it. See that file for the full rationale.
-          if (this.accountId) {
+          // Skill extraction starts right away in its own background
+          // thread, not chained after the fetch: it finds nothing pending
+          // on its first check and picks up each repo as the sync saves it.
+          if (this.accountId && !attach) {
             fetch(`/api/projects/process-pending/start?account_id=${this.accountId}`, {
               method: 'POST',
             }).catch(() => {});
           }
           es.onmessage = (e) => {
             const event = JSON.parse(e.data);
+            if (event.run_id) this.runIds[source.id] = event.run_id;
             if (event.stage === 'checking_profile') {
               this.progress[source.id] = { label: 'Checking…', pct: 0 };
             } else if (event.stage === 'listing_repos') {
@@ -199,6 +317,7 @@
               this.syncing[source.id] = false;
               es.close();
               this.load();
+              this.pollBackground();
               resolve();
             } else if (event.stage === 'rate_limited') {
               // Partial batch: some repos already saved before GitHub
@@ -207,7 +326,7 @@
                 label: `${event.completed} of ${event.total_hint || '?'} saved`,
                 pct: event.total_hint ? Math.round((event.completed / event.total_hint) * 100) : 0,
               };
-              this.errors[source.id] = event.detail;
+              this.errors[source.id] = event.detail + this.resetNote(event);
               this.syncing[source.id] = false;
               es.close();
               this.load();
@@ -224,7 +343,7 @@
               this.load();
               resolve();
             } else if (event.stage === 'error') {
-              this.errors[source.id] = event.detail || 'Sync failed.';
+              this.errors[source.id] = (event.detail || 'Sync failed.') + this.resetNote(event);
               this.syncing[source.id] = false;
               es.close();
               resolve();
@@ -275,15 +394,42 @@
         window.location.href = '/';
       },
 
+      // The server walks the list (POST /api/sources/sync-all), so it
+      // keeps going if this page is left; the page only shows each
+      // source's progress as its turn comes.
       async syncAll() {
         this.syncingAll = true;
         try {
-          for (const source of this.sources) {
-            await this.syncOne(source);
-          }
-        } finally {
+          await fetch(`/api/sources/sync-all?account_id=${this.accountId}`, { method: 'POST' });
+          fetch(`/api/projects/process-pending/start?account_id=${this.accountId}`, {
+            method: 'POST',
+          }).catch(() => {});
+        } catch (e) {
           this.syncingAll = false;
+          return;
         }
+        this.followSyncAll();
+      },
+
+      async followSyncAll() {
+        this.syncingAll = true;
+        while (true) {
+          await this.load();
+          for (const source of this.sources) {
+            if (source.syncing && !this.syncing[source.id]) this.syncOne(source, { attach: true });
+          }
+          let running = false;
+          try {
+            const res = await fetch(`/api/sources/sync-all/status?account_id=${this.accountId}`);
+            running = (await res.json()).running;
+          } catch (e) {
+            running = false;
+          }
+          if (!running) break;
+          await new Promise((r) => setTimeout(r, 1500));
+        }
+        this.syncingAll = false;
+        this.pollBackground();
       },
     };
   }

@@ -472,3 +472,64 @@ def test_create_from_authenticated_url_success(tmp_path, monkeypatch):
     body = resp.json()
     assert body["source"] == "authenticated"
     assert body["title"] == "Role at Site"
+
+
+def test_extraction_stores_annual_salary_bounds(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(
+        monkeypatch, salary_range="1.5 to 1.6 lakh per month", work_mode="Remote"
+    )
+    client = _client()
+
+    body = client.post(
+        "/api/job-postings", json={"account_id": account_id, "raw_text": "Hiring."}
+    ).json()
+
+    assert body["salary_min_annual"] == 1_800_000
+    assert body["salary_max_annual"] == 1_920_000
+    assert body["salary_currency"] == "INR"
+    assert body["work_mode"] == "Remote"
+
+
+def test_patch_salary_text_reparses_and_numbers_override(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch)
+    client = _client()
+    posting_id = client.post(
+        "/api/job-postings", json={"account_id": account_id, "raw_text": "Hiring."}
+    ).json()["id"]
+
+    body = client.patch(
+        f"/api/job-postings/{posting_id}",
+        json={"salary_range": "12-18 LPA", "employment_type": "Internship"},
+    ).json()
+    assert (body["salary_min_annual"], body["salary_max_annual"]) == (1_200_000, 1_800_000)
+    assert body["salary_range"] == "12-18 LPA"
+    assert body["employment_type"] == "Internship"
+    # untouched extracted fields survive the edit
+    assert body["seniority"] == "Senior"
+
+    body = client.patch(
+        f"/api/job-postings/{posting_id}", json={"salary_min_annual": 1_500_000}
+    ).json()
+    assert (body["salary_min_annual"], body["salary_max_annual"]) == (1_500_000, 1_800_000)
+
+
+def test_list_filters_by_min_salary(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+    ids = {}
+    for label, salary in [("low", "5 LPA"), ("high", "20-30 LPA"), ("none", "")]:
+        _fake_extraction(monkeypatch, salary_range=salary)
+        ids[label] = client.post(
+            "/api/job-postings", json={"account_id": account_id, "raw_text": f"Job {label}"}
+        ).json()["id"]
+
+    rows = client.get(
+        f"/api/job-postings?account_id={account_id}&min_salary=2500000"
+    ).json()
+
+    assert [r["id"] for r in rows] == [ids["high"]]

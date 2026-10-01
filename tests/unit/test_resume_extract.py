@@ -56,9 +56,11 @@ def test_extracts_experiences_with_dates(monkeypatch):
             {
                 "company": "Acme Corp",
                 "title": "Software Engineer",
+                "location": "  Berlin, Germany ",
                 "start_date": "2020-01-01",
                 "end_date": "",
                 "points": ["Developed API services", "  ", "Implemented unit tests"],
+                "skills": ["FastAPI", " ", "pytest"],
             },
             {"company": "  ", "title": "Intern", "start_date": "", "end_date": ""},  # dropped
             {"company": "Beta LLC", "title": "", "start_date": "", "end_date": ""},  # dropped
@@ -74,9 +76,11 @@ def test_extracts_experiences_with_dates(monkeypatch):
     claim = extraction.experiences[0]
     assert claim.company == "Acme Corp"
     assert claim.title == "Software Engineer"
+    assert claim.location == "Berlin, Germany"
     assert claim.start_date.isoformat() == "2020-01-01"
     assert claim.end_date is None  # empty string means "still there" / unknown
     assert claim.points == ["Developed API services", "Implemented unit tests"]
+    assert claim.skills == ["FastAPI", "pytest"]
 
 
 def test_experiences_defaults_to_empty_list_when_field_missing(monkeypatch):
@@ -94,6 +98,52 @@ def test_experiences_defaults_to_empty_list_when_field_missing(monkeypatch):
     assert extraction.experiences == []
 
 
+def test_extracts_education_with_dates(monkeypatch):
+    fake_response = MagicMock()
+    fake_response.parsed = {
+        "tags": [],
+        "target_roles": [],
+        "summary": "x",
+        "experiences": [],
+        "education": [
+            {
+                "institution": "Nirma University",
+                "degree": "B.Tech in Computer Science",
+                "location": "Ahmedabad",
+                "start_date": "2022-08-01",
+                "end_date": "",
+            },
+            {"institution": "  ", "degree": "HSC", "start_date": "", "end_date": ""},  # dropped
+            {"institution": "Some School", "degree": "", "start_date": "", "end_date": ""},
+        ],
+    }
+    monkeypatch.setattr(
+        "app.profile.resume_extract.complete", MagicMock(return_value=fake_response)
+    )
+
+    extraction = extract_resume(b"%PDF-1.4 fake", "application/pdf")
+
+    assert len(extraction.education) == 1  # blank institution/degree entries dropped
+    claim = extraction.education[0]
+    assert claim.institution == "Nirma University"
+    assert claim.degree == "B.Tech in Computer Science"
+    assert claim.location == "Ahmedabad"
+    assert claim.start_date.isoformat() == "2022-08-01"
+    assert claim.end_date is None  # empty string means in progress / unknown
+
+
+def test_education_defaults_to_empty_list_when_field_missing(monkeypatch):
+    fake_response = MagicMock()
+    fake_response.parsed = {"tags": [], "target_roles": [], "summary": "x"}
+    monkeypatch.setattr(
+        "app.profile.resume_extract.complete", MagicMock(return_value=fake_response)
+    )
+
+    extraction = extract_resume(b"%PDF-1.4 fake", "application/pdf")
+
+    assert extraction.education == []
+
+
 def test_unparseable_llm_response_raises(monkeypatch):
     fake_response = MagicMock()
     fake_response.parsed = None
@@ -103,3 +153,54 @@ def test_unparseable_llm_response_raises(monkeypatch):
 
     with pytest.raises(ValueError):
         extract_resume(b"%PDF-1.4 fake", "application/pdf")
+
+
+def test_extracts_contact_block(monkeypatch):
+    fake_response = MagicMock()
+    fake_response.parsed = {
+        "tags": [],
+        "target_roles": [],
+        "summary": "x",
+        "contact": {
+            "name": "Ada Lovelace",
+            "location": "London, UK",
+            "emails": ["ada@example.com", " ", "ada@work.example"],
+            "phones": ["+44 20 7946 0958"],
+            "links": [
+                {"platform": "LinkedIn", "url": "linkedin.com/in/ada", "label": ""},
+                {"platform": "website", "url": "https://ada.dev", "label": "ignored"},
+                {"platform": "website", "url": "https://blog.ada.dev"},
+                {"platform": "leetcode", "url": "https://leetcode.com/ada"},
+                {"platform": "github", "url": ""},
+            ],
+        },
+    }
+    monkeypatch.setattr(
+        "app.profile.resume_extract.complete", MagicMock(return_value=fake_response)
+    )
+
+    contact = extract_resume(b"%PDF-1.4 fake", "application/pdf").contact
+
+    assert contact.name == "Ada Lovelace"
+    assert contact.location == "London, UK"
+    assert contact.emails == ["ada@example.com", "ada@work.example"]
+    assert contact.phones == ["+44 20 7946 0958"]
+    assert [(link.platform, link.url, link.label) for link in contact.links] == [
+        ("linkedin", "https://linkedin.com/in/ada", None),
+        ("website", "https://ada.dev", None),
+        ("website", "https://blog.ada.dev", None),
+        ("other", "https://leetcode.com/ada", "Leetcode"),
+    ]
+
+
+def test_contact_defaults_to_empty_when_field_missing(monkeypatch):
+    fake_response = MagicMock()
+    fake_response.parsed = {"tags": [], "target_roles": [], "summary": "x"}
+    monkeypatch.setattr(
+        "app.profile.resume_extract.complete", MagicMock(return_value=fake_response)
+    )
+
+    contact = extract_resume(b"%PDF-1.4 fake", "application/pdf").contact
+
+    assert contact.name is None
+    assert contact.emails == [] and contact.phones == [] and contact.links == []

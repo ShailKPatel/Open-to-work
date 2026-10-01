@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Open to Work{% endblock %}
 {% block content %}
 <div x-data="accountsApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -103,11 +104,7 @@
           <div class="mt-14 flex flex-wrap justify-center gap-6">
             <template x-for="account in accounts" :key="account.id">
               <div class="otw-tile relative w-44 px-6 py-8">
-                <button
-                  @click="deleteAccount(account)"
-                  title="Delete this profile"
-                  class="absolute top-2 right-2 text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] w-5 h-5 leading-none"
-                >×</button>
+                {{ ui.bin_button("deleteAccount(account)", label="Delete this profile", size="sm", class="absolute top-2 right-2") }}
                 <button
                   @click="selectAccount(account)"
                   class="w-full flex flex-col items-center gap-4 text-left"
@@ -156,11 +153,11 @@
             <div class="grid grid-cols-2 gap-4">
               <div>
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">First name</label>
-                <input x-model="form.first_name" required class="otw-input mt-1" placeholder="Ada" />
+                <input x-model="form.first_name" required class="otw-input mt-1" placeholder="Rick" />
               </div>
               <div>
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Last name</label>
-                <input x-model="form.last_name" required class="otw-input mt-1" placeholder="Lovelace" />
+                <input x-model="form.last_name" required class="otw-input mt-1" placeholder="Astley" />
               </div>
             </div>
 
@@ -172,7 +169,7 @@
                 :value="form.github_username"
                 @input="$event.target.value = form.github_username = sanitizeUsername($event.target.value)"
                 class="otw-input mt-1"
-                placeholder="octocat (leave blank if you don't have one)"
+                placeholder="rickastley (leave blank if you don't have one)"
               />
               <p x-show="usernameFormatError(form.github_username)" x-text="usernameFormatError(form.github_username)" class="text-xs otw-error mt-1"></p>
             </div>
@@ -334,10 +331,10 @@
       },
 
       async deleteAccount(account) {
-        const ok = confirm(
-          `Delete ${account.first_name} ${account.last_name}'s profile? ` +
-          `This erases every synced repo and extracted skill for this profile. Cannot be undone.`
-        );
+        const ok = await otwConfirm({
+          title: `Delete ${account.first_name} ${account.last_name}'s profile?`,
+          body: 'This erases every synced repo and extracted skill for this profile. Cannot be undone.',
+        });
         if (!ok) return;
 
         await fetch(`/accounts/${account.id}`, { method: 'DELETE' });

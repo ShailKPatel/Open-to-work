@@ -1,12 +1,13 @@
 import json
 import threading
+import uuid
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.requests import Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from github import BadCredentialsException, RateLimitExceededException, UnknownObjectException
 from pydantic import BaseModel
@@ -18,6 +19,8 @@ from app.api.auth_sources import router as auth_sources_router
 from app.api.contact import router as contact_router
 from app.api.education import router as education_router
 from app.api.experience import router as experience_router
+from app.api.github_profile import router as github_profile_router
+from app.api.github_sync import router as github_sync_router
 from app.api.job_analytics import router as job_analytics_router
 from app.api.job_postings import router as job_postings_router
 from app.api.monitor import router as monitor_router
@@ -32,8 +35,9 @@ from app.core.db import init_db
 from app.core.embeddings import EMBEDDING_MODEL
 from app.core.key_refresh import start_key_refresh
 from app.core.settings import get_settings
+from app.ingest.github import background as github_background
 from app.ingest.github.cancellation import request_cancel
-from app.ingest.github.sync import SyncSummary, sync_account, sync_account_progress
+from app.ingest.github.sync import SyncSummary, sync_account
 
 
 @asynccontextmanager
@@ -52,6 +56,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # most expects that to have happened.
     if get_settings().key_refresh_on_start:
         start_key_refresh()
+    # A GitHub sync cut off by the hourly limit resumes itself once the
+    # limit resets; the timers for that live in memory, so they are set
+    # again here from what the database remembers.
+    github_background.restore_after_restart()
     yield
 
 
@@ -63,6 +71,8 @@ app.include_router(auth_sources_router)
 app.include_router(contact_router)
 app.include_router(education_router)
 app.include_router(experience_router)
+app.include_router(github_profile_router)
+app.include_router(github_sync_router)
 app.include_router(job_analytics_router)
 app.include_router(job_postings_router)
 app.include_router(monitor_router)
@@ -100,17 +110,20 @@ def home_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "home.html")
 
 
-@app.get("/sync", response_class=HTMLResponse)
-def sync_page(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "sync.html")
+@app.get("/sync", include_in_schema=False)
+def sync_page(request: Request) -> RedirectResponse:
+    """Old home of GitHub syncing, now /monitor/sync. Keeps its query
+    string, so signup's ?new=1 (start syncing straight away) still works."""
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(f"/monitor/sync{query}", status_code=307)
 
 
 @app.get("/portfolio", response_class=HTMLResponse)
 def portfolio_overview_page(request: Request) -> HTMLResponse:
     """"Portfolio" section landing page: projects/skills/experience/
     education/contact/resume, one layer deeper than the /home KPI row.
-    GitHub sources live under /settings/sources instead, since they are
-    profile setup rather than portfolio content. The nested pages
+    GitHub sources live under /monitor/sync instead, with the rest of the
+    background work, rather than with portfolio content. The nested pages
     below share this section's tab strip
     (app/web/templates/_portfolio_subnav.html)."""
     return templates.TemplateResponse(request, "portfolio_overview.html")
@@ -181,6 +194,17 @@ def monitor_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "monitor.html")
 
 
+@app.get("/monitor/sync", response_class=HTMLResponse)
+def monitor_sync_page(request: Request) -> HTMLResponse:
+    """One place for the background work that feeds the portfolio: the
+    GitHub accounts/repos this profile pulls from (with their syncs, see
+    app/api/sources.py) and skill extraction over what they bring in
+    (GET /api/projects/process-pending/status). Under Monitor, next to
+    usage, since both are long-running jobs bounded by API limits.
+    ?new=1 (from signup) syncs every source straight away."""
+    return templates.TemplateResponse(request, "sources.html")
+
+
 @app.get("/explanation", response_class=HTMLResponse)
 def explanation_page(request: Request) -> HTMLResponse:
     """Presentation page: what the project does and how it is built, meant
@@ -207,7 +231,8 @@ def jobs_page(request: Request) -> HTMLResponse:
     Top-level section like /home, /portfolio, and /monitor: a job posting
     isn't part of the account's own portfolio, it's a third-party record
     the account is considering applying against. "Build resume for this
-    job" on a card is the only link into /portfolio/resume/build; that
+    job" on a posting's page (/jobs/{id}) is the only link into
+    /portfolio/resume/build; that
     page has no posting picker of its own. Data from GET/POST/PATCH/
     DELETE /api/job-postings and POST /api/job-postings/{id}/reprocess
     (app/api/job_postings.py)."""
@@ -223,6 +248,15 @@ def jobs_analytics_page(request: Request) -> HTMLResponse:
     links into. Data from GET /api/job-analytics/skills-demand and
     GET /api/job-analytics/role-families (app/api/job_analytics.py)."""
     return templates.TemplateResponse(request, "jobs_analytics.html")
+
+
+@app.get("/jobs/{posting_id}", response_class=HTMLResponse)
+def job_detail_page(request: Request, posting_id: int) -> HTMLResponse:
+    """One job posting on its own page: pay, type, experience, where the
+    account's skills stand against it, the applied tracker, and the jump
+    into resume building. Data from GET/PATCH/DELETE
+    /api/job-postings/{posting_id} and GET /api/job-analytics/gap/{id}."""
+    return templates.TemplateResponse(request, "job_detail.html")
 
 
 @app.get("/portfolio/resume", response_class=HTMLResponse)
@@ -264,20 +298,16 @@ def resume_build_page(request: Request) -> HTMLResponse:
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request) -> HTMLResponse:
     """Delete-account (+ log out). Links out to the /apis page (API keys
-    are device-wide, not per-profile) and to /settings/sources (GitHub sources this
+    are device-wide, not per-profile) and to /monitor/sync (GitHub sources this
     profile pulls evidence from) below. Data from DELETE /accounts/{id}
     (app/api/accounts.py)."""
     return templates.TemplateResponse(request, "settings.html")
 
 
-@app.get("/settings/sources", response_class=HTMLResponse)
-def sources_page(request: Request) -> HTMLResponse:
-    """Fetch-data page: manage the list of GitHub accounts/repos this
-    profile pulls evidence from, separate from Account.github_username,
-    which stays identity-only. Lives under Settings because which accounts
-    to pull evidence from is profile setup, not portfolio content. See
-    app/api/sources.py."""
-    return templates.TemplateResponse(request, "sources.html")
+@app.get("/settings/sources", include_in_schema=False)
+def old_sources_page() -> RedirectResponse:
+    """Moved to /monitor/sync."""
+    return RedirectResponse("/monitor/sync", status_code=307)
 
 
 @app.get("/settings/auth-sources", response_class=HTMLResponse)
@@ -363,38 +393,47 @@ def _sse(event: dict) -> str:
 
 @app.get("/sync/github/stream")
 def sync_github_stream(
-    username: str, account_id: int | None = None, run_id: str | None = None
+    username: str,
+    account_id: int | None = None,
+    run_id: str | None = None,
+    attach: bool = False,
 ) -> StreamingResponse:
-    """Same sync as POST /sync/github, but as Server-Sent Events so the UI
-    can show live progress (checking profile, listing repos, N of M,
-    repo name). GET + query params because the browser's EventSource can't
-    send a POST body or custom headers. account_id is optional, same as the
-    JSON endpoint. run_id is an opaque client-generated token, pass one
-    to be able to stop this specific sync mid-way via
-    POST /sync/github/cancel?run_id=... (see app/ingest/github/
-    cancellation.py); omit it and the sync just can't be stopped early."""
+    """Same sync as POST /sync/github, but in the background with its
+    progress as Server-Sent Events (checking profile, listing repos, N of
+    M, repo name). GET + query params because the browser's EventSource
+    can't send a POST body or custom headers. The sync runs in its own
+    thread (app/ingest/github/background.py), so closing this stream does
+    not stop it; a second call for the same username joins the running
+    sync instead of starting another. attach=true only follows a running
+    sync. run_id is an opaque client-generated token for
+    POST /sync/github/cancel?run_id=...; events carry the run_id of the
+    sync actually running, which is the one to cancel."""
     username = username.strip()
     if not username:
         raise HTTPException(status_code=422, detail="username is required")
 
+    target = github_background.SyncTarget(
+        kind="user",
+        github_username=username,
+        attribution_username=username,
+        account_id=account_id,
+    )
+    key = target.key
+    if not attach:
+        github_background.start_sync(target, run_id or str(uuid.uuid4()))
+
     def events() -> Iterator[str]:
-        try:
-            for event in sync_account_progress(
-                username, account_id=account_id, run_id=run_id
-            ):
-                yield _sse(event)
-        except UnknownObjectException:
-            yield _sse({"stage": "error", "detail": f"GitHub user '{username}' not found"})
-        except BadCredentialsException:
-            yield _sse(
-                {"stage": "error", "detail": "GitHub rejected the configured token/credentials"}
-            )
-        except RateLimitExceededException:
-            yield _sse(
-                {"stage": "error", "detail": "GitHub rate limit exhausted; try again shortly"}
-            )
+        for event in github_background.follow(key):
+            yield _sse(event)
 
     return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.get("/sync/github/status")
+def sync_github_status(username: str) -> dict:
+    """Whether a sync of this account is running, so /sync can pick its
+    progress back up after the page was left mid-sync."""
+    return {"running": github_background.is_running(github_background.account_key(username))}
 
 
 @app.post("/sync/github/cancel")

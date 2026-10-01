@@ -9,7 +9,7 @@
   <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
     <h1 class="font-display text-4xl">Welcome<span x-show="accountName">, <span x-text="accountName"></span></span></h1>
 
-    <div x-cloak x-show="!loading" class="mt-10 grid gap-4 sm:grid-cols-2" :class="pendingCount ? 'lg:grid-cols-5' : 'lg:grid-cols-4'">
+    <div x-cloak x-show="!loading" class="mt-10 grid gap-4 sm:grid-cols-2" :class="kpiColsClass">
       <a href="/portfolio/projects" class="otw-kpi block">
         <p class="otw-kpi-label">Projects</p>
         <p class="otw-kpi-value" x-text="totalProjects"></p>
@@ -26,18 +26,33 @@
         <p class="otw-kpi-value" x-text="skillCount"></p>
       </a>
 
-      <a href="/apis" class="otw-kpi otw-kpi-clickable block">
-        <p class="otw-kpi-label">LLM</p>
-        <p class="otw-kpi-value text-2xl">
-          <span x-show="llmConnected" class="otw-tick" style="font-size: 1.2rem;"><span>✓</span> Connected</span>
-          <span x-show="!llmConnected" class="text-[color:var(--muted)]" style="font-size: 1.2rem;">Not connected</span>
-        </p>
+      <!-- Only shown when the LLM is unusable; a working setup needs no tile. -->
+      <a x-show="!llmConnected" href="/apis" class="otw-kpi otw-kpi-clickable block" style="border-color: var(--danger);">
+        <p class="otw-kpi-label otw-error">LLM error</p>
+        <p class="otw-kpi-value otw-error" style="font-size: 1.2rem;">Not connected</p>
       </a>
 
       <a href="/jobs/analytics" class="otw-kpi block">
         <p class="otw-kpi-label">Missing skills</p>
         <p class="otw-kpi-value" :class="missingSkillCount ? '' : 'otw-good'" x-text="missingSkillCount"></p>
       </a>
+    </div>
+
+    <!-- Suggestion: the account's GitHub has no profile README
+         ("username/username" repo). Shown once a sync has confirmed it's
+         missing; see app/api/github_profile.py. -->
+    <div x-cloak x-show="!loading && profileSuggestionVisible" class="mt-8 otw-tile p-5">
+      <div class="flex items-start justify-between gap-4">
+        <h2 class="font-display text-lg">Add a GitHub profile README</h2>
+        <button @click="dismissProfileSuggestion" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] text-xl leading-none" aria-label="Dismiss">×</button>
+      </div>
+      <p class="text-sm text-[color:var(--muted)] mt-1">
+        Your GitHub profile is missing one. A repo named
+        <span class="font-mono text-[color:var(--ink)]" x-text="githubProfile?.github_username"></span>
+        with a README.md shows at the top of your profile, where recruiters look first.
+        List your stack there and those skills are added here on the next sync.
+      </p>
+      <a :href="githubProfile?.create_url" target="_blank" rel="noopener" class="otw-btn-accent inline-block text-xs px-3 py-1.5 mt-3">Create it on GitHub →</a>
     </div>
 
     <!-- Recommended skills: top missing skills across every collected job
@@ -60,7 +75,7 @@
     <div x-cloak x-show="!loading" class="mt-10">
       <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Jump to</p>
       <div class="mt-3 flex flex-wrap gap-2">
-        <a href="/sync" class="otw-btn-ghost text-sm px-4 py-2">Sync GitHub</a>
+        <a href="/monitor/sync" class="otw-btn-ghost text-sm px-4 py-2">Sync GitHub</a>
         <a href="/jobs" class="otw-btn-ghost text-sm px-4 py-2">Add a job posting</a>
         <a href="/portfolio/resume/build" class="otw-btn-ghost text-sm px-4 py-2">Build a resume</a>
         <a href="/portfolio/experience" class="otw-btn-ghost text-sm px-4 py-2">Add experience</a>
@@ -135,6 +150,8 @@
       extractionSource: null,
       showPendingModal: false,
       reprocessCardDismissed: false,
+      githubProfile: null,
+      profileSuggestionDismissed: false,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -143,6 +160,10 @@
           window.location.href = '/';
           return;
         }
+        try {
+          this.profileSuggestionDismissed =
+            localStorage.getItem(`otw_profile_readme_dismissed_${this.accountId}`) === '1';
+        } catch (e) {}
         await this.load();
       },
 
@@ -164,6 +185,15 @@
         return this.unprocessedVisible.length;
       },
 
+      get kpiColsClass() {
+        const tiles = 3 + (this.pendingCount > 0 ? 1 : 0) + (this.llmConnected ? 0 : 1);
+        return { 3: 'lg:grid-cols-3', 4: 'lg:grid-cols-4', 5: 'lg:grid-cols-5' }[tiles];
+      },
+
+      get profileSuggestionVisible() {
+        return !this.profileSuggestionDismissed && this.githubProfile?.state === 'missing';
+      },
+
       get topMissingSkills() {
         return this.skillDemand.filter((d) => !d.have_it).slice(0, 10);
       },
@@ -175,17 +205,19 @@
       async load() {
         this.loading = true;
         try {
-          const [projectsRes, skillsRes, defaultProviderRes, keysRes, demandRes] = await Promise.all([
+          const [projectsRes, skillsRes, defaultProviderRes, keysRes, demandRes, profileRes] = await Promise.all([
             fetch(`/api/projects?account_id=${this.accountId}`),
             fetch(`/api/skills?account_id=${this.accountId}`),
             fetch('/api/api-keys/default-provider'),
             fetch('/api/api-keys'),
             fetch(`/api/job-analytics/skills-demand?account_id=${this.accountId}`),
+            fetch(`/api/github-profile?account_id=${this.accountId}`),
           ]);
           this.projects = await projectsRes.json();
           this.skills = await skillsRes.json();
           this.skillCount = this.skills.length;
           this.skillDemand = demandRes.ok ? await demandRes.json() : [];
+          this.githubProfile = profileRes.ok ? await profileRes.json() : null;
 
           // Provider-agnostic: connected when a usable key exists for the
           // provider(s) the configured LiteLLM models dispatch to.
@@ -236,6 +268,15 @@
       dismissReprocessCard() {
         this.reprocessCardDismissed = true;
         this.showPendingModal = false;
+      },
+
+      // Stays dismissed for this account on this browser; the portfolio
+      // overview still shows the same suggestion.
+      dismissProfileSuggestion() {
+        this.profileSuggestionDismissed = true;
+        try {
+          localStorage.setItem(`otw_profile_readme_dismissed_${this.accountId}`, '1');
+        } catch (e) {}
       },
 
       logout() {

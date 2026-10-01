@@ -1,5 +1,6 @@
 """Resume library: upload any number of resume files per account, each with
-LLM-extracted tags/target-roles/summary (app/profile/resume_extract.py)
+LLM-extracted tags/target-roles/summary/experience/education
+(app/profile/resume_extract.py)
 plus freeform notes, all independently editable by hand afterward.
 `/portfolio/resume` tab: a resume is drawn from the same projects/skills/
 experience/education the rest of the Portfolio section holds.
@@ -19,11 +20,21 @@ from pathlib import Path
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
-from app.core.db import Account, JobPosting, Resume
+from app.core.db import (
+    Account,
+    Education,
+    Experience,
+    ExperiencePoint,
+    ExperienceSkillEvidence,
+    JobPosting,
+    Resume,
+    ResumeProfileLink,
+    Skill,
+)
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
@@ -69,6 +80,9 @@ class ResumeItem(BaseModel):
     tags: list[str]
     target_roles: list[str]
     summary: str | None
+    experiences: list[dict]
+    education: list[dict]
+    contact: dict
     extraction_status: str
     extraction_error: str | None
     extracted_at: dt.datetime | None
@@ -92,6 +106,9 @@ class ResumeItem(BaseModel):
             tags=row.tags_json or [],
             target_roles=row.target_roles_json or [],
             summary=row.summary,
+            experiences=row.experiences_json or [],
+            education=row.education_json or [],
+            contact=row.contact_json or {},
             extraction_status=row.extraction_status,
             extraction_error=row.extraction_error,
             extracted_at=row.extracted_at,
@@ -274,6 +291,124 @@ def reprocess_resume(resume_id: int, *, db: DbSession) -> ResumeItem:
     return ResumeItem.from_row(row)
 
 
+class LinkedPoint(BaseModel):
+    id: int
+    text: str
+    created: bool
+
+
+class LinkedExperienceSkill(BaseModel):
+    id: int
+    skill: str
+    created: bool
+
+
+class LinkedExperience(BaseModel):
+    id: int
+    title: str
+    company: str
+    created: bool
+    points: list[LinkedPoint] = []
+    skills: list[LinkedExperienceSkill] = []
+
+
+class LinkedEducation(BaseModel):
+    id: int
+    institution: str
+    degree: str
+    created: bool
+
+
+class LinkedSkill(BaseModel):
+    id: int
+    name: str
+    created: bool
+
+
+class ResumeProfile(BaseModel):
+    """What this resume put into (or matched in) the profile, read from
+    its ResumeProfileLink rows. created is true for a row this resume
+    added and false for one that already existed. Freestanding skills are
+    only the resume's skills not tied to any role; a skill tied to a role
+    is under that experience.
+    """
+
+    experiences: list[LinkedExperience]
+    education: list[LinkedEducation]
+    skills: list[LinkedSkill]
+
+
+@router.get("/{resume_id}/profile", response_model=ResumeProfile)
+def resume_profile(resume_id: int, *, db: DbSession) -> ResumeProfile:
+    if db.get(Resume, resume_id) is None:
+        raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
+    created: dict[str, dict[int, bool]] = {}
+    for link in db.execute(
+        select(ResumeProfileLink)
+        .where(ResumeProfileLink.resume_id == resume_id)
+        .order_by(ResumeProfileLink.id)
+    ).scalars():
+        created.setdefault(link.kind, {})[link.ref_id] = link.created
+
+    def ids(kind: str) -> list[int]:
+        return list(created.get(kind, {}))
+
+    experiences: dict[int, LinkedExperience] = {}
+    for exp in db.execute(
+        select(Experience).where(Experience.id.in_(ids("experience")))
+    ).scalars():
+        experiences[exp.id] = LinkedExperience(
+            id=exp.id, title=exp.title, company=exp.company,
+            created=created["experience"][exp.id],
+        )
+    for point in db.execute(
+        select(ExperiencePoint)
+        .where(ExperiencePoint.id.in_(ids("experience_point")))
+        .order_by(ExperiencePoint.order_index)
+    ).scalars():
+        if point.experience_id in experiences:
+            experiences[point.experience_id].points.append(
+                LinkedPoint(
+                    id=point.id, text=point.text,
+                    created=created["experience_point"][point.id],
+                )
+            )
+    for evidence in db.execute(
+        select(ExperienceSkillEvidence).where(
+            ExperienceSkillEvidence.id.in_(ids("experience_skill"))
+        )
+    ).scalars():
+        if evidence.experience_id in experiences:
+            experiences[evidence.experience_id].skills.append(
+                LinkedExperienceSkill(
+                    id=evidence.id, skill=evidence.skill,
+                    created=created["experience_skill"][evidence.id],
+                )
+            )
+
+    education = [
+        LinkedEducation(
+            id=row.id, institution=row.institution, degree=row.degree,
+            created=created["education"][row.id],
+        )
+        for row in db.execute(
+            select(Education).where(Education.id.in_(ids("education")))
+        ).scalars()
+    ]
+    skills = [
+        LinkedSkill(id=row.id, name=row.name, created=created["skill"][row.id])
+        for row in db.execute(
+            select(Skill).where(Skill.id.in_(ids("skill"))).order_by(Skill.name)
+        ).scalars()
+    ]
+    order = {ref_id: i for i, ref_id in enumerate(ids("experience"))}
+    return ResumeProfile(
+        experiences=sorted(experiences.values(), key=lambda e: order[e.id]),
+        education=education,
+        skills=skills,
+    )
+
+
 class ResumeEditRequest(BaseModel):
     message: str
 
@@ -431,6 +566,13 @@ def delete_resume(resume_id: int, *, db: DbSession) -> dict:
         Path(row.stored_path).unlink(missing_ok=True)
     if row.compiled_path:
         Path(row.compiled_path).unlink(missing_ok=True)
+    # SQLite runs without foreign key enforcement here, so the ON DELETE
+    # SET NULL on skills.source_resume_id has to be done by hand. The
+    # skills themselves stay; they just stop naming a resume.
+    db.execute(
+        update(Skill).where(Skill.source_resume_id == resume_id).values(source_resume_id=None)
+    )
+    db.execute(delete(ResumeProfileLink).where(ResumeProfileLink.resume_id == resume_id))
     db.delete(row)
     db.commit()
     return {"deleted": True, "id": resume_id}

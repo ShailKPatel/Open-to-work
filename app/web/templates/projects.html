@@ -72,79 +72,88 @@
 
     <div x-cloak x-show="!loading && projects.length === 0" class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">No projects yet.</p>
-      <a href="/sync" class="otw-btn inline-block mt-4">Sync GitHub</a>
+      <a href="/monitor/sync" class="otw-btn inline-block mt-4">Sync GitHub</a>
       <p class="mt-3 text-sm">
-        <a href="/settings/sources" class="text-[color:var(--muted)] underline hover:text-[color:var(--ink)]">
+        <a href="/monitor/sync" class="text-[color:var(--muted)] underline hover:text-[color:var(--ink)]">
           or manage what to fetch from →
         </a>
       </p>
     </div>
 
-    <div x-cloak class="mt-10 space-y-4">
+    <div x-cloak class="mt-10 otw-fill" style="--fill-min: 20rem;">
       <template x-for="project in pagedProjects" :key="project.id">
         <div
           @click="goToDetail(project)"
-          class="otw-tile p-6 cursor-pointer"
+          class="otw-tile otw-project cursor-pointer"
+          :class="project.starred ? 'otw-project-starred' : ''"
         >
-          <div class="flex items-start justify-between gap-4">
-            <div class="min-w-0">
-              <div class="flex items-center gap-3">
-                <button
-                  @click.stop="toggleStar(project)"
-                  :disabled="Boolean(starBusy[project.id])"
-                  :title="project.starred ? 'Unstar' : 'Star (max ' + maxStarred + ')'"
-                  class="text-lg leading-none"
-                  :class="project.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
-                ><span x-text="project.starred ? '★' : '☆'"></span></button>
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex items-start gap-2.5 min-w-0">
+              <button
+                @click.stop="toggleStar(project)"
+                :disabled="Boolean(starBusy[project.id])"
+                :title="project.starred ? 'Unstar' : 'Star (max ' + maxStarred + ')'"
+                class="text-lg leading-none mt-1 shrink-0"
+                :class="project.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+              ><span x-text="project.starred ? '★' : '☆'"></span></button>
+              <div class="min-w-0">
                 <a
                   @click.stop
                   :href="'/portfolio/projects/' + project.id"
-                  class="font-display text-xl hover:underline"
+                  class="font-display text-xl leading-snug hover:underline break-words"
                   x-text="project.name"
                 ></a>
-                <a
-                  x-show="project.url"
-                  @click.stop
-                  :href="project.url"
-                  target="_blank"
-                  rel="noopener"
-                  class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] underline"
-                >GitHub ↗</a>
-                <span x-show="project.is_fork" class="text-xs text-[color:var(--muted)] border border-[color:var(--line)] px-2 py-0.5">fork</span>
-                <span x-show="project.is_manual" class="text-xs text-[color:var(--muted)] border border-[color:var(--line)] px-2 py-0.5">added manually</span>
+                <p x-show="project.full_name && !project.is_manual" class="text-xs text-[color:var(--muted)] font-mono mt-0.5 truncate" x-text="project.full_name"></p>
               </div>
-              <p class="text-sm text-[color:var(--muted)] mt-1" x-text="project.description || 'No description on GitHub.'"></p>
-              <p x-show="!project.has_readme" class="text-xs text-[color:var(--muted)] mt-2 italic">
-                No README in this repo.
-                <template x-if="!project.description">
-                  <span> No description either, nothing to extract skills from beyond declared dependencies.</span>
-                </template>
-              </p>
-              <p x-show="starError[project.id]" class="otw-error text-xs mt-1" x-text="starError[project.id]"></p>
             </div>
-
-            <div class="text-right shrink-0">
-              <p x-show="statusLabel(project)" class="text-sm" x-text="statusLabel(project)"></p>
-              <p x-show="project.skill_count > 0" class="text-xs text-[color:var(--muted)] mt-0.5">
-                <span x-text="project.skill_count"></span> skill<span x-show="project.skill_count !== 1">s</span>
-              </p>
-              <button
-                @click.stop="reprocess(project)"
-                :disabled="Boolean(reprocessing[project.id])"
-                class="otw-btn-accent text-xs px-3 py-1.5 mt-2"
-              >
-                <span x-show="!reprocessing[project.id]">Reprocess</span>
-                <span x-show="reprocessing[project.id]" class="otw-working">Working…</span>
-              </button>
-            </div>
+            <a
+              x-show="project.url && !project.is_manual"
+              @click.stop
+              :href="project.url"
+              target="_blank"
+              rel="noopener"
+              title="Open on GitHub"
+              class="otw-icon-badge hover:border-[color:var(--line-strong)] transition-colors shrink-0"
+            ><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg></a>
           </div>
 
+          <p class="text-sm text-[color:var(--muted)] mt-3 otw-clamp-3" x-text="project.description || 'No description on GitHub.'"></p>
+          <p x-show="!project.has_readme" class="text-xs text-[color:var(--muted)] mt-2 italic">
+            No README in this repo.
+            <template x-if="!project.description">
+              <span> No description either, nothing to extract skills from beyond declared dependencies.</span>
+            </template>
+          </p>
+          <p x-show="starError[project.id]" class="otw-error text-xs mt-2" x-text="starError[project.id]"></p>
           <p
             x-show="project.skill_extraction_status === 'failed' || project.skill_extraction_status === 'rate_limited'"
-            class="text-xs text-[color:var(--muted)] mt-3 border-t border-[color:var(--line)] pt-3"
-          >
-            <span x-text="project.skill_extraction_error"></span>
-          </p>
+            class="text-xs text-[color:var(--muted)] mt-2"
+            x-text="project.skill_extraction_error"
+          ></p>
+
+          <div class="otw-project-foot">
+            <div class="otw-meta mt-0">
+              <span x-show="project.primary_language" class="otw-meta-item">
+                <span class="otw-lang-dot" :style="'background:' + langColor(project.primary_language)"></span>
+                <span x-text="project.primary_language"></span>
+              </span>
+              <span x-show="project.skill_count > 0" class="otw-meta-item">
+                <span x-html="otwIcon('spark')"></span>
+                <span x-text="project.skill_count + (project.skill_count === 1 ? ' skill' : ' skills')"></span>
+              </span>
+              <span x-show="statusLabel(project)" class="otw-meta-item" x-text="statusLabel(project)"></span>
+              <span x-show="project.is_fork" class="otw-pill">fork</span>
+              <span x-show="project.is_manual" class="otw-pill">manual</span>
+            </div>
+            <button
+              @click.stop="reprocess(project)"
+              :disabled="Boolean(reprocessing[project.id])"
+              class="otw-btn-accent text-xs px-3 py-1.5 shrink-0"
+            >
+              <span x-show="!reprocessing[project.id]">Reprocess</span>
+              <span x-show="reprocessing[project.id]" class="otw-working">Working…</span>
+            </button>
+          </div>
         </div>
       </template>
     </div>
@@ -156,6 +165,15 @@
     </div>
   </main>
 </div>
+
+<style>
+  .otw-project { display: flex; flex-direction: column; padding: 1.4rem 1.5rem 1.2rem; }
+  .otw-project-starred { border-color: color-mix(in srgb, var(--ink) 40%, var(--line)); }
+  .otw-project-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; margin-top: auto; padding-top: 1rem; }
+  .otw-project-foot::before { content: ""; flex-basis: 100%; height: 1px; background: var(--line); margin-bottom: 0.25rem; }
+  .otw-lang-dot { width: 9px; height: 9px; border-radius: 9999px; display: inline-block; }
+  .otw-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+</style>
 
 <script>
   function projectsApp() {
@@ -276,6 +294,19 @@
           case 'no_signal': return '· Nothing to extract';
           default: return '⋯ Skills not extracted';
         }
+      },
+
+      // GitHub's own linguist colors for the usual suspects; anything
+      // else falls back to the muted ink.
+      langColor(lang) {
+        const colors = {
+          python: '#3572A5', javascript: '#f1e05a', typescript: '#3178c6', go: '#00ADD8',
+          rust: '#dea584', java: '#b07219', 'c++': '#f34b7d', c: '#555555', 'c#': '#178600',
+          ruby: '#701516', php: '#4F5D95', swift: '#F05138', kotlin: '#A97BFF', dart: '#00B4AB',
+          html: '#e34c26', css: '#663399', shell: '#89e051', 'jupyter notebook': '#DA5B0B',
+          vue: '#41b883', svelte: '#ff3e00', scala: '#c22d40', r: '#198CE7', lua: '#000080',
+        };
+        return colors[(lang || '').toLowerCase()] || 'var(--muted)';
       },
 
       goToDetail(project) {

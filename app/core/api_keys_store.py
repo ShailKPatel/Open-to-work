@@ -226,7 +226,8 @@ def update_key(
     """Partial update for the fields that don't need re-validating a
     credential (label, budget cap, the allowed-accounts list). Swapping
     the credentials themselves means adding a new key and deleting the old
-    one, so this never touches encrypted_credentials.
+    one, so this never touches encrypted_credentials (replace_credentials()
+    does that).
     `budget_cap_usd`/`allowed_account_ids` use `...` as "leave unchanged"
     since `None`/`[]` are both meaningful values (no cap, no restriction).
     """
@@ -244,6 +245,36 @@ def update_key(
         db.commit()
         db.refresh(row)
         return _to_out(row)
+    finally:
+        db.close()
+
+
+def replace_credentials(key_id: int, credentials: dict) -> tuple[dict | None, str]:
+    """Swaps the secret behind an existing key in place, keeping its label,
+    cap, allow-list and place in rotation. Validated exactly like
+    add_key(): a rejected credential leaves the stored one untouched. The
+    old status and quota clock belonged to the old secret, so both are
+    replaced by the new check's outcome. Raises LookupError for an unknown
+    id so the caller can tell that apart from a rejected credential."""
+    db = get_db()
+    try:
+        row = db.get(ApiKey, key_id)
+        if row is None:
+            raise LookupError(key_id)
+        status, detail = validate_credentials(row.provider, credentials)
+        if status == "invalid":
+            return None, detail
+        row.encrypted_credentials = encrypt(json.dumps(credentials))
+        row.masked_preview = _build_masked_preview(row.provider, credentials)
+        row.status = status
+        row.last_checked_at = _now()
+        row.last_check_detail = detail
+        _clear_exhaustion(row)
+        if status in _EXHAUSTED_STATUSES:
+            _mark_exhausted(row, detail, _now())
+        db.commit()
+        db.refresh(row)
+        return _to_out(row), detail
     finally:
         db.close()
 

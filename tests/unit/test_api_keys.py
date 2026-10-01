@@ -118,6 +118,50 @@ def test_update_key_unknown_id_returns_none(tmp_path):
     assert api_keys_store.update_key(999999, label="x") is None
 
 
+def test_replace_credentials_swaps_the_secret_and_keeps_the_rest(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key(
+        "openai", "Work", {"api_key": "sk-old-secret"}, 5.0, allowed_account_ids=[3]
+    )
+    api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
+
+    replaced, _ = api_keys_store.replace_credentials(added["id"], {"api_key": "sk-new-secret-xyz"})
+
+    assert replaced["masked"]["api_key"].endswith("xyz")
+    assert replaced["masked"] != added["masked"]
+    assert replaced["label"] == "Work"
+    assert replaced["budget_cap_usd"] == 5.0
+    assert replaced["allowed_account_ids"] == [3]
+    assert replaced["is_active"] is True
+    assert replaced["status"] == "valid"
+    assert replaced["exhausted_at"] is None
+
+
+def test_replace_credentials_rejected_leaves_the_stored_key_alone(tmp_path, monkeypatch):
+    from app.core import api_keys_store
+    from app.core.llm_providers import validate_credentials
+
+    _reset_db(tmp_path)
+    added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-old-secret"}, None)
+    monkeypatch.setattr("app.core.api_keys_store.validate_credentials", validate_credentials)
+
+    row, detail = api_keys_store.replace_credentials(added["id"], {"api_key": ""})
+
+    assert row is None
+    assert "Missing" in detail
+    assert api_keys_store.list_keys()[0]["masked"] == added["masked"]
+
+
+def test_replace_credentials_unknown_id_raises(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    with pytest.raises(LookupError):
+        api_keys_store.replace_credentials(999999, {"api_key": "sk-1"})
+
+
 def test_set_enabled_toggles_and_disabled_key_skipped_by_dispatch(tmp_path):
     from app.core import api_keys_store
 
@@ -660,6 +704,43 @@ def test_update_key_endpoint_unknown_id_404s(tmp_path):
     _reset_db(tmp_path)
     resp = _client().patch("/api/api-keys/999999", json={"label": "x"})
     assert resp.status_code == 404
+
+
+def test_replace_credentials_endpoint(tmp_path):
+    client = _client()
+    _reset_db(tmp_path)
+    added = client.post(
+        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": "sk-old-value"}}
+    ).json()
+
+    resp = client.put(
+        f"/api/api-keys/{added['id']}/credentials",
+        json={"credentials": {"api_key": "sk-new-value"}},
+    )
+    assert resp.status_code == 200
+    assert "sk-new-value" not in str(resp.json())
+    assert resp.json()["masked"]["api_key"].startswith("sk-")
+
+    missing = client.put(
+        "/api/api-keys/999999/credentials", json={"credentials": {"api_key": "sk-1"}}
+    )
+    assert missing.status_code == 404
+
+
+def test_replace_credentials_endpoint_rejects_invalid_credentials(tmp_path, monkeypatch):
+    from app.core.llm_providers import validate_credentials
+
+    client = _client()
+    _reset_db(tmp_path)
+    added = client.post(
+        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": "sk-old-value"}}
+    ).json()
+    monkeypatch.setattr("app.core.api_keys_store.validate_credentials", validate_credentials)
+
+    resp = client.put(
+        f"/api/api-keys/{added['id']}/credentials", json={"credentials": {"api_key": ""}}
+    )
+    assert resp.status_code == 422
 
 
 def test_check_key_endpoint_unknown_id_404s(tmp_path):

@@ -82,9 +82,17 @@ def test_repo_readme_and_contents(client):
     assert client.file_text(repo, "definitely/not/a/real/path.txt") is None
 
 
-def test_contributor_stats_returns_a_list(client):
-    stats = client.contributor_stats(client.get_repo(_REPO))
-    assert isinstance(stats, list)  # may be empty while GitHub computes them
+def test_authored_commits_and_raw_file_text(client):
+    repo = client.get_repo(_REPO)
+
+    authored = client.authored_commits(repo, _USER)
+    assert authored is not None
+    count, last = authored
+    assert count >= 0
+    assert last is None or last.tzinfo is not None
+
+    readme = next(e for e in client.root_contents(repo) if e.name.lower().startswith("readme"))
+    assert client.entry_text(repo, readme)
 
 
 def test_single_repo_sync_writes_to_the_database_then_hits_cache(client, tmp_path: Path):

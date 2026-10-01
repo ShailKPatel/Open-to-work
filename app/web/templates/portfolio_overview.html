@@ -12,43 +12,95 @@
 
     <h1 class="font-display text-4xl mt-8">Portfolio</h1>
 
-    <div x-cloak x-show="!loading" class="mt-10 grid gap-4 grid-cols-2 sm:grid-cols-4">
-      <a href="/portfolio/projects" class="otw-kpi block">
-        <p class="otw-kpi-label">Projects</p>
+    <p class="text-sm text-[color:var(--muted)] mt-2">Everything a resume gets built from, in one place.</p>
+
+    <div x-cloak x-show="!loading" class="mt-10 otw-fill" style="--fill-min: 15rem;">
+      <a href="/portfolio/projects" class="otw-tile otw-stat">
+        <span class="otw-icon-badge" x-html="otwIcon('folder')"></span>
+        <p class="otw-kpi-label mt-5">Projects</p>
         <p class="otw-kpi-value" x-text="counts.projects"></p>
         <p class="otw-kpi-sub">synced or added by hand</p>
       </a>
 
-      <div x-show="unprocessed.length > 0" class="otw-kpi otw-kpi-clickable" @click="showUnprocessedModal = true">
-        <p class="otw-kpi-label">Not processed</p>
+      <button x-show="unprocessed.length > 0" type="button" class="otw-tile otw-stat text-left" @click="showUnprocessedModal = true">
+        <span class="otw-icon-badge" x-html="otwIcon('alert')"></span>
+        <p class="otw-kpi-label mt-5">Not processed</p>
         <p class="otw-kpi-value" x-text="unprocessed.length"></p>
         <p class="otw-kpi-sub">click to review →</p>
-      </div>
+      </button>
 
-      <a href="/portfolio/skills" class="otw-kpi block">
-        <p class="otw-kpi-label">Skills</p>
+      <a href="/portfolio/skills" class="otw-tile otw-stat">
+        <span class="otw-icon-badge" x-html="otwIcon('layers')"></span>
+        <p class="otw-kpi-label mt-5">Skills</p>
         <p class="otw-kpi-value" x-text="counts.skills"></p>
         <p class="otw-kpi-sub">projects, experience, manual</p>
       </a>
 
-      <a href="/portfolio/experience" class="otw-kpi block">
-        <p class="otw-kpi-label">Experience</p>
+      <a href="/portfolio/experience" class="otw-tile otw-stat">
+        <span class="otw-icon-badge" x-html="otwIcon('briefcase')"></span>
+        <p class="otw-kpi-label mt-5">Experience</p>
         <p class="otw-kpi-value" x-text="counts.experience"></p>
         <p class="otw-kpi-sub">role<span x-show="counts.experience !== 1">s</span> entered</p>
       </a>
 
-      <a href="/portfolio/education" class="otw-kpi block">
-        <p class="otw-kpi-label">Education</p>
+      <a href="/portfolio/education" class="otw-tile otw-stat">
+        <span class="otw-icon-badge" x-html="otwIcon('cap')"></span>
+        <p class="otw-kpi-label mt-5">Education</p>
         <p class="otw-kpi-value" x-text="counts.education"></p>
         <p class="otw-kpi-sub">entr<span x-text="counts.education === 1 ? 'y' : 'ies'"></span></p>
       </a>
 
-      <a href="/portfolio/contact" class="otw-kpi block">
-        <p class="otw-kpi-label">Links</p>
+      <a href="/portfolio/contact" class="otw-tile otw-stat">
+        <span class="otw-icon-badge" x-html="otwIcon('link')"></span>
+        <p class="otw-kpi-label mt-5">Links</p>
         <p class="otw-kpi-value" x-text="counts.links"></p>
         <p class="otw-kpi-sub" x-text="contactSummary"></p>
       </a>
     </div>
+
+    <!-- GitHub profile README: the "username/username" repo. Not a
+         project (kept off the projects list), but its skills count, so it
+         gets its own card here. See app/api/github_profile.py. -->
+    <section id="github-profile" x-cloak x-show="!loading && githubProfile && githubProfile.state !== 'not_synced'" class="mt-10 otw-tile p-5">
+      <template x-if="githubProfile && githubProfile.state === 'present'">
+        <div>
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <h2 class="font-display text-lg">GitHub profile README</h2>
+              <a :href="githubProfile.repo.url" target="_blank" rel="noopener" class="text-xs underline text-[color:var(--muted)]" x-text="githubProfile.repo.full_name"></a>
+            </div>
+            <button @click="reprocessProfile" :disabled="profileProcessing" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
+              <span x-show="!profileProcessing">Reprocess</span>
+              <span x-show="profileProcessing" class="otw-working">Working…</span>
+            </button>
+          </div>
+          <p class="text-xs text-[color:var(--muted)] mt-2" x-text="profileStatusLabel"></p>
+          <div x-show="githubProfile.skills.length > 0" class="flex flex-wrap gap-1.5 mt-3">
+            <template x-for="skill in githubProfile.skills" :key="skill">
+              <span class="otw-chip" x-text="skill"></span>
+            </template>
+          </div>
+          <p class="text-xs text-[color:var(--muted)] mt-3">
+            Skills listed here are added to your skills. It isn't counted as a project. Edits on GitHub are picked up on the next sync.
+          </p>
+        </div>
+      </template>
+      <template x-if="githubProfile && githubProfile.state === 'missing'">
+        <div class="flex items-start gap-4">
+          <span class="otw-icon-badge shrink-0" x-html="otwIcon('spark')"></span>
+          <div class="min-w-0">
+            <h2 class="font-display text-lg">Add a GitHub profile README</h2>
+            <p class="text-sm text-[color:var(--muted)] mt-1">
+              Your GitHub profile has no README. A repo named
+              <span class="font-mono text-[color:var(--ink)]" x-text="githubProfile.github_username"></span>
+              with a README.md shows at the top of your profile, and it's the first thing a recruiter reads there.
+              List your stack in it and its skills are added here on the next sync.
+            </p>
+            <a :href="githubProfile.create_url" target="_blank" rel="noopener" class="otw-btn-accent inline-block text-xs px-3 py-1.5 mt-3">Create it on GitHub →</a>
+          </div>
+        </div>
+      </template>
+    </section>
   </main>
 
   <!-- Not-processed popup: only the missing ones, reprocess right here,
@@ -90,6 +142,18 @@
   </div>
 </div>
 
+<style>
+  .otw-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    color: var(--ink);
+    background: rgba(242, 242, 240, 0.06);
+    border: 1px solid var(--line);
+  }
+</style>
+
 <script>
   function portfolioOverviewApp() {
     return {
@@ -104,6 +168,8 @@
       processing: false,
       extractionSource: null,
       reprocessingRepo: {},
+      githubProfile: null,
+      profileProcessing: false,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -131,6 +197,31 @@
         return parts.join(', ');
       },
 
+      get profileStatusLabel() {
+        const repo = this.githubProfile?.repo;
+        if (!repo) return '';
+        if (!repo.has_readme) return 'The repo exists but has no README yet, so there is nothing to read skills from.';
+        switch (repo.skill_extraction_status) {
+          case 'extracted': return `${this.githubProfile.skills.length} skill${this.githubProfile.skills.length !== 1 ? 's' : ''} found`;
+          case 'no_signal': return 'No skills found in it.';
+          case 'failed': return '✗ Extraction failed: ' + (repo.skill_extraction_error || '');
+          case 'rate_limited': return '○ Rate limited, retry later';
+          default: return '⋯ Not yet processed';
+        }
+      },
+
+      async reprocessProfile() {
+        const repo = this.githubProfile?.repo;
+        if (!repo) return;
+        this.profileProcessing = true;
+        try {
+          await fetch(`/api/projects/${repo.id}/reprocess`, { method: 'POST' });
+          await this.load();
+        } finally {
+          this.profileProcessing = false;
+        }
+      },
+
       statusLabel(project) {
         switch (project.skill_extraction_status) {
           case 'failed': return '✗ Extraction failed: ' + (project.skill_extraction_error || '');
@@ -142,13 +233,14 @@
       async load() {
         this.loading = true;
         try {
-          const [projectsRes, skillsRes, experienceRes, educationRes, contactRes, linksRes] = await Promise.all([
+          const [projectsRes, skillsRes, experienceRes, educationRes, contactRes, linksRes, profileRes] = await Promise.all([
             fetch(`/api/projects?account_id=${this.accountId}`),
             fetch(`/api/skills?account_id=${this.accountId}`),
             fetch(`/api/experience?account_id=${this.accountId}`),
             fetch(`/api/education?account_id=${this.accountId}`),
             fetch(`/api/accounts/${this.accountId}/contact`),
             fetch(`/api/accounts/${this.accountId}/social-links`),
+            fetch(`/api/github-profile?account_id=${this.accountId}`),
           ]);
           this.projects = await projectsRes.json();
           this.counts.projects = this.projects.length;
@@ -158,6 +250,7 @@
           this.contact = await contactRes.json();
           this.links = await linksRes.json();
           this.counts.links = this.links.length;
+          this.githubProfile = profileRes.ok ? await profileRes.json() : null;
         } finally {
           this.loading = false;
         }

@@ -10,7 +10,9 @@ from app.core.db import (
     _backup_sqlite_file,
     _migrate_accounts_contact_columns,
     _migrate_job_postings_account_id,
+    _migrate_job_postings_salary_columns,
     _migrate_job_postings_tracking_columns,
+    _migrate_repositories_profile_readme_column,
     init_db,
 )
 
@@ -241,3 +243,96 @@ def test_migrate_job_postings_tracking_columns_idempotent(tmp_path):
     with engine.connect() as conn:
         cols = {row[1] for row in conn.execute(text("PRAGMA table_info(job_postings)"))}
     assert "applied" in cols
+
+
+def test_migrate_job_postings_salary_columns_backfills_from_extracted_text(tmp_path):
+    """Rows extracted before the annual salary columns existed get them
+    filled from the salary text already stored, no reprocess needed."""
+    import json
+
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
+    with engine.connect() as conn:
+        conn.execute(
+            text("CREATE TABLE job_postings (id INTEGER PRIMARY KEY, extracted_json JSON)")
+        )
+        conn.execute(
+            text(
+                "INSERT INTO job_postings (id, extracted_json) "
+                "VALUES (1, :a), (2, :b), (3, NULL)"
+            ),
+            {
+                "a": json.dumps({"salary_range": "1.5 to 1.6 lakh per month"}),
+                "b": json.dumps({"salary_range": ""}),
+            },
+        )
+        conn.commit()
+
+    _migrate_job_postings_salary_columns(engine)
+    _migrate_job_postings_salary_columns(engine)  # idempotent
+
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT id, salary_min_annual, salary_max_annual, salary_currency "
+                "FROM job_postings ORDER BY id"
+            )
+        ).all()
+    assert rows == [(1, 1800000, 1920000, "INR"), (2, None, None, None), (3, None, None, None)]
+
+
+def test_migrate_repositories_profile_readme_column_flags_existing_profile_repos(tmp_path):
+    """Repos synced before the column existed: the "owner/owner" one is
+    flagged at once, so it leaves the projects list without waiting for a
+    change on GitHub. Matching ignores case, as GitHub logins do."""
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
+    with engine.connect() as conn:
+        conn.execute(
+            text("CREATE TABLE repositories (id INTEGER PRIMARY KEY, name TEXT, full_name TEXT)")
+        )
+        conn.execute(
+            text(
+                "INSERT INTO repositories (id, name, full_name) VALUES "
+                "(1, 'Octocat', 'octocat/Octocat'), (2, 'proj', 'octocat/proj'), "
+                "(3, 'octocat', 'someone/octocat')"
+            )
+        )
+        conn.commit()
+
+    _migrate_repositories_profile_readme_column(engine)
+    _migrate_repositories_profile_readme_column(engine)  # idempotent
+
+    with engine.connect() as conn:
+        flags = dict(conn.execute(text("SELECT id, is_profile_readme FROM repositories")).all())
+    assert flags == {1: 1, 2: 0, 3: 0}
+
+
+def test_migrate_repositories_profile_readme_column_recategorizes_every_startup(tmp_path):
+    """The column already exists but a profile repo was saved unflagged
+    (a project, as before this feature): the next startup moves it."""
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
+    with engine.connect() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE repositories (id INTEGER PRIMARY KEY, name TEXT, full_name TEXT, "
+                "is_profile_readme BOOLEAN NOT NULL DEFAULT 0)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO repositories (id, name, full_name) VALUES "
+                "(1, 'octocat', 'octocat/octocat'), (2, 'proj', 'octocat/proj')"
+            )
+        )
+        conn.commit()
+
+    _migrate_repositories_profile_readme_column(engine)
+
+    with engine.connect() as conn:
+        flags = dict(conn.execute(text("SELECT id, is_profile_readme FROM repositories")).all())
+    assert flags == {1: 1, 2: 0}

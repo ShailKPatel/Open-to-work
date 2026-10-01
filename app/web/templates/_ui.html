@@ -1,0 +1,91 @@
+{#
+  Shared form controls. Import with {% import "_ui.html" as ui %}.
+
+  select(): a themed dropdown in place of a native <select>, whose popup
+  ignores the page's colors. Backed by the otwSelect component in
+  _base.html.
+    model        Alpine expression the choice is bound to (as x-model)
+    options      either a JS expression that evaluates to
+                 [{ value, label }], re-read on each render, or a static
+                 list of (value, label) pairs
+    placeholder  text shown while the model matches no option
+    change       Alpine expression run after the user picks a new value
+    size         'sm' for the compact variant used in dense rows
+    class        extra classes on the wrapper (width, margins)
+    disabled     Alpine expression that disables the control
+    label        accessible name, when no visible <label> wraps it
+
+  bin_button(): the delete control, a bin icon. The click handler is
+  expected to ask first, through otwConfirm() in _base.html.
+    click        Alpine expression run on click
+    label        tooltip and accessible name
+    disabled     Alpine expression that disables the button
+    size         'sm' for dense rows and cards
+    class        extra classes (positioning)
+#}
+
+{% macro select(model, options, placeholder=none, change=none, size='', class='', disabled=none, label=none) -%}
+{%- if options is string -%}
+  {%- set opts_js = options -%}
+{%- else -%}
+  {%- set pairs = [] -%}
+  {%- for value, text in options -%}{%- set _ = pairs.append({'value': value, 'label': text}) -%}{%- endfor -%}
+  {%- set opts_js = pairs|tojson -%}
+{%- endif -%}
+<div
+  class="otw-dd{% if size == 'sm' %} otw-dd-sm{% endif %}{% if class %} {{ class }}{% endif %}"
+  x-data='otwSelect(() => ({{ opts_js }}), {{ placeholder|tojson }})'
+  x-modelable="ddValue"
+  x-model="{{ model }}"
+  :data-open="ddOpen"
+  {% if change %}@change="{{ change }}"{% endif %}
+>
+  <button
+    type="button"
+    class="otw-dd-btn"
+    x-ref="ddBtn"
+    role="combobox"
+    aria-haspopup="listbox"
+    :aria-expanded="ddOpen"
+    {% if label %}aria-label="{{ label }}"{% endif %}
+    {% if disabled %}:disabled="{{ disabled }}"{% endif %}
+    @click="ddToggle()"
+    @keydown="ddKey($event)"
+    @blur="ddHide()"
+  >
+    <span class="otw-dd-value" :class="{ placeholder: ddIndex() < 0 }" x-text="ddLabel()"></span>
+    <svg class="otw-dd-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+  </button>
+  <template x-teleport="body">
+    <div class="otw-dd-panel" role="listbox" x-show="ddOpen" x-cloak :style="ddPos" x-init="ddPanel = $el" @mousedown.prevent>
+      <template x-for="(opt, i) in ddOptions()" :key="i">
+        <div
+          class="otw-dd-option"
+          role="option"
+          :data-idx="i"
+          :aria-selected="i === ddIndex()"
+          :class="{ selected: i === ddIndex(), active: i === ddActive }"
+          @mousemove="ddActive = i"
+          @click="ddPick(opt)"
+        >
+          <span x-text="opt.label"></span>
+          <svg class="otw-dd-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+      </template>
+      <div x-show="ddOptions().length === 0" class="otw-dd-empty">Nothing to choose from yet</div>
+    </div>
+  </template>
+</div>
+{%- endmacro %}
+
+{% macro bin_button(click, label='Delete', disabled=none, size='', class='') -%}
+<button
+  type="button"
+  @click="{{ click }}"
+  {% if disabled %}:disabled="{{ disabled }}"{% endif %}
+  title="{{ label }}"
+  aria-label="{{ label }}"
+  class="otw-icon-btn otw-icon-btn-danger{% if size == 'sm' %} otw-icon-btn-sm{% endif %}{% if class %} {{ class }}{% endif %}"
+  x-html="otwIcon('trash')"
+></button>
+{%- endmacro %}

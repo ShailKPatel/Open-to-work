@@ -649,3 +649,23 @@ def test_prefetch_only_covers_repos_this_run_will_process(tmp_path, monkeypatch)
     build_profile([done, pending_a, pending_b], now=NOW)
 
     assert seen == [[pending_a.id, pending_b.id]]
+
+
+def test_reprocess_moves_profile_readme_saved_as_project(tmp_path):
+    """A "username/username" repo saved before the flag existed is a
+    project until something touches it; the Reprocess button is enough."""
+    _reset_db(tmp_path)
+    repo = _persist_repo(name="octocat", full_name="octocat/octocat", is_profile_readme=False)
+
+    reprocess_repo(repo.id, now=NOW)
+
+    assert _fresh(repo.id).is_profile_readme is True
+
+
+def test_extraction_leaves_ordinary_repo_a_project(tmp_path):
+    _reset_db(tmp_path)
+    repo = _persist_repo()
+
+    build_profile([repo], now=NOW)
+
+    assert _fresh(repo.id).is_profile_readme is False
