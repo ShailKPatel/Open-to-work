@@ -23,6 +23,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
 from app.core.db import Account, SyncSource, get_db
@@ -141,7 +142,7 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
-def _target(db, row: SyncSource) -> background.SyncTarget:
+def _target(db: Session, row: SyncSource) -> background.SyncTarget:
     account = db.get(Account, row.account_id)
     return background.SyncTarget(
         kind=row.kind,

@@ -52,13 +52,14 @@ def _readme_rank(name: str) -> int | None:
 def _fetch_readme_and_manifests(client: GitHubClient, gh_repo: Any) -> tuple[str | None, dict]:
     manifests: dict[str, dict] = {}
     readme_entry = None
+    readme_rank = 0
     for entry in client.root_contents(gh_repo):
         if entry.type != "file":
             continue
         rank = _readme_rank(entry.name)
         if rank is not None:
-            if readme_entry is None or rank < _readme_rank(readme_entry.name):
-                readme_entry = entry
+            if readme_entry is None or rank < readme_rank:
+                readme_entry, readme_rank = entry, rank
             continue
         if entry.name not in MANIFEST_FILENAMES:
             continue

@@ -468,8 +468,8 @@ def restore_after_restart() -> None:
             if row.state == "running":
                 row.state = "error"
                 row.detail = "The app stopped while this sync was running."
-            elif row.resume_at is not None:
-                to_schedule.append((row.key, _utc(row.resume_at)))
+            elif (resume_at := _utc(row.resume_at)) is not None:
+                to_schedule.append((row.key, resume_at))
         db.commit()
     finally:
         db.close()

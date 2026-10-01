@@ -444,10 +444,10 @@ def remove_skill_everywhere(body: SkillRemove, *, db: DbSession) -> dict:
         .join(Experience, ExperienceSkillEvidence.experience_id == Experience.id)
         .where(Experience.account_id == body.account_id)
     ).scalars()
-    for evidence in experience_rows:
-        if _name_key(evidence.skill) == key:
-            experience_ids.append(evidence.id)
-            db.delete(evidence)
+    for exp_evidence in experience_rows:
+        if _name_key(exp_evidence.skill) == key:
+            experience_ids.append(exp_evidence.id)
+            db.delete(exp_evidence)
 
     resume_ids: set[int] = set()
     skill_ids: list[int] = []
