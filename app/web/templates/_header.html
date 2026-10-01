@@ -1,14 +1,14 @@
-<!-- Shared top-level header: logo, section links, profile link. Included on
+<!-- Shared top-level header: logo, section links, settings link. Included on
      every logged-in page. Assumes the enclosing Alpine scope defines
      `accountName` (every page here already does, for the account-picker
      redirect check in init()). Pass `top_active`
-     ('home' | 'portfolio' | 'jobs' | 'monitor' | 'explanation' | '') before including
+     ('home' | 'portfolio' | 'jobs' | 'monitor' | 'explanation' | 'settings' | '') before including
      this to highlight the current section; defaults to none highlighted.
      Resume is a tab under Portfolio
      (app/web/templates/_portfolio_subnav.html) rather than its own
      top-level link, since a resume is drawn from the same
      projects/skills/experience/education the rest of that section holds.
-     Profile goes straight to /settings, Log out lives on that page now,
+     Settings goes straight to /settings, Log out lives on that page now,
      not in a dropdown here. -->
 <header class="px-10 py-8 flex items-center justify-between">
   {% include "_logo.html" %}
@@ -20,11 +20,376 @@
       <a href="/monitor" class="otw-topnav-link {{ 'active' if top_active == 'monitor' }}">Monitor</a>
       <a href="/explanation" class="otw-topnav-link {{ 'active' if top_active == 'explanation' }}">How it works</a>
     </nav>
-    <div class="otw-profile">
-      <a href="/settings" class="otw-profile-btn">
-        <span class="otw-profile-avatar" x-text="(accountName[0] || '?').toUpperCase()"></span>
-        <span>Profile</span>
-      </a>
-    </div>
+    <a href="/settings" class="otw-settings-btn {{ 'active' if top_active == 'settings' }}">Settings</a>
   </div>
 </header>
+
+<!-- Background work reminder: a GitHub sync or a skill extraction run
+     that is going, or that stopped part way (a limit, a Stop, an error,
+     or the app closing mid-run). Shown on every page with this header so
+     leaving the sync page doesn't hide it. A GitHub sync cut off by the
+     hourly limit resumes on its own after the reset
+     (app/ingest/github/background.py); extraction cut off by a spent API
+     key continues once the key is back (app/profile/jobs.py). The
+     buttons start either now instead. Hidden on /monitor/sync, which
+     shows all of it in full, and the extraction card on the projects
+     page, which has its own. The x on a running card only hides it; the
+     work carries on, and a "finished" card shows up when it ends. -->
+<div
+  x-data="backgroundWorkReminder()"
+  x-init="init()"
+  x-show="visibleRuns.length || showExtraction || finished.length"
+  x-cloak
+  class="fixed bottom-4 right-4 left-4 sm:left-auto sm:w-80 z-50 space-y-2"
+>
+  <template x-for="run in visibleRuns" :key="run.id">
+    <div class="otw-tile p-4 text-xs shadow-lg">
+      <div class="flex items-start justify-between gap-3">
+        <p class="text-sm text-[color:var(--ink)]" :class="run.running && 'otw-working'" x-text="otwWork.syncTitle(run)"></p>
+        <button @click="run.running ? hideRun(run) : dismissRun(run)" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] shrink-0"
+          :aria-label="run.running ? 'Hide, keeps running' : 'Dismiss'" :title="run.running ? 'Hide. It keeps running.' : 'Dismiss'">×</button>
+      </div>
+      <p class="mt-1 text-[color:var(--muted)] truncate" x-text="run.label"></p>
+      <div class="mt-3 h-[2px] w-full bg-[color:var(--line)] overflow-hidden">
+        <div class="h-full bg-[color:var(--ink)] transition-all duration-300 ease-out" :style="`width: ${otwWork.syncPct(run)}%`"></div>
+      </div>
+      <p class="mt-2 text-[color:var(--muted)]" x-text="otwWork.syncCount(run)"></p>
+      <p class="mt-1 text-[color:var(--muted)]" x-text="otwWork.syncNote(run, now)"></p>
+      <div x-show="!run.running" class="mt-3 flex items-center gap-3">
+        <button @click="resumeRun(run)" :disabled="busy['run' + run.id]" class="otw-btn-accent text-xs px-3 py-1.5"
+          x-text="busy['run' + run.id] ? 'Starting…' : otwWork.syncResumeLabel(run, now)"></button>
+        <a href="/monitor/sync" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Open sync</a>
+      </div>
+    </div>
+  </template>
+
+  <div x-show="showExtraction" class="otw-tile p-4 text-xs shadow-lg">
+    <div class="flex items-start justify-between gap-3">
+      <p class="text-sm text-[color:var(--ink)]" :class="extraction?.running && 'otw-working'" x-text="otwWork.extractionTitle(extraction)"></p>
+      <button @click="extraction?.running ? hideExtraction() : dismissExtraction()" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] shrink-0"
+        :aria-label="extraction?.running ? 'Hide, keeps running' : 'Dismiss'" :title="extraction?.running ? 'Hide. It keeps running.' : 'Dismiss'">×</button>
+    </div>
+    <div class="mt-3 h-[2px] w-full bg-[color:var(--line)] overflow-hidden">
+      <div class="h-full bg-[color:var(--ink)] transition-all duration-300 ease-out" :style="`width: ${otwWork.extractionPct(extraction)}%`"></div>
+    </div>
+    <p class="mt-2 text-[color:var(--muted)]" x-text="otwWork.extractionCount(extraction)"></p>
+    <p class="mt-1 text-[color:var(--muted)]" x-text="otwWork.extractionNote(extraction, now)"></p>
+    <div x-show="!extraction?.running" class="mt-3 flex items-center gap-3">
+      <button @click="continueExtraction()" :disabled="busy.extraction" class="otw-btn-accent text-xs px-3 py-1.5"
+        x-text="busy.extraction ? 'Starting…' : otwWork.extractionButton(extraction)"></button>
+      <a x-show="extraction?.rate_limited" href="/apis" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">API keys</a>
+      <a href="/monitor/sync" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Open sync</a>
+    </div>
+  </div>
+
+  <template x-for="note in finished" :key="note.key">
+    <div class="otw-tile p-4 text-xs shadow-lg">
+      <div class="flex items-start justify-between gap-3">
+        <p class="text-sm text-[color:var(--ink)]" x-text="note.title"></p>
+        <button @click="dismissFinished(note)" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] shrink-0" aria-label="Dismiss">×</button>
+      </div>
+      <p class="mt-1 text-[color:var(--muted)] truncate" x-text="note.detail"></p>
+      <div class="mt-3 h-[2px] w-full bg-[color:var(--ink)]"></div>
+      <a :href="note.href" class="mt-3 inline-block underline text-[color:var(--muted)] hover:text-[color:var(--ink)]" x-text="note.link"></a>
+    </div>
+  </template>
+</div>
+
+<script>
+  // Wording and numbers for the background-work cards, shared by the
+  // header reminder and the /monitor/sync page so both say the same thing.
+  window.otwWork = {
+    clock(iso) {
+      return new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    },
+
+    syncPct(run) {
+      if (!run.total_hint) return run.running ? 5 : 0;
+      return Math.min(100, Math.round((run.completed / run.total_hint) * 100));
+    },
+    syncCount(run) {
+      const unit = run.kind === 'repo' ? 'project' : 'repos';
+      if (run.total_hint) return `${run.completed} of ${run.total_hint} ${unit} synced`;
+      if (run.completed) return `${run.completed} ${unit} synced so far`;
+      return run.running ? 'Getting the repo list…' : 'Stopped before any repos were synced';
+    },
+    syncTitle(run) {
+      if (run.running) return 'Syncing GitHub';
+      if (run.state === 'rate_limited') return 'GitHub sync paused';
+      if (run.state === 'cancelled') return 'GitHub sync stopped';
+      return "GitHub sync didn't finish";
+    },
+    syncNote(run, now) {
+      if (run.running) return 'Running in the background. Keep using the site.';
+      if (run.state === 'rate_limited' && run.resume_at) {
+        if (new Date(run.resume_at) <= now) return 'Resuming now…';
+        return `GitHub's hourly limit is used up. Resumes on its own at ${this.clock(run.resume_at)}.`;
+      }
+      if (run.state === 'rate_limited') return 'GitHub is limiting requests. Resume in a little while.';
+      if (run.state === 'cancelled') return 'Resume picks up where it stopped.';
+      return run.detail || 'Resume to try again.';
+    },
+    syncResumeLabel(run, now) {
+      if (run.state === 'rate_limited' && run.reset_at && new Date(run.reset_at) > now) return 'Try now';
+      return 'Resume';
+    },
+
+    // Worth a card: running, or projects still waiting or failed.
+    extractionPending(ex) {
+      return Boolean(ex && (ex.running || ex.waiting || ex.failed));
+    },
+    extractionPct(ex) {
+      if (!ex) return 0;
+      if (ex.running && ex.total) return Math.min(100, Math.round((ex.index / ex.total) * 100));
+      if (!ex.total_repos) return 0;
+      return Math.round((ex.done / ex.total_repos) * 100);
+    },
+    extractionTitle(ex) {
+      if (!ex) return '';
+      if (ex.running) return 'Extracting skills';
+      if (ex.rate_limited) return 'Skill extraction paused';
+      if (ex.waiting) return "Skill extraction didn't finish";
+      return 'Some projects failed skill extraction';
+    },
+    extractionCount(ex) {
+      if (!ex) return '';
+      if (ex.running && ex.total) return `${ex.index} of ${ex.total} · ${ex.current || ''}`;
+      if (ex.running) return 'Looking for projects to process…';
+      return `${ex.done} of ${ex.total_repos} projects done`;
+    },
+    extractionNote(ex, now) {
+      if (!ex) return '';
+      if (ex.running) return 'Running in the background. Keep using the site.';
+      const next = ex.next_repo ? ` Next up: ${ex.next_repo}.` : '';
+      if (ex.rate_limited) {
+        const back = ex.retry_at && new Date(ex.retry_at) > now
+          ? ` Continues on its own when an API key is back, around ${this.clock(ex.retry_at)}.`
+          : '';
+        return `${ex.reason || 'An LLM limit was hit.'}${back}${next}`;
+      }
+      if (ex.waiting) return `It stopped part way, for example because the app was closed.${next}`;
+      return `${ex.failed} project${ex.failed === 1 ? '' : 's'} failed: ${ex.reason || 'see the projects page'}.`;
+    },
+    extractionButton(ex) {
+      if (!ex) return 'Continue';
+      return ex.waiting ? 'Continue' : 'Retry failed';
+    },
+  };
+
+  function backgroundWorkReminder() {
+    return {
+      runs: [],
+      extraction: null,
+      extractionDismissed: '',
+      // Work seen running, so its end can be announced: {runs: {id: label}, extraction}.
+      watch: { runs: {}, extraction: false },
+      // Running cards hidden with the x: {runs: [id], extraction}.
+      hidden: { runs: [], extraction: false },
+      // "Finished" cards waiting to be read.
+      finished: [],
+      busy: {},
+      now: Date.now(),
+      timer: null,
+
+      get onSyncPage() {
+        return window.location.pathname === '/monitor/sync';
+      },
+
+      get visibleRuns() {
+        if (this.onSyncPage) return [];
+        return this.runs.filter((r) => !(r.running && this.hidden.runs.includes(r.id)));
+      },
+
+      // Same run state as when dismissed stays hidden; any change (more
+      // done, a new stop) brings the card back.
+      get extractionKey() {
+        const ex = this.extraction;
+        return ex ? [ex.done, ex.waiting, ex.failed, ex.rate_limited].join('/') : '';
+      },
+
+      get showExtraction() {
+        if (this.onSyncPage || window.location.pathname === '/portfolio/projects') return false;
+        if (!otwWork.extractionPending(this.extraction)) return false;
+        if (this.hidden.extraction) return false;
+        if (this.extraction.running) return true;
+        return this.extractionKey !== this.extractionDismissed;
+      },
+
+      init() {
+        const accountId = localStorage.getItem('otw_account_id');
+        if (!accountId) return;
+        try {
+          this.extractionDismissed = localStorage.getItem(`otw_extraction_dismissed_${accountId}`) || '';
+        } catch (e) {
+          // storage unavailable; the card just can't stay dismissed
+        }
+        this.watch = { ...this.watch, ...this.load('watch') };
+        this.hidden = { ...this.hidden, ...this.load('hidden') };
+        this.finished = this.load('finished') || [];
+        this.poll();
+      },
+
+      async poll() {
+        const accountId = localStorage.getItem('otw_account_id');
+        try {
+          const [runs, extraction] = await Promise.all([
+            fetch(`/api/github-sync?account_id=${accountId}`),
+            fetch(`/api/projects/process-pending/status?account_id=${accountId}`),
+          ]);
+          if (runs.ok && extraction.ok) {
+            this.runs = await runs.json();
+            this.extraction = await extraction.json();
+            this.noteFinished();
+          }
+        } catch (e) {
+          // server unreachable for a moment; try again on the next tick
+        }
+        this.now = Date.now();
+        // Fast while something is moving or about to resume, slow otherwise.
+        const soon = this.runs.some(
+          (r) => r.running || (r.resume_at && new Date(r.resume_at) - this.now < 120000)
+        ) || this.extraction?.running;
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.poll(), soon ? 3000 : 30000);
+      },
+
+      storageKey(name) {
+        return `otw_bg_${name}_${localStorage.getItem('otw_account_id')}`;
+      },
+
+      load(name) {
+        try {
+          return JSON.parse(localStorage.getItem(this.storageKey(name)) || 'null');
+        } catch (e) {
+          return null;
+        }
+      },
+
+      save(name, value) {
+        try {
+          localStorage.setItem(this.storageKey(name), JSON.stringify(value));
+        } catch (e) {
+          // storage unavailable; state lasts until the page reloads
+        }
+      },
+
+      // Compares this poll with what was running before. A sync that
+      // drops out of the list finished (a stopped one stays listed with
+      // its own card). Extraction counts as finished once it and every
+      // sync have stopped, since a sync keeps restarting it per repo.
+      noteFinished() {
+        const listed = new Map(this.runs.map((r) => [r.id, r]));
+        const runs = {};
+        for (const [id, label] of Object.entries(this.watch.runs)) {
+          const run = listed.get(Number(id));
+          if (!run) {
+            this.addFinished({
+              key: `run${id}`,
+              title: 'GitHub sync finished',
+              detail: label,
+              href: '/portfolio/projects',
+              link: 'See projects',
+            });
+          } else if (run.running) {
+            runs[id] = label;
+          }
+        }
+        for (const run of this.runs) {
+          if (run.running) runs[run.id] = run.label;
+        }
+
+        const ex = this.extraction;
+        const syncing = this.runs.some((r) => r.running);
+        let watchingExtraction = Boolean(ex?.running);
+        if (this.watch.extraction && !ex?.running) {
+          if (syncing) {
+            watchingExtraction = true;
+          } else if (!otwWork.extractionPending(ex)) {
+            this.addFinished({
+              key: `extraction${Date.now()}`,
+              title: 'Skill extraction finished',
+              detail: `${ex.done} of ${ex.total_repos} projects done`,
+              href: '/portfolio/skills',
+              link: 'See skills',
+            });
+          }
+        }
+
+        this.watch = { runs, extraction: watchingExtraction };
+        this.save('watch', this.watch);
+        // Hidden only lasts while the work goes on; a stop brings the card back.
+        this.hidden = {
+          runs: this.hidden.runs.filter((id) => runs[id] !== undefined),
+          extraction: this.hidden.extraction && watchingExtraction,
+        };
+        this.save('hidden', this.hidden);
+      },
+
+      addFinished(note) {
+        this.finished = [...this.finished.filter((n) => n.key !== note.key), note];
+        this.save('finished', this.finished);
+      },
+
+      dismissFinished(note) {
+        this.finished = this.finished.filter((n) => n.key !== note.key);
+        this.save('finished', this.finished);
+      },
+
+      hideRun(run) {
+        this.hidden = { ...this.hidden, runs: [...this.hidden.runs, run.id] };
+        this.save('hidden', this.hidden);
+      },
+
+      hideExtraction() {
+        this.hidden = { ...this.hidden, extraction: true };
+        this.save('hidden', this.hidden);
+      },
+
+      startExtraction() {
+        const accountId = localStorage.getItem('otw_account_id');
+        return fetch(`/api/projects/process-pending/start?account_id=${accountId}`, { method: 'POST' })
+          .catch(() => {});
+      },
+
+      async resumeRun(run) {
+        this.busy['run' + run.id] = true;
+        try {
+          await fetch(`/api/github-sync/${run.id}/resume`, { method: 'POST' });
+          // same parallel kickoff as the sync page: extraction picks up
+          // each repo as the sync saves it
+          this.startExtraction();
+        } finally {
+          this.busy['run' + run.id] = false;
+          this.poll();
+        }
+      },
+
+      async dismissRun(run) {
+        this.runs = this.runs.filter((r) => r.id !== run.id);
+        await fetch(`/api/github-sync/${run.id}/dismiss`, { method: 'POST' }).catch(() => {});
+      },
+
+      async continueExtraction() {
+        this.busy.extraction = true;
+        try {
+          await this.startExtraction();
+        } finally {
+          this.busy.extraction = false;
+          this.poll();
+        }
+      },
+
+      dismissExtraction() {
+        this.extractionDismissed = this.extractionKey;
+        try {
+          localStorage.setItem(
+            `otw_extraction_dismissed_${localStorage.getItem('otw_account_id')}`,
+            this.extractionKey
+          );
+        } catch (e) {
+          // storage unavailable; hidden until the page reloads
+        }
+      },
+    };
+  }
+</script>

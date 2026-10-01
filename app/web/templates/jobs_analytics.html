@@ -7,10 +7,10 @@
   {% include "_header.html" %}
 
   <main class="flex-1 px-10 pb-24 max-w-5xl mx-auto w-full">
-    <div class="mt-8 flex items-center justify-between gap-4 flex-wrap">
-      <h1 class="font-display text-4xl">Skill analytics</h1>
-      <a href="/jobs" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">← Jobs</a>
-    </div>
+    {% set jobs_active = 'analytics' %}
+    {% include "_jobs_subnav.html" %}
+
+    <h1 class="font-display text-4xl mt-8">Skill analytics</h1>
 
     <div x-show="loading" class="mt-16 text-center text-[color:var(--muted)]">Loading…</div>
 

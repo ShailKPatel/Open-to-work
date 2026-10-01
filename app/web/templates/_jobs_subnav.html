@@ -1,0 +1,13 @@
+<!-- Tab strip for the "Jobs" section, same shape as _portfolio_subnav.html.
+     Pass `jobs_active` ('postings' | 'analytics') to highlight the current
+     tab; detail pages also set `back_href`, which puts a back arrow to the
+     left of the tabs. -->
+<nav class="otw-subnav">
+  {% if back_href %}
+  <a href="{{ back_href }}" class="otw-subnav-back" title="Back" aria-label="Back">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+  </a>
+  {% endif %}
+  <a href="/jobs" class="otw-subnav-tab {{ 'active' if jobs_active == 'postings' }}">Postings</a>
+  <a href="/jobs/analytics" class="otw-subnav-tab {{ 'active' if jobs_active == 'analytics' }}">Skill analytics</a>
+</nav>

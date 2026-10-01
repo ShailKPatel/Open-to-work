@@ -45,12 +45,12 @@ def test_index_serves_account_picker(tmp_path):
     assert "GitHub username" in resp.text  # inside the create-profile form
 
 
-def test_sync_page_serves_form(tmp_path):
+def test_old_sync_page_redirects_to_monitor_sync_keeping_the_query(tmp_path):
     _reset_db(tmp_path)
     client = _client()
-    resp = client.get("/sync")
-    assert resp.status_code == 200
-    assert "GitHub username" in resp.text
+    resp = client.get("/sync?new=1", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/monitor/sync?new=1"
 
 
 def test_home_page_serves_dashboard(tmp_path):
@@ -74,13 +74,18 @@ def test_portfolio_overview_page_serves_html(tmp_path):
     assert "Portfolio" in resp.text
 
 
-def test_sources_page_serves_html(tmp_path):
+def test_sync_page_serves_html_and_old_sources_url_redirects(tmp_path):
     _reset_db(tmp_path)
     client = _client()
-    resp = client.get("/settings/sources")
+    resp = client.get("/monitor/sync")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
-    assert "Fetch data" in resp.text
+    assert "Skill extraction" in resp.text
+    assert "GitHub" in resp.text
+
+    old = client.get("/settings/sources", follow_redirects=False)
+    assert old.status_code == 307
+    assert old.headers["location"] == "/monitor/sync"
 
 
 def test_jobs_analytics_page_serves_html(tmp_path):
@@ -217,7 +222,7 @@ def test_sync_github_stream_sends_progress_events(tmp_path, monkeypatch):
         }
         yield {"stage": "done", "total_repos": 1, "fetched": 1, "cache_hits": 0}
 
-    monkeypatch.setattr("app.api.main.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
     client = _client()
 
     with client.stream("GET", "/sync/github/stream?username=octocat") as resp:
@@ -245,7 +250,7 @@ def test_sync_github_stream_unknown_user_sends_error_event(tmp_path, monkeypatch
         raise UnknownObjectException(404, "Not Found", {})
         yield  # pragma: no cover - unreachable, makes this a generator
 
-    monkeypatch.setattr("app.api.main.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
     client = _client()
 
     with client.stream("GET", "/sync/github/stream?username=does-not-exist-xyz") as resp:
@@ -263,7 +268,7 @@ def test_sync_github_stream_forwards_run_id(tmp_path, monkeypatch):
         seen["run_id"] = run_id
         yield {"stage": "done", "total_repos": 0, "fetched": 0, "cache_hits": 0}
 
-    monkeypatch.setattr("app.api.main.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
     client = _client()
 
     with client.stream(
@@ -274,7 +279,7 @@ def test_sync_github_stream_forwards_run_id(tmp_path, monkeypatch):
     assert seen["run_id"] == "abc-123"
 
 
-def test_sync_github_stream_without_run_id_forwards_none(tmp_path, monkeypatch):
+def test_sync_github_stream_without_run_id_generates_one_and_reports_it(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     seen = {}
 
@@ -282,13 +287,21 @@ def test_sync_github_stream_without_run_id_forwards_none(tmp_path, monkeypatch):
         seen["run_id"] = run_id
         yield {"stage": "done", "total_repos": 0, "fetched": 0, "cache_hits": 0}
 
-    monkeypatch.setattr("app.api.main.sync_account_progress", fake_progress)
+    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
     client = _client()
 
     with client.stream("GET", "/sync/github/stream?username=octocat") as resp:
-        list(resp.iter_text())
+        body = "".join(resp.iter_text())
 
-    assert seen["run_id"] is None
+    assert seen["run_id"]
+    assert f'"run_id": "{seen["run_id"]}"' in body
+
+
+def test_sync_github_status_for_an_account_never_synced(tmp_path):
+    _reset_db(tmp_path)
+    client = _client()
+
+    assert client.get("/sync/github/status?username=nobody-here").json() == {"running": False}
 
 
 def test_sync_github_cancel_flags_the_run_id(tmp_path):

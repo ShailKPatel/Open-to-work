@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from app.api.deps import DbSession
 from app.core.db import Education
+from app.profile.resume_profile_merge import unlink_profile_rows
 
 router = APIRouter(prefix="/api/education")
 
@@ -115,6 +116,7 @@ def delete_education(education_id: int, *, db: DbSession) -> dict:
     row = db.get(Education, education_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no education with id={education_id}")
+    unlink_profile_rows(db, "education", [education_id])
     db.delete(row)
     db.commit()
     return {"deleted": True}

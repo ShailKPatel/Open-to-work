@@ -33,6 +33,7 @@ _SCHEMA = {
         "location": {"type": "string"},
         "salary_range": {"type": "string"},
         "employment_type": {"type": "string"},
+        "work_mode": {"type": "string"},
         "seniority": {"type": "string"},
         "experience_required": {"type": "string"},
         "skills_required": {
@@ -48,7 +49,7 @@ _SCHEMA = {
     },
     "required": [
         "raw_text_transcribed", "company", "title", "location", "salary_range",
-        "employment_type", "seniority", "experience_required", "skills_required",
+        "employment_type", "work_mode", "seniority", "experience_required", "skills_required",
         "other_requirements", "role_summary",
     ],
 }
@@ -61,8 +62,12 @@ _SYSTEM_PROMPT = (
     "posting said, so be thorough and accurate, do not summarize it. Then, "
     "from that same content, extract: `company`, `title`, `location` "
     "(best guess, empty string if truly absent); `salary_range` as stated, "
-    "empty string if not shown, never invented; `employment_type` (e.g. "
-    "\"Full-time\", \"Contract\", \"Internship\"); `seniority` (e.g. "
+    "keeping its currency, units and pay period (e.g. \"₹12-18 LPA\", "
+    "\"1.5-1.6 lakh per month\"), empty string if not shown, never "
+    "invented; `employment_type`, one of \"Full-time\", \"Part-time\", "
+    "\"Contract\", \"Internship\", \"Freelance\", or empty string; "
+    "`work_mode`, one of \"Remote\", \"Hybrid\", \"On-site\", or empty "
+    "string; `seniority` (e.g. "
     "\"Junior\", \"Mid\", \"Senior\", \"Staff\"), empty string if not "
     "inferable; `experience_required` as stated; `skills_required`, a list "
     "of {skill, level} objects (level one of \"junior\"/\"mid\"/\"senior\"/"
@@ -149,5 +154,6 @@ def extract_job_posting_from_image(
             str(s).strip() for s in p.get("other_requirements", []) if str(s).strip()
         ],
         role_summary=str(p.get("role_summary", "")).strip(),
+        work_mode=str(p.get("work_mode", "")).strip(),
     )
     return ScreenshotExtraction(raw_text_transcribed=raw_text, extraction=extraction)

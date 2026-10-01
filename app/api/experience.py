@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import DbSession
 from app.core.db import Experience, ExperiencePoint, ExperienceSkillEvidence
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
+from app.profile.resume_profile_merge import unlink_profile_rows
 from app.profile.skill_review import approve
 
 router = APIRouter(prefix="/api/experience")
@@ -301,6 +302,9 @@ def delete_experience(experience_id: int, *, db: DbSession) -> dict:
     db.execute(
         delete(ExperiencePoint).where(ExperiencePoint.experience_id == experience_id)
     )
+    unlink_profile_rows(db, "experience_skill", evidence_ids)
+    unlink_profile_rows(db, "experience_point", point_ids)
+    unlink_profile_rows(db, "experience", [experience_id])
     db.delete(exp)
     db.commit()
     return {"deleted": True, "id": experience_id}
@@ -394,6 +398,7 @@ def delete_point(experience_id: int, point_id: int, *, db: DbSession) -> Experie
     ).scalar_one_or_none()
     if point is None:
         raise HTTPException(status_code=404, detail=f"no point with id={point_id}")
+    unlink_profile_rows(db, "experience_point", [point_id])
     db.delete(point)
     db.commit()
     _delete_point_vectors([point_id])
@@ -472,6 +477,7 @@ def delete_skill(experience_id: int, skill_id: int, *, db: DbSession) -> Experie
     exp = db.get(Experience, experience_id)
     if exp is None:
         raise HTTPException(status_code=404, detail=f"no experience with id={experience_id}")
+    unlink_profile_rows(db, "experience_skill", [skill_id])
     delete_evidence(db, ExperienceSkillEvidence, "experience_id", experience_id, skill_id)
     from app.retrieval.index import experience_evidence_point_id
 

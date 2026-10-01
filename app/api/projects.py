@@ -26,7 +26,7 @@ from app.api.deps import DbSession
 from app.core.db import ProjectLink, Repository, SkillEvidence, get_db
 from app.profile.build import build_profile, reprocess_repo, skill_evidence_for_repos
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
-from app.profile.jobs import extraction_stream, start_extraction
+from app.profile.jobs import extraction_reminder, extraction_stream, start_extraction
 from app.profile.skill_review import approve
 
 # /api prefix, not just style: a JSON endpoint at the same path as an HTML
@@ -115,7 +115,7 @@ def list_projects(account_id: int, *, db: DbSession) -> list[ProjectSummary]:
     repos = list(
         db.execute(
             select(Repository)
-            .where(Repository.account_id == account_id)
+            .where(Repository.account_id == account_id, Repository.is_profile_readme.is_(False))
             .order_by(Repository.full_name)
         ).scalars()
     )
@@ -569,6 +569,30 @@ def start_process_pending(account_id: int) -> StartExtractionResponse:
     second call while one's in flight is a no-op.
     """
     return StartExtractionResponse(started=start_extraction(account_id))
+
+
+class ExtractionStatus(BaseModel):
+    running: bool
+    index: int | None
+    total: int | None
+    current: str | None
+    total_repos: int
+    done: int
+    waiting: int
+    failed: int
+    rate_limited: int
+    next_repo: str | None
+    reason: str | None
+    retry_at: dt.datetime | None
+
+
+@router.get("/process-pending/status", response_model=ExtractionStatus)
+def extraction_status(account_id: int) -> ExtractionStatus:
+    """Where skill extraction stands, including a run that stopped part
+    way (limit hit, or the app closed): how many projects are done, which
+    one is next, and why it stopped. For the reminder widget and the sync
+    page; see app/profile/jobs.py's extraction_reminder()."""
+    return ExtractionStatus(**extraction_reminder(account_id))
 
 
 def _sse(event: dict) -> str:

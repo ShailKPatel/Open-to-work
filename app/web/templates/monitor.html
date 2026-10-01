@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Monitor · Open to Work{% endblock %}
 {% block content %}
 <div x-data="monitorApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -7,6 +8,9 @@
   {% include "_header.html" %}
 
   <main class="flex-1 px-10 pb-24 max-w-5xl mx-auto w-full">
+    {% set monitor_active = 'usage' %}
+    {% include "_monitor_subnav.html" %}
+
     <div class="mt-8 flex items-center justify-between gap-4 flex-wrap">
       <h1 class="font-display text-3xl">Monitor</h1>
       <div class="flex items-center gap-2.5 shrink-0">
@@ -117,47 +121,23 @@
       <div class="mt-4 flex flex-wrap items-end gap-3">
         <label class="text-sm">
           <span class="block text-xs text-[color:var(--muted)] mb-1">Profile</span>
-          <select x-model="filters.accountId" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
-            <option value="">All profiles</option>
-            <template x-for="a in accounts" :key="a.id">
-              <option :value="a.id" x-text="a.first_name + ' ' + a.last_name"></option>
-            </template>
-          </select>
+          {{ ui.select("filters.accountId", "[{ value: '', label: 'All profiles' }].concat(accounts.map(a => ({ value: a.id, label: a.first_name + ' ' + a.last_name })))", change="applyFilters()", size="sm", class="min-w-[9rem]") }}
         </label>
         <label class="text-sm">
           <span class="block text-xs text-[color:var(--muted)] mb-1">Provider</span>
-          <select x-model="filters.provider" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
-            <option value="">All providers</option>
-            <template x-for="p in providerOptions" :key="p">
-              <option :value="p" x-text="p"></option>
-            </template>
-          </select>
+          {{ ui.select("filters.provider", "[{ value: '', label: 'All providers' }].concat(providerOptions.map(p => ({ value: p, label: p })))", change="applyFilters()", size="sm", class="min-w-[9rem]") }}
         </label>
         <label class="text-sm">
           <span class="block text-xs text-[color:var(--muted)] mb-1">API key</span>
-          <select x-model="filters.keyId" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
-            <option value="">All keys</option>
-            <template x-for="k in status.keys || []" :key="k.id">
-              <option :value="k.id" x-text="k.label"></option>
-            </template>
-          </select>
+          {{ ui.select("filters.keyId", "[{ value: '', label: 'All keys' }].concat((status.keys || []).map(k => ({ value: k.id, label: k.label })))", change="applyFilters()", size="sm", class="min-w-[9rem]") }}
         </label>
         <label class="text-sm">
           <span class="block text-xs text-[color:var(--muted)] mb-1">Tier</span>
-          <select x-model="filters.tier" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
-            <option value="">All tiers</option>
-            <option value="bulk">Bulk</option>
-            <option value="quality">Quality</option>
-          </select>
+          {{ ui.select("filters.tier", [("", "All tiers"), ("bulk", "Bulk"), ("quality", "Quality")], change="applyFilters()", size="sm", class="min-w-[7rem]") }}
         </label>
         <label class="text-sm">
           <span class="block text-xs text-[color:var(--muted)] mb-1">Window</span>
-          <select x-model.number="filters.days" @change="applyFilters" class="otw-input py-1.5 px-2 text-sm">
-            <option :value="7">7 days</option>
-            <option :value="30">30 days</option>
-            <option :value="90">90 days</option>
-            <option :value="365">1 year</option>
-          </select>
+          {{ ui.select("filters.days", [(7, "7 days"), (30, "30 days"), (90, "90 days"), (365, "1 year")], change="applyFilters()", size="sm", class="min-w-[7rem]") }}
         </label>
       </div>
 

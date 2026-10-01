@@ -84,3 +84,19 @@ def test_parse_skills_required_reads_both_legacy_and_current_shapes():
         {"skill": "Python", "level": "senior"},
         {"skill": "Go", "level": ""},
     ]
+
+
+def test_parse_skills_required_collapses_duplicates():
+    from app.profile.job_extract import parse_skills_required
+
+    assert parse_skills_required(
+        [
+            {"skill": "Python", "level": ""},
+            {"skill": "python", "level": "senior"},
+            "PYTHON",
+            {"skill": "SQL", "level": "mid"},
+        ]
+    ) == [
+        {"skill": "Python", "level": "senior"},
+        {"skill": "SQL", "level": "mid"},
+    ]

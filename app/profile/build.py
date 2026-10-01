@@ -51,7 +51,14 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.core.db import Profile, ProjectLink, Repository, SkillEvidence, get_db
+from app.core.db import (
+    Profile,
+    ProjectLink,
+    Repository,
+    SkillEvidence,
+    get_db,
+    is_profile_repo,
+)
 from app.core.llm import BudgetExceededError, LLMRateLimitedError, is_out_of_keys
 from app.profile.claims import LinkClaim, SkillClaim
 from app.profile.extract import (
@@ -147,6 +154,9 @@ def _process_repo(
     write lock this (outer) session holds, and this session can't release
     it until the inner call returns.
     """
+    # A profile README repo saved as a project before the flag existed
+    # moves out of the projects list the moment it is (re)processed.
+    repo.is_profile_readme = is_profile_repo(repo.full_name)
     # Manual evidence_type rows are hand-added on the project detail page
     # (app/api/projects.py add_skill): a person's own claim, not something
     # extraction produced, so Reprocess must not wipe it out from under them.

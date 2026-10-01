@@ -664,3 +664,96 @@ def test_vector_index_failures_never_block_skill_edits(tmp_path, monkeypatch):
     deleted = client.delete(f"/api/projects/{repo_id}/skills/{skill['id']}")
     assert deleted.status_code == 200
     assert deleted.json()["skills"] == []
+
+
+def test_list_projects_leaves_out_profile_readme(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    _make_repo(account, github_id=1, full_name="octocat/proj")
+    _make_repo(
+        account, github_id=2, name="octocat", full_name="octocat/octocat", is_profile_readme=True
+    )
+
+    body = _client().get(f"/api/projects?account_id={account}").json()
+
+    assert [p["full_name"] for p in body] == ["octocat/proj"]
+
+
+def test_github_profile_present_with_skills(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    repo_id = _make_repo(
+        account,
+        github_id=2,
+        name="octocat",
+        full_name="octocat/octocat",
+        url="https://github.com/octocat/octocat",
+        is_profile_readme=True,
+        skill_extraction_status="extracted",
+    )
+    db = get_db()
+    for skill in ("Rust", "go"):
+        db.add(
+            SkillEvidence(
+                skill=skill,
+                repo_id=repo_id,
+                evidence_type="readme_described",
+                weight=1.0,
+                confidence=0.9,
+            )
+        )
+    db.commit()
+    db.close()
+
+    body = _client().get(f"/api/github-profile?account_id={account}").json()
+
+    assert body["state"] == "present"
+    assert body["repo"]["id"] == repo_id
+    assert body["repo"]["has_readme"] is True
+    assert body["skills"] == ["go", "Rust"]
+
+
+def test_github_profile_skills_reach_skills_page_as_profile_source(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    repo_id = _make_repo(
+        account, github_id=2, name="octocat", full_name="octocat/octocat", is_profile_readme=True
+    )
+    db = get_db()
+    db.add(
+        SkillEvidence(
+            skill="Rust",
+            repo_id=repo_id,
+            evidence_type="readme_described",
+            weight=1.0,
+            confidence=0.9,
+        )
+    )
+    db.commit()
+    db.close()
+
+    groups = _client().get(f"/api/skills?account_id={account}").json()
+
+    sources = [(g["name"], [s["type"] for s in g["sources"]]) for g in groups]
+    assert sources == [("Rust", ["github_profile"])]
+
+
+def test_github_profile_missing_after_sync(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    _make_repo(account, github_id=1, full_name="octocat/proj")
+
+    body = _client().get(f"/api/github-profile?account_id={account}").json()
+
+    assert body["state"] == "missing"
+    assert body["repo"] is None
+    assert body["create_url"] == "https://github.com/new?name=octocat"
+
+
+def test_github_profile_not_synced_yet(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+
+    body = _client().get(f"/api/github-profile?account_id={account}").json()
+
+    assert body["state"] == "not_synced"

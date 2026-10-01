@@ -1,10 +1,16 @@
 <!-- Tab strip for the "Portfolio" section. Included on /portfolio and every /portfolio/* page. Pass
      `data_active` before including this to highlight the current tab:
      'overview' | 'projects' | 'skills' | 'experience' | 'education' |
-     'contact' | 'resume'. GitHub sources live at /settings/sources
-     (see settings.html), since they are profile setup, not portfolio
-     content. -->
+     'contact' | 'resume'. GitHub sources live at /monitor/sync,
+     with the rest of the background work, not with portfolio content.
+     Detail pages also set `back_href` to the list they belong to, which
+     puts a back arrow to the left of the tabs. -->
 <nav class="otw-subnav">
+  {% if back_href %}
+  <a href="{{ back_href }}" class="otw-subnav-back" title="Back" aria-label="Back">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+  </a>
+  {% endif %}
   <a href="/portfolio" class="otw-subnav-tab {{ 'active' if data_active == 'overview' }}">Overview</a>
   <a href="/portfolio/projects" class="otw-subnav-tab {{ 'active' if data_active == 'projects' }}">Projects</a>
   <a href="/portfolio/skills" class="otw-subnav-tab {{ 'active' if data_active == 'skills' }}">Skills</a>

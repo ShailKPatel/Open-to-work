@@ -57,7 +57,12 @@ def _make_account(**overrides) -> int:
 
 
 def _fake_extraction(
-    monkeypatch, tags=None, target_roles=None, summary="Good generalist.", experiences=None
+    monkeypatch,
+    tags=None,
+    target_roles=None,
+    summary="Good generalist.",
+    experiences=None,
+    education=None,
 ):
     """Mocks the LLM call underneath extract_resume, same pattern
     test_extract.py uses against app.profile.extract.complete: a resume
@@ -70,6 +75,7 @@ def _fake_extraction(
         "target_roles": target_roles if target_roles is not None else ["Backend Engineer"],
         "summary": summary,
         "experiences": experiences if experiences is not None else [],
+        "education": education if education is not None else [],
     }
     monkeypatch.setattr(
         "app.profile.resume_extract.complete", MagicMock(return_value=fake_response)
@@ -152,6 +158,74 @@ def test_upload_merges_tags_and_experience_into_profile(tmp_path, monkeypatch):
     assert experiences[0].title == "Backend Engineer"
     assert experiences[0].start_date == dt.date(2021, 3, 1)
     assert experiences[0].end_date is None
+
+
+def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch):
+    """The resume row itself carries what this file said about work
+    history and schooling, and the education lands in the Education
+    table the same way experience lands in Experience."""
+    import datetime as dt
+
+    from app.core.db import Education, get_db
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(
+        monkeypatch,
+        experiences=[
+            {
+                "company": "Acme Corp",
+                "title": "Backend Engineer",
+                "start_date": "2021-03-01",
+                "end_date": "",
+                "points": ["Built the billing API"],
+            }
+        ],
+        education=[
+            {
+                "institution": "Nirma University",
+                "degree": "B.Tech in Computer Science",
+                "location": "Ahmedabad",
+                "start_date": "2022-08-01",
+                "end_date": "2026-05-01",
+            }
+        ],
+    )
+    client = _client()
+
+    resp = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("resume.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")},
+    )
+
+    body = resp.json()
+    assert body["experiences"] == [
+        {
+            "company": "Acme Corp",
+            "title": "Backend Engineer",
+            "location": None,
+            "start_date": "2021-03-01",
+            "end_date": None,
+            "points": ["Built the billing API"],
+        }
+    ]
+    assert body["education"] == [
+        {
+            "institution": "Nirma University",
+            "degree": "B.Tech in Computer Science",
+            "location": "Ahmedabad",
+            "start_date": "2022-08-01",
+            "end_date": "2026-05-01",
+        }
+    ]
+
+    db = get_db()
+    rows = db.execute(select(Education).where(Education.account_id == account_id)).scalars().all()
+    db.close()
+    assert len(rows) == 1
+    assert rows[0].institution == "Nirma University"
+    assert rows[0].end_date == dt.date(2026, 5, 1)
 
 
 def test_upload_unsupported_type_stores_file_without_tags(tmp_path):
@@ -369,6 +443,60 @@ def test_download_resume_file_rejects_bad_disposition(tmp_path):
     assert resp.status_code == 422
 
 
+def test_resume_profile_lists_what_it_added_and_follows_deletes(tmp_path, monkeypatch):
+    from app.core.db import ResumeProfileLink
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(
+        monkeypatch,
+        tags=["Python", "Rust"],
+        experiences=[
+            {
+                "company": "Acme Corp",
+                "title": "Backend Engineer",
+                "start_date": "2021-03-01",
+                "end_date": "",
+                "points": ["Built the billing API"],
+                "skills": ["Python"],
+            }
+        ],
+        education=[
+            {
+                "institution": "Nirma University",
+                "degree": "B.Tech",
+                "location": "",
+                "start_date": "",
+                "end_date": "",
+            }
+        ],
+    )
+    client = _client()
+    resume_id = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("resume.pdf", io.BytesIO(b"%PDF-1.4 fake"), "application/pdf")},
+    ).json()["id"]
+
+    profile = client.get(f"/api/resume/{resume_id}/profile").json()
+
+    [exp] = profile["experiences"]
+    assert (exp["company"], exp["title"], exp["created"]) == ("Acme Corp", "Backend Engineer", True)
+    assert [p["text"] for p in exp["points"]] == ["Built the billing API"]
+    assert [s["skill"] for s in exp["skills"]] == ["Python"]
+    assert [e["institution"] for e in profile["education"]] == ["Nirma University"]
+    assert [s["name"] for s in profile["skills"]] == ["Rust"]
+
+    client.delete(f"/api/experience/{exp['id']}")
+    profile = client.get(f"/api/resume/{resume_id}/profile").json()
+    assert profile["experiences"] == []
+
+    client.delete(f"/api/resume/{resume_id}")
+    db = get_db()
+    assert db.execute(select(ResumeProfileLink)).scalars().all() == []
+    db.close()
+
+
 def test_delete_resume_removes_row_and_file(tmp_path):
     _reset_db(tmp_path)
     account_id = _make_account()
@@ -386,6 +514,37 @@ def test_delete_resume_removes_row_and_file(tmp_path):
     assert resp.status_code == 200
     assert client.get(f"/api/resume?account_id={account_id}").json() == []
     assert list((tmp_path / "resumes" / str(account_id)).iterdir()) == []
+
+
+def test_skill_from_resume_names_its_resume_and_follows_a_rename(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch, tags=["Rust"])
+    client = _client()
+    client.post("/api/skills", json={"account_id": account_id, "name": "Leadership"})
+
+    upload = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("resume.pdf", io.BytesIO(b"%PDF-1.4"), "application/pdf")},
+    )
+    resume_id = upload.json()["id"]
+
+    def by_name():
+        resp = client.get(f"/api/skills?account_id={account_id}")
+        return {g["name"]: g for g in resp.json()}
+
+    skills = by_name()
+    assert skills["Rust"]["source_resume"] == {"id": resume_id, "name": "resume.pdf"}
+    assert skills["Leadership"]["source_resume"] is None
+
+    client.patch(f"/api/resume/{resume_id}", json={"name": "Backend 2026"})
+    assert by_name()["Rust"]["source_resume"]["name"] == "Backend 2026"
+
+    client.delete(f"/api/resume/{resume_id}")
+    skills = by_name()
+    assert "Rust" in skills
+    assert skills["Rust"]["source_resume"] is None
 
 
 def test_delete_account_removes_its_resumes(tmp_path, monkeypatch):

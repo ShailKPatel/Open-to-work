@@ -165,6 +165,60 @@ def test_delete_manual_skill(tmp_path):
     assert client.get(f"/api/skills?account_id={account_id}").json() == []
 
 
+def test_project_source_shows_repo_name_without_owner(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    _mock_embed(monkeypatch)
+    account_id = _make_account()
+    client = _client()
+    repo_id = _make_repo(account_id)
+    client.post(f"/api/projects/{repo_id}/skills", json={"skill": "Python"})
+
+    group = client.get(f"/api/skills?account_id={account_id}").json()[0]
+
+    assert group["sources"][0]["name"] == "proj"
+
+
+def test_remove_skill_clears_every_source_and_keeps_it_out(tmp_path, monkeypatch):
+    from app.core.db import Resume, Skill
+
+    _reset_db(tmp_path)
+    _mock_embed(monkeypatch)
+    account_id = _make_account()
+    client = _client()
+
+    repo_id = _make_repo(account_id)
+    client.post(f"/api/projects/{repo_id}/skills", json={"skill": "Python"})
+    exp = client.post(
+        "/api/experience", json={"account_id": account_id, "title": "Eng", "company": "Acme"}
+    ).json()
+    client.post(f"/api/experience/{exp['id']}/skills", json={"skill": "python"})
+
+    db = get_db()
+    resume = Resume(
+        account_id=account_id, filename="cv.pdf", mime_type="application/pdf",
+        tags_json=["Python", "Go"],
+    )
+    db.add(resume)
+    db.commit()
+    db.add(Skill(account_id=account_id, name="PYTHON", source_resume_id=resume.id))
+    db.commit()
+    resume_id = resume.id
+    db.close()
+
+    resp = client.post("/api/skills/remove", json={"account_id": account_id, "name": "Python"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "deleted": True, "project_evidence": 1, "experience_evidence": 1, "resumes": 1,
+    }
+    assert client.get(f"/api/skills?account_id={account_id}").json() == []
+    db = get_db()
+    assert db.get(Resume, resume_id).tags_json == ["Go"]
+    db.close()
+    rejected = client.get(f"/api/skills/rejected?account_id={account_id}").json()
+    assert rejected == [{"name": "Python", "decided_by": "user"}]
+
+
 def test_star_skill_marks_group_and_sorts_first(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     _mock_embed(monkeypatch)

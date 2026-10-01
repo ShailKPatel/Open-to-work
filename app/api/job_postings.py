@@ -23,7 +23,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
@@ -43,6 +43,7 @@ from app.profile.job_screenshot_extract import (
     extract_job_posting_from_image,
 )
 from app.profile.role_family import resolve_role_family
+from app.profile.salary import parse_salary
 
 router = APIRouter(prefix="/api/job-postings")
 logger = logging.getLogger(__name__)
@@ -52,6 +53,16 @@ _UNSPECIFIED = "(unspecified)"
 
 def _content_hash(raw_text: str) -> str:
     return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+
+
+def _apply_salary(posting: JobPosting) -> None:
+    """Re-derives the annual salary columns from the extracted salary text.
+    Called whenever extracted_json is (re)written, so a reprocess or a
+    manual salary edit never leaves stale numbers behind."""
+    salary = parse_salary((posting.extracted_json or {}).get("salary_range", ""))
+    posting.salary_min_annual = salary.min
+    posting.salary_max_annual = salary.max
+    posting.salary_currency = salary.currency
 
 
 def _run_extraction(posting: JobPosting, db: Session) -> None:
@@ -69,6 +80,7 @@ def _run_extraction(posting: JobPosting, db: Session) -> None:
             posting.raw_text_quarantined, account_id=posting.account_id
         )
         posting.extracted_json = extraction.as_extracted_json()
+        _apply_salary(posting)
         if posting.company == _UNSPECIFIED and extraction.company:
             posting.company = extraction.company
         if posting.title == _UNSPECIFIED and extraction.title:
@@ -191,7 +203,11 @@ class JobPostingSummary(BaseModel):
     extraction_status: str
     extraction_error: str | None
     salary_range: str
+    salary_min_annual: int | None
+    salary_max_annual: int | None
+    salary_currency: str | None
     employment_type: str
+    work_mode: str
     seniority: str
     experience_required: str
     skills_required: list[RequiredSkillOut]
@@ -213,7 +229,11 @@ class JobPostingSummary(BaseModel):
             location=p.location, apply_url=p.apply_url, fetched_at=p.fetched_at,
             extraction_status=p.extraction_status, extraction_error=p.extraction_error,
             salary_range=extracted.get("salary_range", ""),
+            salary_min_annual=p.salary_min_annual,
+            salary_max_annual=p.salary_max_annual,
+            salary_currency=p.salary_currency,
             employment_type=extracted.get("employment_type", ""),
+            work_mode=extracted.get("work_mode", ""),
             seniority=extracted.get("seniority", ""),
             experience_required=extracted.get("experience_required", ""),
             skills_required=[
@@ -387,6 +407,7 @@ def create_posting_from_screenshot(
     # re-derive the same structured fields the image call already
     # produced.
     posting.extracted_json = result.extraction.as_extracted_json()
+    _apply_salary(posting)
     posting.extraction_status = "extracted"
     posting.extracted_at = dt.datetime.now(dt.UTC)
     db.commit()
@@ -413,14 +434,17 @@ def create_posting_from_screenshot(
 
 
 @router.get("", response_model=list[JobPostingSummary])
-def list_postings(account_id: int, *, db: DbSession) -> list[JobPostingSummary]:
-    rows = list(
-        db.execute(
-            select(JobPosting)
-            .where(JobPosting.account_id == account_id)
-            .order_by(JobPosting.fetched_at.desc())
-        ).scalars()
-    )
+def list_postings(
+    account_id: int, min_salary: int | None = None, *, db: DbSession
+) -> list[JobPostingSummary]:
+    """min_salary (annual, same currency units as stored) keeps postings
+    whose upper bound, or lower bound when only that is known, reaches it.
+    Postings with no parsed salary are left out when it is set."""
+    query = select(JobPosting).where(JobPosting.account_id == account_id)
+    if min_salary is not None:
+        best = func.coalesce(JobPosting.salary_max_annual, JobPosting.salary_min_annual)
+        query = query.where(best >= min_salary)
+    rows = list(db.execute(query.order_by(JobPosting.fetched_at.desc())).scalars())
     families: dict[int, RoleFamily] = {
         f.id: f for f in db.execute(select(RoleFamily)).scalars()
     }
@@ -448,6 +472,20 @@ class JobPostingUpdate(BaseModel):
     applied: bool | None = None
     applied_at: dt.date | None = None
     applied_notes: str | None = None
+    salary_range: str | None = None
+    salary_min_annual: int | None = None
+    salary_max_annual: int | None = None
+    salary_currency: str | None = None
+    employment_type: str | None = None
+    work_mode: str | None = None
+    seniority: str | None = None
+    experience_required: str | None = None
+
+
+# Fields that live in extracted_json rather than their own column.
+_EXTRACTED_TEXT_FIELDS = (
+    "salary_range", "employment_type", "work_mode", "seniority", "experience_required",
+)
 
 
 @router.patch("/{posting_id}", response_model=JobPostingDetail)
@@ -483,6 +521,19 @@ def update_posting(posting_id: int, body: JobPostingUpdate, *, db: DbSession) ->
         posting.applied_notes = (
             fields["applied_notes"].strip() if fields["applied_notes"] else None
         ) or None
+    edited = {k: (fields[k] or "").strip() for k in _EXTRACTED_TEXT_FIELDS if k in fields}
+    if edited:
+        # A fresh dict, so SQLAlchemy sees the JSON column change.
+        posting.extracted_json = {**(posting.extracted_json or {}), **edited}
+        if "salary_range" in edited:
+            _apply_salary(posting)
+    # Explicit numbers win over whatever the salary text parsed to.
+    for key in ("salary_min_annual", "salary_max_annual"):
+        if key in fields:
+            setattr(posting, key, fields[key])
+    if "salary_currency" in fields:
+        currency = (fields["salary_currency"] or "").strip().upper()
+        posting.salary_currency = currency or None
     db.commit()
     db.refresh(posting)
     return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))

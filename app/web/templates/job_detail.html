@@ -1,0 +1,373 @@
+{% extends "_base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}Job · Open to Work{% endblock %}
+{% block content %}
+<div x-data="jobDetailApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'jobs' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-32 max-w-3xl mx-auto w-full">
+    {% set jobs_active = 'postings' %}
+    {% set back_href = '/jobs' %}
+    {% include "_jobs_subnav.html" %}
+
+    <div x-show="!loading && !job" x-cloak class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">Job posting not found.</p>
+    </div>
+
+    <template x-if="job">
+      <div class="mt-8">
+
+        <!-- Who and where, with applied status on the right -->
+        <div class="otw-tile otw-entry">
+          <div class="otw-monogram" x-text="otwMonogram(draft.company)"></div>
+          <div class="min-w-0">
+            <input x-model="draft.title" @blur="saveField('title', draft.title)" @keydown.enter.prevent="$event.target.blur()" placeholder="Job title" class="otw-input font-display text-3xl px-0 pt-0" />
+            <input x-model="draft.company" @blur="saveField('company', draft.company)" @keydown.enter.prevent="$event.target.blur()" placeholder="Company" class="otw-input text-base mt-1 px-0" />
+            <div class="otw-input-icon mt-1">
+              <span x-html="otwIcon('pin')" class="otw-meta-item text-[color:var(--muted)]"></span>
+              <input x-model="draft.location" @blur="saveField('location', draft.location)" @keydown.enter.prevent="$event.target.blur()" placeholder="Location (optional)" class="otw-input text-sm" />
+            </div>
+            <p x-show="roleFamilyLabel()" class="otw-meta">
+              <span class="otw-pill" :title="'Grouped with similar roles as ' + roleFamilyLabel()" x-text="roleFamilyLabel()"></span>
+            </p>
+          </div>
+          <div class="otw-when">
+            <button type="button" class="otw-switch" :class="job.applied && 'on'" role="switch" :aria-checked="job.applied" @click="toggleApplied()">
+              <span class="otw-switch-track"><span class="otw-switch-knob"></span></span>
+              <span x-text="job.applied ? 'Applied' : 'Not applied'"></span>
+            </button>
+            <p x-show="job.applied && job.applied_at" class="otw-when-len" x-text="'on ' + otwDates.day(job.applied_at)"></p>
+          </div>
+        </div>
+
+        <!-- Primary actions -->
+        <div class="mt-4 flex items-center gap-3 flex-wrap">
+          <a :href="'/portfolio/resume/build?job_posting_id=' + job.id" class="otw-btn text-sm px-4 py-2">Build resume for this job</a>
+          <a x-show="job.apply_url" :href="job.apply_url" target="_blank" rel="noopener" class="otw-btn-ghost text-sm px-4 py-2 inline-flex items-center gap-2">
+            Apply <span class="otw-meta-item" x-html="otwIcon('arrow')"></span>
+          </a>
+        </div>
+
+        <!-- Applied details, only once applied -->
+        <div x-show="job.applied" x-cloak class="otw-tile p-4 mt-4 grid gap-3 sm:grid-cols-[12rem_1fr]">
+          <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+            Applied on
+            <input type="date" x-model="draft.applied_at" @change="saveField('applied_at', draft.applied_at)" class="otw-input text-sm" />
+          </label>
+          <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+            Notes
+            <input x-model="draft.applied_notes" @blur="saveField('applied_notes', draft.applied_notes)" @keydown.enter.prevent="$event.target.blur()" class="otw-input text-sm" placeholder="Referral, contact, follow-up date…" />
+          </label>
+        </div>
+
+        <p x-show="job.extraction_status === 'failed'" class="mt-4 text-sm otw-error" x-text="job.extraction_error || 'Could not read the details of this posting. Try Reprocess below.'"></p>
+
+        <!-- The facts: each its own labeled field, editable in place -->
+        <section class="mt-8">
+          <div class="otw-section-head"><h2 class="font-display text-xl">Details</h2></div>
+          <div class="otw-facts mt-4">
+            <div class="otw-fact otw-fact-wide">
+              <div class="flex items-center justify-between gap-2">
+                <span class="otw-fact-label">Salary per year</span>
+                <button type="button" class="otw-link-btn" @click="editingSalary ? cancelSalary() : startSalary()" x-text="editingSalary ? 'Cancel' : 'Edit'"></button>
+              </div>
+              <template x-if="!editingSalary">
+                <div>
+                  <p class="otw-fact-value" :class="!hasSalary() && 'otw-fact-empty'" x-text="hasSalary() ? otwSalary(job.salary_min_annual, job.salary_max_annual, job.salary_currency) : 'Not stated'"></p>
+                  <p x-show="job.salary_range" class="text-xs text-[color:var(--muted)] mt-1" x-text="'As posted: ' + job.salary_range"></p>
+                </div>
+              </template>
+              <template x-if="editingSalary">
+                <div class="mt-2 space-y-2">
+                  <input x-model="salaryDraft.text" class="otw-input text-sm" placeholder="As posted, e.g. 1.5 to 1.6 lakh per month" />
+                  <div class="grid gap-2 grid-cols-[1fr_1fr_6rem]">
+                    <input x-model.number="salaryDraft.min" type="number" min="0" step="1" class="otw-input text-sm" placeholder="Min / year" />
+                    <input x-model.number="salaryDraft.max" type="number" min="0" step="1" class="otw-input text-sm" placeholder="Max / year" />
+                    <input x-model="salaryDraft.currency" class="otw-input text-sm uppercase" placeholder="INR" maxlength="3" />
+                  </div>
+                  <p class="text-xs text-[color:var(--muted)]">Changing the text re-reads the yearly numbers from it. Typing the numbers directly overrides that.</p>
+                  <button type="button" class="otw-btn text-xs px-3 py-1.5" @click="saveSalary()">Save salary</button>
+                </div>
+              </template>
+            </div>
+            <label class="otw-fact">
+              <span class="otw-fact-label">Experience required</span>
+              <input x-model="draft.experience_required" @blur="saveField('experience_required', draft.experience_required)" @keydown.enter.prevent="$event.target.blur()" class="otw-fact-input" placeholder="Not stated" />
+            </label>
+            <label class="otw-fact">
+              <span class="otw-fact-label">Job type</span>
+              <input x-model="draft.employment_type" list="otw-job-types" @blur="saveField('employment_type', draft.employment_type)" @keydown.enter.prevent="$event.target.blur()" class="otw-fact-input" placeholder="Not stated" />
+            </label>
+            <label class="otw-fact">
+              <span class="otw-fact-label">Work mode</span>
+              <input x-model="draft.work_mode" list="otw-work-modes" @blur="saveField('work_mode', draft.work_mode)" @keydown.enter.prevent="$event.target.blur()" class="otw-fact-input" placeholder="Not stated" />
+            </label>
+            <label class="otw-fact">
+              <span class="otw-fact-label">Seniority</span>
+              <input x-model="draft.seniority" @blur="saveField('seniority', draft.seniority)" @keydown.enter.prevent="$event.target.blur()" class="otw-fact-input" placeholder="Not stated" />
+            </label>
+          </div>
+          <datalist id="otw-job-types"><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Internship</option><option>Freelance</option></datalist>
+          <datalist id="otw-work-modes"><option>Remote</option><option>Hybrid</option><option>On-site</option></datalist>
+        </section>
+
+        <!-- Skills: one list, split by whether the portfolio shows them -->
+        <section x-show="skills().length" class="mt-10">
+          <div class="otw-section-head">
+            <h2 class="font-display text-xl">Where you stand</h2>
+            <span x-show="gap" class="otw-count" x-text="haveSkills().length + ' of ' + skills().length + ' skills covered'"></span>
+          </div>
+          <div x-show="gap" class="otw-meter mt-4"><div class="otw-meter-fill" :style="'width:' + coverage() + '%'"></div></div>
+          <div x-show="gap" class="grid gap-6 sm:grid-cols-2 mt-5">
+            <div>
+              <p class="otw-fact-label">You have</p>
+              <ul class="otw-skill-list mt-2">
+                <template x-for="s in haveSkills()" :key="s.skill">
+                  <li class="otw-skill otw-skill-have">
+                    <span class="otw-skill-mark">✓</span>
+                    <span class="flex-1 min-w-0" x-text="s.skill"></span>
+                    <span x-show="s.level" class="otw-pill" x-text="s.level"></span>
+                  </li>
+                </template>
+                <li x-show="haveSkills().length === 0" class="text-sm text-[color:var(--muted)]">None of these yet.</li>
+              </ul>
+            </div>
+            <div>
+              <p class="otw-fact-label">Missing from your portfolio</p>
+              <ul class="otw-skill-list mt-2">
+                <template x-for="s in missingSkills()" :key="s.skill">
+                  <li class="otw-skill otw-skill-missing">
+                    <span class="otw-skill-mark">✕</span>
+                    <span class="flex-1 min-w-0" x-text="s.skill"></span>
+                    <span x-show="s.level" class="otw-pill" x-text="s.level"></span>
+                  </li>
+                </template>
+                <li x-show="missingSkills().length === 0" class="text-sm text-[color:var(--muted)]">Nothing. You cover every listed skill.</li>
+              </ul>
+            </div>
+          </div>
+          <!-- Portfolio comparison unavailable: still list what's asked for -->
+          <div x-show="!gap" class="flex flex-wrap gap-1.5 mt-4">
+            <template x-for="s in skills()" :key="s.skill">
+              <span class="otw-pill" x-text="s.level ? s.skill + ' · ' + s.level : s.skill"></span>
+            </template>
+          </div>
+        </section>
+
+        <section x-show="job.other_requirements && job.other_requirements.length" class="mt-10">
+          <div class="otw-section-head"><h2 class="font-display text-xl">Other requirements</h2></div>
+          <ul class="mt-3 text-sm list-disc list-inside space-y-1">
+            <template x-for="r in job.other_requirements" :key="r">
+              <li x-text="r"></li>
+            </template>
+          </ul>
+        </section>
+
+        <section x-show="job.role_summary" class="mt-10">
+          <div class="otw-section-head"><h2 class="font-display text-xl">Summary</h2></div>
+          <p class="text-sm mt-3 leading-relaxed" x-text="job.role_summary"></p>
+        </section>
+
+        <section class="mt-10">
+          <div class="otw-section-head"><h2 class="font-display text-xl">Link to apply</h2></div>
+          <div class="otw-input-icon mt-3">
+            <span x-html="otwIcon('link')" class="otw-meta-item text-[color:var(--muted)]"></span>
+            <input x-model="draft.apply_url" @blur="saveField('apply_url', draft.apply_url)" @keydown.enter.prevent="$event.target.blur()" class="otw-input text-sm" placeholder="None saved (optional)" />
+          </div>
+        </section>
+
+        <details class="mt-10 otw-raw">
+          <summary class="font-display text-xl cursor-pointer">Full posting text</summary>
+          <div class="otw-tile p-4 mt-3 text-sm whitespace-pre-wrap" style="max-height: 24rem; overflow-y: auto;" x-text="job.raw_text || ''"></div>
+        </details>
+
+        <div class="mt-10 pt-4 flex items-center gap-4" style="border-top: 1px solid var(--line);">
+          <button @click="reprocess()" :disabled="Boolean(reprocessing)" class="otw-btn-ghost text-xs px-3 py-1.5">
+            <span x-show="!reprocessing">Re-read posting</span>
+            <span x-show="reprocessing" class="otw-working">Reading…</span>
+          </button>
+          {{ ui.bin_button("remove()", label="Delete posting", disabled="Boolean(deleting)") }}
+          <p x-show="saveError" class="text-xs otw-error ml-auto" x-text="saveError"></p>
+        </div>
+      </div>
+    </template>
+  </main>
+</div>
+
+<style>
+  .otw-facts { display: grid; gap: 1px; grid-template-columns: repeat(2, minmax(0, 1fr)); background: var(--line); border: 1px solid var(--line); }
+  .otw-fact { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.9rem 1rem; background: var(--paper); min-width: 0; }
+  .otw-fact-wide { grid-column: 1 / -1; }
+  .otw-fact-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .otw-fact-value { font-size: 1.15rem; font-variant-numeric: tabular-nums; }
+  .otw-fact-empty { color: var(--muted); font-size: 0.95rem; }
+  .otw-fact-input { background: transparent; border: none; outline: none; color: var(--ink); font-size: 0.95rem; padding: 0; width: 100%; }
+  .otw-fact-input::placeholder { color: var(--muted); }
+  .otw-fact:focus-within { background: var(--surface); }
+  .otw-link-btn { font-size: 0.72rem; color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+  .otw-link-btn:hover { color: var(--ink); }
+  .otw-meter { height: 4px; background: var(--line); }
+  .otw-meter-fill { height: 100%; background: var(--ink); transition: width 0.3s ease; }
+  .otw-skill-list { display: flex; flex-direction: column; }
+  .otw-skill { display: flex; align-items: center; gap: 0.6rem; padding: 0.45rem 0; font-size: 0.9rem; border-bottom: 1px solid var(--line); }
+  .otw-skill-mark { width: 1rem; text-align: center; font-size: 0.8rem; }
+  .otw-skill-have .otw-skill-mark { color: var(--ink); }
+  .otw-skill-missing { color: color-mix(in srgb, var(--ink) 80%, transparent); }
+  .otw-skill-missing .otw-skill-mark { color: var(--danger); }
+  .otw-switch { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.8rem; color: var(--muted); white-space: nowrap; }
+  .otw-switch.on { color: var(--ink); }
+  .otw-switch-track { position: relative; width: 2rem; height: 1.1rem; border-radius: 9999px; border: 1px solid var(--line-strong); opacity: 0.6; transition: background 0.15s ease, opacity 0.15s ease; }
+  .otw-switch.on .otw-switch-track { background: var(--ink); opacity: 1; }
+  .otw-switch-knob { position: absolute; top: 50%; left: 0.15rem; width: 0.7rem; height: 0.7rem; border-radius: 9999px; background: var(--ink); transform: translateY(-50%); transition: left 0.15s ease, background 0.15s ease; }
+  .otw-switch.on .otw-switch-knob { left: calc(100% - 0.85rem); background: var(--paper); }
+  .otw-raw summary { list-style: none; padding-bottom: 0.75rem; border-bottom: 1px solid var(--line); }
+  .otw-raw summary::-webkit-details-marker { display: none; }
+  .otw-raw summary::after { content: "+"; float: right; color: var(--muted); }
+  .otw-raw[open] summary::after { content: "–"; }
+  @media (max-width: 640px) { .otw-facts { grid-template-columns: 1fr; } }
+</style>
+
+<script>
+  function jobDetailApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      jobId: Number(window.location.pathname.split('/').pop()),
+      job: null,
+      gap: null,
+      draft: {},
+      loading: true,
+      editingSalary: false,
+      salaryDraft: { text: '', min: '', max: '', currency: '' },
+      reprocessing: false,
+      deleting: false,
+      saveError: '',
+
+      async init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+          return;
+        }
+        try {
+          const res = await fetch(`/api/job-postings/${this.jobId}`);
+          if (res.ok) this.setJob(await res.json());
+        } finally {
+          this.loading = false;
+        }
+        if (this.job) await this.loadGap();
+      },
+
+      setJob(job) {
+        this.job = job;
+        this.draft = {
+          title: job.title, company: job.company, location: job.location || '',
+          apply_url: job.apply_url || '', applied_at: job.applied_at || '',
+          applied_notes: job.applied_notes || '',
+          experience_required: job.experience_required, employment_type: job.employment_type,
+          work_mode: job.work_mode, seniority: job.seniority,
+        };
+        document.title = `${job.title} · Open to Work`;
+      },
+
+      async loadGap() {
+        try {
+          const res = await fetch(`/api/job-analytics/gap/${this.jobId}?account_id=${this.accountId}`);
+          this.gap = res.ok ? await res.json() : null;
+        } catch {
+          this.gap = null;
+        }
+      },
+
+      skills() { return this.job ? this.job.skills_required || [] : []; },
+      hasSet() { return new Set((this.gap ? this.gap.matched : []).map((s) => s.toLowerCase())); },
+      haveSkills() { const have = this.hasSet(); return this.skills().filter((s) => have.has(s.skill.toLowerCase())); },
+      missingSkills() { const have = this.hasSet(); return this.skills().filter((s) => !have.has(s.skill.toLowerCase())); },
+      coverage() { const n = this.skills().length; return n ? Math.round((this.haveSkills().length / n) * 100) : 0; },
+      // The canonical role this posting is grouped under, shown only when
+      // it adds something beyond the title itself.
+      roleFamilyLabel() {
+        const rf = this.job && this.job.role_family;
+        if (!rf || rf.canonical_name.toLowerCase() === (this.job.title || '').toLowerCase()) return '';
+        return rf.canonical_name;
+      },
+      hasSalary() { return this.job.salary_min_annual != null || this.job.salary_max_annual != null; },
+
+      async patch(body) {
+        this.saveError = '';
+        const res = await fetch(`/api/job-postings/${this.jobId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          this.saveError = typeof err.detail === 'string' ? err.detail : 'Could not save that change.';
+          return false;
+        }
+        this.setJob(await res.json());
+        return true;
+      },
+
+      async saveField(field, value) {
+        const current = this.job[field] ?? '';
+        if ((value ?? '') === current) return;
+        await this.patch({ [field]: value || null });
+      },
+
+      async toggleApplied() {
+        await this.patch({ applied: !this.job.applied });
+      },
+
+      startSalary() {
+        this.salaryDraft = {
+          text: this.job.salary_range || '',
+          min: this.job.salary_min_annual ?? '',
+          max: this.job.salary_max_annual ?? '',
+          currency: this.job.salary_currency || '',
+        };
+        this.editingSalary = true;
+      },
+      cancelSalary() { this.editingSalary = false; },
+
+      async saveSalary() {
+        const d = this.salaryDraft;
+        const toInt = (v) => (v === '' || v == null ? null : Math.round(Number(v)));
+        const body = {};
+        if (d.text !== (this.job.salary_range || '')) body.salary_range = d.text;
+        if (toInt(d.min) !== (this.job.salary_min_annual ?? null)) body.salary_min_annual = toInt(d.min);
+        if (toInt(d.max) !== (this.job.salary_max_annual ?? null)) body.salary_max_annual = toInt(d.max);
+        if ((d.currency || '').toUpperCase() !== (this.job.salary_currency || '')) body.salary_currency = d.currency || null;
+        if (Object.keys(body).length === 0 || (await this.patch(body))) this.editingSalary = false;
+      },
+
+      async reprocess() {
+        this.reprocessing = true;
+        try {
+          const res = await fetch(`/api/job-postings/${this.jobId}/reprocess`, { method: 'POST' });
+          if (res.ok) {
+            this.setJob(await res.json());
+            await this.loadGap();
+          }
+        } finally {
+          this.reprocessing = false;
+        }
+      },
+
+      async remove() {
+        if (!(await otwConfirm({ title: 'Delete this job posting?' }))) return;
+        this.deleting = true;
+        try {
+          const res = await fetch(`/api/job-postings/${this.jobId}`, { method: 'DELETE' });
+          if (res.ok) window.location.href = '/jobs';
+        } finally {
+          this.deleting = false;
+        }
+      },
+    };
+  }
+</script>
+{% endblock %}

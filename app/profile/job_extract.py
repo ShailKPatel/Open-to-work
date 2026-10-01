@@ -29,6 +29,7 @@ _SCHEMA = {
         "location": {"type": "string"},
         "salary_range": {"type": "string"},
         "employment_type": {"type": "string"},
+        "work_mode": {"type": "string"},
         "seniority": {"type": "string"},
         "experience_required": {"type": "string"},
         "skills_required": {
@@ -47,7 +48,7 @@ _SCHEMA = {
     },
     "required": [
         "company", "title", "location", "salary_range", "employment_type",
-        "seniority", "experience_required", "skills_required",
+        "work_mode", "seniority", "experience_required", "skills_required",
         "other_requirements", "role_summary",
     ],
 }
@@ -56,9 +57,13 @@ _SYSTEM_PROMPT = (
     "You read a pasted job posting and pull out its structured facts, for "
     "someone keeping a record of jobs they're considering. Extract: "
     "`company`, `title`, `location` (best guess, empty string if truly "
-    "absent); `salary_range` as stated (e.g. \"$120k–$150k\" or "
-    "\"₹12–18 LPA\"), empty string if not mentioned, never invented; "
-    "`employment_type` (e.g. \"Full-time\", \"Contract\", \"Internship\"); "
+    "absent); `salary_range` as stated, keeping its currency, units and "
+    "pay period (e.g. \"$120k-$150k per year\", \"₹12-18 LPA\", \"1.5-1.6 "
+    "lakh per month\"), empty string if not mentioned, never invented; "
+    "`employment_type`, one of \"Full-time\", \"Part-time\", \"Contract\", "
+    "\"Internship\", \"Freelance\", or empty string if not stated; "
+    "`work_mode`, one of \"Remote\", \"Hybrid\", \"On-site\", or empty "
+    "string if not stated; "
     "`seniority` (e.g. \"Junior\", \"Mid\", \"Senior\", \"Staff\"), empty "
     "string if not inferable; `experience_required` as stated (e.g. \"3+ "
     "years\"), empty string if not mentioned; `skills_required`, a list "
@@ -108,6 +113,7 @@ class JobExtraction:
     skills_required: list[RequiredSkill]
     other_requirements: list[str]
     role_summary: str
+    work_mode: str = ""
 
     def as_extracted_json(self) -> dict:
         """The subset that lands in JobPosting.extracted_json. company/
@@ -117,6 +123,7 @@ class JobExtraction:
         return {
             "salary_range": self.salary_range,
             "employment_type": self.employment_type,
+            "work_mode": self.work_mode,
             "seniority": self.seniority,
             "experience_required": self.experience_required,
             "skills_required": [s.as_dict() for s in self.skills_required],
@@ -132,9 +139,12 @@ def parse_skills_required(raw: list) -> list[dict]:
     still present on any JobPosting extracted before this change and never
     rewritten unless reprocessed. Every reader of extracted_json (the API
     layer, analytics, gap computation) goes through this rather than
-    trusting the stored shape directly.
+    trusting the stored shape directly. Duplicates (same skill, any case)
+    collapse into the first mention, keeping a stated level if only a
+    later mention had one.
     """
-    out = []
+    out: list[dict] = []
+    seen: dict[str, dict] = {}
     for item in raw or []:
         if isinstance(item, dict):
             skill = str(item.get("skill", "")).strip()
@@ -144,8 +154,15 @@ def parse_skills_required(raw: list) -> list[dict]:
         else:
             skill = str(item).strip()
             level = ""
-        if skill:
-            out.append({"skill": skill, "level": level})
+        if not skill:
+            continue
+        key = skill.casefold()
+        if key in seen:
+            if not seen[key]["level"]:
+                seen[key]["level"] = level
+            continue
+        seen[key] = {"skill": skill, "level": level}
+        out.append(seen[key])
     return out
 
 
@@ -183,4 +200,5 @@ def extract_job_posting(raw_text: str, account_id: int | None = None) -> JobExtr
             str(s).strip() for s in p.get("other_requirements", []) if str(s).strip()
         ],
         role_summary=str(p.get("role_summary", "")).strip(),
+        work_mode=str(p.get("work_mode", "")).strip(),
     )

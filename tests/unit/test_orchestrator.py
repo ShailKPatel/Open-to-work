@@ -524,3 +524,36 @@ def test_resume_build_call_is_tagged_with_its_purpose(tmp_path, monkeypatch):
     generate_resume(account_id, posting_id)
 
     assert fake_complete.call_args.kwargs["purpose"] == "resume_build"
+
+
+def test_candidate_projects_skip_profile_readme(tmp_path, monkeypatch):
+    """The profile README's evidence is indexed (it is a skill source), so
+    retrieval can rank it first; it must still never be offered as a
+    project, nor take a candidate slot from a real one."""
+    from app.resume_build.orchestrator import _candidate_projects
+    from app.retrieval.search import Hit
+
+    account_id, _ = _seed(tmp_path)
+    db = get_db()
+    project_id = db.query(Repository).filter_by(account_id=account_id).first().id
+    profile = Repository(
+        account_id=account_id, github_id=2, name="janedoe", full_name="janedoe/janedoe",
+        url="https://github.com/janedoe/janedoe", is_fork=False, is_profile_readme=True,
+    )
+    db.add(profile)
+    db.commit()
+    profile_id = profile.id
+
+    hits = [
+        Hit(id=1, score=0.95, payload={"repo_id": profile_id, "skill": "Python"}),
+        Hit(id=2, score=0.5, payload={"repo_id": project_id, "skill": "Python"}),
+    ]
+    monkeypatch.setattr(
+        "app.retrieval.search.search_skill_evidence",
+        lambda query_text, account_id, top_k=10, source_type=None: hits,
+    )
+
+    candidates = _candidate_projects(db, account_id, "Python backend")
+    db.close()
+
+    assert [c["repo_id"] for c in candidates] == [project_id]

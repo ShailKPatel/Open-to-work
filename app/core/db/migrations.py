@@ -7,6 +7,7 @@ so startup is idempotent and an older database upgrades itself in place.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from sqlalchemy import text
@@ -113,6 +114,43 @@ def _migrate_resumes_build_columns(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_resumes_history_columns(engine: Engine) -> None:
+    """Add resumes.experiences_json/education_json to an already-existing
+    resumes table, same reasoning and pattern as
+    _migrate_resumes_name_column above. Rows extracted before this column
+    existed read as empty until reprocessed.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(resumes)"))}
+        for column in ("experiences_json", "education_json"):
+            if column not in existing:
+                conn.execute(
+                    text(f"ALTER TABLE resumes ADD COLUMN {column} JSON NOT NULL DEFAULT '[]'")
+                )
+        conn.commit()
+
+
+def _migrate_resumes_contact_column(engine: Engine) -> None:
+    """Add resumes.contact_json, same pattern as
+    _migrate_resumes_history_columns above. Rows extracted before it
+    existed read as an empty contact block until reprocessed.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(resumes)"))}
+        if "contact_json" not in existing:
+            conn.execute(
+                text("ALTER TABLE resumes ADD COLUMN contact_json JSON NOT NULL DEFAULT '{}'")
+            )
+        conn.commit()
+
+
 def _migrate_job_postings_extraction_columns(engine: Engine) -> None:
     """Add job_postings.extraction_status/extraction_error/extracted_at to
     an already-existing job_postings table, same reasoning and pattern as
@@ -202,6 +240,43 @@ def _migrate_job_postings_tracking_columns(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_job_postings_salary_columns(engine: Engine) -> None:
+    """Add job_postings.salary_min_annual/salary_max_annual/salary_currency
+    and fill them for rows extracted before they existed, from the
+    salary_range text already in extracted_json (app/profile/salary.py),
+    so older postings filter by pay without being reprocessed.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    from app.profile.salary import parse_salary
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(job_postings)"))}
+        if "salary_min_annual" in existing:
+            return
+        conn.execute(text("ALTER TABLE job_postings ADD COLUMN salary_min_annual INTEGER"))
+        conn.execute(text("ALTER TABLE job_postings ADD COLUMN salary_max_annual INTEGER"))
+        conn.execute(text("ALTER TABLE job_postings ADD COLUMN salary_currency TEXT"))
+        rows = conn.execute(
+            text("SELECT id, extracted_json FROM job_postings WHERE extracted_json IS NOT NULL")
+        ).all()
+        for posting_id, raw in rows:
+            try:
+                extracted = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            except ValueError:
+                continue
+            salary = parse_salary(extracted.get("salary_range", ""))
+            conn.execute(
+                text(
+                    "UPDATE job_postings SET salary_min_annual = :lo, "
+                    "salary_max_annual = :hi, salary_currency = :cur WHERE id = :id"
+                ),
+                {"lo": salary.min, "hi": salary.max, "cur": salary.currency, "id": posting_id},
+            )
+        conn.commit()
+
+
 def _migrate_contact_items(engine: Engine) -> None:
     """Ensures contact_emails and contact_phones tables exist and populates
     them from existing accounts.contact_email / contact_phone if present.
@@ -271,6 +346,81 @@ def _migrate_api_keys_exhaustion_columns(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_skills_source_resume_column(engine: Engine) -> None:
+    """Add skills.source_resume_id to an already-existing skills table,
+    same idempotent PRAGMA-check pattern as the migrations above. When the
+    column is first added, rows that came from a resume before it existed
+    are attributed to the earliest resume of the same account whose tags
+    contain that name; everything else stays null, i.e. added by hand.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(skills)"))}
+        if "source_resume_id" in existing:
+            return
+        conn.execute(text("ALTER TABLE skills ADD COLUMN source_resume_id INTEGER"))
+
+        first_resume: dict[tuple[int, str], int] = {}
+        resumes = conn.execute(
+            text("SELECT id, account_id, tags_json FROM resumes ORDER BY uploaded_at, id")
+        )
+        for resume_id, account_id, tags_json in resumes:
+            try:
+                tags = json.loads(tags_json) if isinstance(tags_json, str) else tags_json
+            except ValueError:
+                continue
+            for tag in tags or []:
+                if isinstance(tag, str) and tag.strip():
+                    first_resume.setdefault((account_id, tag.strip().casefold()), resume_id)
+
+        for skill_id, account_id, name in conn.execute(
+            text("SELECT id, account_id, name FROM skills")
+        ).all():
+            resume_id = first_resume.get((account_id, name.strip().casefold()))
+            if resume_id is not None:
+                conn.execute(
+                    text("UPDATE skills SET source_resume_id = :rid WHERE id = :sid"),
+                    {"rid": resume_id, "sid": skill_id},
+                )
+        conn.commit()
+
+
+def _migrate_repositories_profile_readme_column(engine: Engine) -> None:
+    """Add repositories.is_profile_readme, same idempotent PRAGMA-check
+    pattern as the migrations above, then recategorize every repo by name
+    on each startup, not only the one that adds the column: a profile
+    README repo saved as a project (before the flag existed, or by a copy
+    of the app that didn't know it) leaves the projects list at the next
+    start instead of waiting for a sync or a reprocess. Same rule as
+    is_profile_repo() in models.py: owner equals name, ignoring case.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(repositories)"))}
+        if "is_profile_readme" not in existing:
+            conn.execute(
+                text(
+                    "ALTER TABLE repositories ADD COLUMN "
+                    "is_profile_readme BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE repositories SET is_profile_readme = "
+                "(lower(full_name) = lower(name) || '/' || lower(name)) "
+                "WHERE is_profile_readme != "
+                "(lower(full_name) = lower(name) || '/' || lower(name))"
+            )
+        )
+        conn.commit()
+
+
 def init_db() -> None:
     _backup_sqlite_file(get_settings().database_url)
     engine = get_engine()
@@ -280,9 +430,14 @@ def init_db() -> None:
     _migrate_resumes_name_column(engine)
     _migrate_job_postings_account_id(engine)
     _migrate_resumes_build_columns(engine)
+    _migrate_resumes_history_columns(engine)
+    _migrate_resumes_contact_column(engine)
     _migrate_job_postings_extraction_columns(engine)
     _migrate_llm_calls_attribution_columns(engine)
     _migrate_rate_limit_events_account_column(engine)
     _migrate_job_postings_tracking_columns(engine)
+    _migrate_job_postings_salary_columns(engine)
     _migrate_contact_items(engine)
     _migrate_api_keys_exhaustion_columns(engine)
+    _migrate_skills_source_resume_column(engine)
+    _migrate_repositories_profile_readme_column(engine)

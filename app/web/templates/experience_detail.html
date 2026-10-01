@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Experience · Open to Work{% endblock %}
 {% block content %}
 <div x-data="experienceDetailApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -8,33 +9,34 @@
 
   <main class="flex-1 px-10 pb-32 max-w-3xl mx-auto w-full">
     {% set data_active = 'experience' %}
+    {% set back_href = '/portfolio/experience' %}
     {% include "_portfolio_subnav.html" %}
-
-    <a href="/portfolio/experience" class="mt-8 inline-block text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">← all experience</a>
 
     <div x-show="!loading && !row" x-cloak class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">Not found.</p>
     </div>
 
     <template x-if="row">
-      <div class="mt-6">
-        <div class="flex items-start justify-between gap-4 flex-wrap">
-          <div class="flex-1 min-w-[16rem]">
-            <input x-model="draft.title" placeholder="Title / role" class="otw-input font-display text-4xl px-0" />
-            <div class="flex items-center gap-2 mt-2">
-              <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">Company</span>
-              <input x-model="draft.company" placeholder="Company" class="otw-input text-sm" />
+      <div class="mt-8">
+        <div class="otw-tile otw-entry">
+          <div class="otw-monogram" x-text="otwMonogram(draft.company)"></div>
+          <div class="min-w-0">
+            <input x-model="draft.title" placeholder="Title / role" class="otw-input font-display text-3xl px-0 pt-0" />
+            <input x-model="draft.company" placeholder="Company" class="otw-input text-base mt-1 px-0" />
+            <div class="otw-input-icon mt-1">
+              <span x-html="otwIcon('pin')" class="otw-meta-item text-[color:var(--muted)]"></span>
+              <input x-model="draft.location" placeholder="Location (optional)" class="otw-input text-sm" />
             </div>
           </div>
-          <button @click="removeExperience" class="otw-btn-danger-text text-xs shrink-0">Delete</button>
+          <div class="otw-when">
+            <span x-show="otwDates.isOngoing(draft.start_date, draft.end_date)" class="otw-pill otw-pill-live">Current</span>
+            <p class="otw-when-range" x-text="otwDates.range(draft.start_date, draft.end_date) || 'Dates not set'"></p>
+            <p x-show="otwDates.length(draft.start_date, draft.end_date)" class="otw-when-len" x-text="otwDates.length(draft.start_date, draft.end_date)"></p>
+            {{ ui.bin_button("removeExperience()", label="Delete role", class="mt-3") }}
+          </div>
         </div>
 
-        <div class="flex items-center gap-2 mt-3">
-          <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">Location</span>
-          <input x-model="draft.location" placeholder="–" class="otw-input text-sm" />
-        </div>
-
-        <div class="mt-4 flex flex-wrap gap-4">
+        <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
             Start date
             <input x-model="draft.start_date" type="date" class="otw-input" />
@@ -61,34 +63,38 @@
         </div>
 
         <div class="mt-8">
-          <h2 class="font-display text-xl">Points</h2>
-          <p class="text-xs text-[color:var(--muted)] mt-1">
-            This is the whole role, broken into as many points as it deserves, not one paragraph.
-            Each point is searched on its own when a resume gets built for a specific job, so cover every
-            angle you've got: a shipped feature, a leadership moment, a metric-backed win. A web-heavy job
-            posting pulls in your web points, a leadership posting pulls in the "led team of 5" one; the
-            wider your spread, the more of it actually gets used. Numbers beat vague lines, e.g.
-            "led team of 5, shipped 3 releases" over "led a team."
-          </p>
-          <p x-show="pointDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet. Add your first point below.</p>
-          <p x-show="pointDrafts.length > 0 && pointDrafts.length < 3" class="text-xs text-[color:var(--muted)] mt-2">
-            A few more would help, keep going.
-          </p>
-          <div x-show="pointDrafts.length > 0" class="mt-3 space-y-3">
+          <h2 class="font-display text-xl">Resume bullets</h2>
+          <p x-show="pointDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet. Add your first bullet below.</p>
+          <div x-show="pointDrafts.length > 0" class="mt-3 space-y-2">
             <template x-for="p in pointDrafts" :key="p.id">
-              <div class="border-b border-[color:var(--line)] pb-3">
-                <textarea x-model="p.text" rows="2" class="otw-input text-sm w-full" placeholder="Point"></textarea>
-                <div class="flex items-center justify-end gap-3 mt-2">
-                  <button @click="deletePoint(p.id)" :disabled="Boolean(pointBusy[p.id])" class="otw-btn-danger-text text-xs">Delete</button>
-                  <button @click="cancelPoint(p.id)" :disabled="!pointDirty(p) || Boolean(pointBusy[p.id])" class="otw-btn-ghost text-xs px-3 py-1">Cancel</button>
-                  <button @click="savePoint(p.id)" :disabled="!pointDirty(p) || Boolean(pointBusy[p.id])" class="otw-btn-accent text-xs px-3 py-1">Save</button>
+              <div class="otw-bullet">
+                <textarea x-model="p.text" rows="2" class="otw-input text-sm w-full" placeholder="Bullet" :id="'point-' + p.id"></textarea>
+                <div class="otw-bullet-actions">
+                  <template x-if="!pointDirty(p)">
+                    <button type="button" @click="document.getElementById('point-' + p.id).focus()" class="otw-bullet-btn" title="Edit" aria-label="Edit">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                    </button>
+                  </template>
+                  <template x-if="pointDirty(p)">
+                    <button type="button" @click="savePoint(p.id)" :disabled="Boolean(pointBusy[p.id])" class="otw-bullet-btn otw-bullet-save" title="Save" aria-label="Save">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </button>
+                  </template>
+                  <template x-if="pointDirty(p)">
+                    <button type="button" @click="cancelPoint(p.id)" :disabled="Boolean(pointBusy[p.id])" class="otw-bullet-btn" title="Discard changes" aria-label="Discard changes">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.5 15a9 9 0 1 0 2.1-9.4L1 10"/></svg>
+                    </button>
+                  </template>
+                  <button type="button" @click="deletePoint(p.id)" :disabled="Boolean(pointBusy[p.id])" class="otw-bullet-btn otw-bullet-delete" title="Delete" aria-label="Delete">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                  </button>
                 </div>
               </div>
             </template>
           </div>
 
           <div class="flex items-start gap-2 mt-4">
-            <textarea x-model="newPoint" rows="2" class="otw-input text-sm flex-1" placeholder="Add a point…"></textarea>
+            <textarea x-model="newPoint" rows="2" class="otw-input text-sm flex-1" placeholder="Add a bullet…"></textarea>
             <button @click="addPoint" :disabled="!newPoint.trim() || addingPoint" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
               <span x-show="!addingPoint">Add</span>
               <span x-show="addingPoint" class="otw-working">Adding…</span>
@@ -114,7 +120,7 @@
                   </label>
                 </div>
                 <div class="flex items-center justify-end gap-3 mt-2">
-                  <button @click="deleteSkill(s.id)" :disabled="Boolean(skillBusy[s.id])" class="otw-btn-danger-text text-xs">Delete</button>
+                  {{ ui.bin_button("deleteSkill(s.id)", label="Delete skill", disabled="Boolean(skillBusy[s.id])", size="sm") }}
                   <button @click="cancelSkill(s.id)" :disabled="!skillDirty(s) || Boolean(skillBusy[s.id])" class="otw-btn-ghost text-xs px-3 py-1">Cancel</button>
                   <button @click="saveSkill(s.id)" :disabled="!skillDirty(s) || Boolean(skillBusy[s.id])" class="otw-btn-accent text-xs px-3 py-1">Save</button>
                 </div>
@@ -239,7 +245,7 @@
       },
 
       async removeExperience() {
-        if (!confirm('Delete this experience, its points, and its skills? This cannot be undone.')) return;
+        if (!(await otwConfirm({ title: 'Delete this role?', body: 'Its points and skills go with it. This cannot be undone.' }))) return;
         await fetch(`/api/experience/${this.experienceId}`, { method: 'DELETE' });
         window.location.href = '/portfolio/experience';
       },
@@ -270,6 +276,8 @@
       },
 
       async deleteSkill(id) {
+        const name = (this.row.skills.find((s) => s.id === id) || {}).skill || 'this skill';
+        if (!(await otwConfirm({ title: `Delete "${name}" from this role?` }))) return;
         this.skillBusy[id] = true;
         try {
           const res = await fetch(`/api/experience/${this.experienceId}/skills/${id}`, { method: 'DELETE' });
@@ -333,6 +341,7 @@
       },
 
       async deletePoint(id) {
+        if (!(await otwConfirm({ title: 'Delete this point?' }))) return;
         this.pointBusy[id] = true;
         try {
           const res = await fetch(`/api/experience/${this.experienceId}/points/${id}`, { method: 'DELETE' });
@@ -366,4 +375,15 @@
     };
   }
 </script>
+<style>
+  .otw-bullet { position: relative; }
+  .otw-bullet .otw-input { padding-right: 4.5rem; }
+  .otw-bullet-actions { position: absolute; top: 0.35rem; right: 0.25rem; display: flex; gap: 0.15rem; }
+  .otw-bullet-btn { display: inline-flex; align-items: center; justify-content: center; width: 1.6rem; height: 1.6rem; color: var(--muted); transition: color 0.15s ease; }
+  .otw-bullet-btn svg { width: 15px; height: 15px; }
+  .otw-bullet-btn:hover:not(:disabled) { color: var(--ink); }
+  .otw-bullet-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .otw-bullet-save { color: var(--accent); }
+  .otw-bullet-delete:hover:not(:disabled) { color: var(--danger); }
+</style>
 {% endblock %}

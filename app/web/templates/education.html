@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Education · Open to Work{% endblock %}
 {% block content %}
 <div x-data="educationApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -51,48 +52,61 @@
       <p class="text-[color:var(--muted)]">No education added yet.</p>
     </div>
 
-    <div x-cloak class="mt-10 space-y-4">
+    <div x-cloak x-show="rows.length > 0" class="mt-10 otw-timeline">
       <template x-for="row in rows" :key="row.id">
-        <div class="otw-tile p-6">
-          <div class="flex items-start justify-between gap-4 flex-wrap">
-            <div class="min-w-0 flex-1 grid gap-2 sm:grid-cols-2">
-              <input
-                x-model="edit[row.id].institution"
-                @blur="save(row)"
-                @keydown.enter.prevent="$event.target.blur()"
-                placeholder="Institution"
-                class="otw-input font-display text-lg bg-transparent border-none outline-none p-0 focus:outline-none"
-              />
-              <input
-                x-model="edit[row.id].degree"
-                @blur="save(row)"
-                @keydown.enter.prevent="$event.target.blur()"
-                placeholder="Degree"
-                class="otw-input text-sm text-[color:var(--muted)] bg-transparent border-none outline-none p-0 focus:outline-none"
-              />
-              <input
-                x-model="edit[row.id].location"
-                @blur="save(row)"
-                @keydown.enter.prevent="$event.target.blur()"
-                placeholder="Location (optional)"
-                class="otw-input text-sm bg-transparent border-none outline-none p-0 focus:outline-none"
-              />
-              <div class="flex items-center gap-2 text-sm">
-                <input x-model="edit[row.id].start_date" @change="save(row)" type="date" class="otw-input text-xs" />
-                <span class="text-[color:var(--muted)]">–</span>
-                <input x-model="edit[row.id].end_date" @change="save(row)" type="date" class="otw-input text-xs" />
+        <div class="otw-timeline-item" :class="{ 'is-current': otwDates.isOngoing(row.start_date, row.end_date) }">
+          <div x-show="!editing[row.id]" class="otw-tile otw-entry">
+            <div class="otw-monogram" x-text="otwMonogram(row.institution)"></div>
+            <div class="min-w-0">
+              <p class="otw-entry-title" x-text="row.degree"></p>
+              <p class="otw-entry-org" x-text="row.institution"></p>
+              <div class="otw-meta">
+                <span x-show="row.location" class="otw-meta-item">
+                  <span x-html="otwIcon('pin')"></span><span x-text="row.location"></span>
+                </span>
+                <button @click="startEdit(row)" class="otw-meta-item hover:text-[color:var(--ink)] transition-colors">
+                  <span x-html="otwIcon('pencil')"></span>Edit
+                </button>
+                {{ ui.bin_button("remove(row)", label="Delete education", disabled="Boolean(deleting[row.id])", size="sm") }}
               </div>
             </div>
-            <button
-              @click="remove(row)"
-              :disabled="deleting[row.id]"
-              class="otw-btn-danger-text text-xs shrink-0"
-            >
-              <span x-show="!deleting[row.id]">Delete</span>
-              <span x-show="deleting[row.id]" class="otw-working">Deleting…</span>
-            </button>
+            <div class="otw-when">
+              <span x-show="otwDates.isOngoing(row.start_date, row.end_date)" class="otw-pill otw-pill-live">In progress</span>
+              <p class="otw-when-range" x-text="otwDates.range(row.start_date, row.end_date, 'Present') || 'Dates not set'"></p>
+              <p x-show="otwDates.length(row.start_date, row.end_date)" class="otw-when-len" x-text="otwDates.length(row.start_date, row.end_date)"></p>
+            </div>
           </div>
-          <p x-show="saveError[row.id]" class="otw-error text-xs mt-2" x-text="saveError[row.id]"></p>
+
+          <div x-show="editing[row.id]" x-cloak class="otw-tile p-6">
+            <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Edit entry</p>
+            <template x-if="edit[row.id]">
+              <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                <input x-model="edit[row.id].institution" placeholder="Institution" class="otw-input" />
+                <input x-model="edit[row.id].degree" placeholder="Degree" class="otw-input" />
+                <input x-model="edit[row.id].location" placeholder="Location (optional)" class="otw-input sm:col-span-2" />
+                <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+                  Start date
+                  <input x-model="edit[row.id].start_date" type="date" class="otw-input" />
+                </label>
+                <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
+                  End date (leave blank if in progress)
+                  <input x-model="edit[row.id].end_date" type="date" class="otw-input" />
+                </label>
+              </div>
+            </template>
+            <p x-show="saveError[row.id]" class="otw-error text-xs mt-3" x-text="saveError[row.id]"></p>
+            <div class="flex items-center justify-end gap-2 mt-4">
+              <button @click="cancelEdit(row)" class="otw-btn-ghost text-sm px-4 py-2">Cancel</button>
+              <button
+                @click="save(row)"
+                :disabled="!edit[row.id] || !edit[row.id].institution.trim() || !edit[row.id].degree.trim() || Boolean(saving[row.id])"
+                class="otw-btn text-sm px-4 py-2"
+              >
+                <span x-show="!saving[row.id]">Save</span>
+                <span x-show="saving[row.id]" class="otw-working">Saving…</span>
+              </button>
+            </div>
+          </div>
         </div>
       </template>
     </div>
@@ -111,6 +125,8 @@
       addError: '',
       draft: { institution: '', degree: '', location: '', start_date: '', end_date: '' },
       edit: {},
+      editing: {},
+      saving: {},
       saveError: {},
       deleting: {},
 
@@ -129,15 +145,29 @@
         try {
           const res = await fetch(`/api/education?account_id=${this.accountId}`);
           this.rows = await res.json();
-          for (const r of this.rows) {
-            this.edit[r.id] = {
-              institution: r.institution, degree: r.degree, location: r.location || '',
-              start_date: r.start_date || '', end_date: r.end_date || '',
-            };
-          }
+          for (const r of this.rows) this.resetEdit(r);
         } finally {
           this.loading = false;
         }
+      },
+
+      resetEdit(row) {
+        this.edit[row.id] = {
+          institution: row.institution, degree: row.degree, location: row.location || '',
+          start_date: row.start_date || '', end_date: row.end_date || '',
+        };
+      },
+
+      startEdit(row) {
+        this.resetEdit(row);
+        this.saveError[row.id] = '';
+        this.editing[row.id] = true;
+      },
+
+      cancelEdit(row) {
+        this.resetEdit(row);
+        this.saveError[row.id] = '';
+        this.editing[row.id] = false;
       },
 
       cancelAdd() {
@@ -177,29 +207,36 @@
       async save(row) {
         const e = this.edit[row.id];
         this.saveError[row.id] = '';
-        const res = await fetch(`/api/education/${row.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            institution: e.institution,
-            degree: e.degree,
-            location: e.location || null,
-            start_date: e.start_date || null,
-            end_date: e.end_date || null,
-          }),
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          this.saveError[row.id] = err.detail || 'Could not save.';
-          return;
+        this.saving[row.id] = true;
+        try {
+          const res = await fetch(`/api/education/${row.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              institution: e.institution,
+              degree: e.degree,
+              location: e.location || null,
+              start_date: e.start_date || null,
+              end_date: e.end_date || null,
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.saveError[row.id] = err.detail || 'Could not save.';
+            return;
+          }
+          const updated = await res.json();
+          const idx = this.rows.findIndex((r) => r.id === row.id);
+          if (idx !== -1) this.rows[idx] = updated;
+          this.resetEdit(updated);
+          this.editing[row.id] = false;
+        } finally {
+          this.saving[row.id] = false;
         }
-        const updated = await res.json();
-        const idx = this.rows.findIndex((r) => r.id === row.id);
-        if (idx !== -1) this.rows[idx] = updated;
       },
 
       async remove(row) {
-        if (!confirm(`Delete "${row.institution}"?`)) return;
+        if (!(await otwConfirm({ title: `Delete "${row.institution}"?` }))) return;
         this.deleting[row.id] = true;
         try {
           await fetch(`/api/education/${row.id}`, { method: 'DELETE' });

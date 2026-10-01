@@ -3,7 +3,7 @@
 {% block content %}
 <div x-data="settingsApp()" x-init="init()" class="min-h-screen flex flex-col">
 
-  {% set top_active = '' %}
+  {% set top_active = 'settings' %}
   {% include "_header.html" %}
 
   <main class="flex-1 px-10 pb-24 max-w-2xl mx-auto w-full">
@@ -28,17 +28,16 @@
       </a>
     </section>
 
-    <!-- Fetch data: which GitHub accounts/repos
-         this profile pulls evidence from is profile setup, not portfolio
-         content, same shelf as API keys above. -->
+    <!-- Fetch data: the GitHub sources and their syncs live under
+         Monitor > Sync; this is a pointer for anyone looking here. -->
     <section class="mt-12">
       <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Fetch data</h2>
       <p class="mt-3 text-sm text-[color:var(--muted)]">
-        Manage the GitHub accounts and individual repos this profile pulls
-        evidence from.
+        The GitHub accounts and repos this profile pulls evidence from, and
+        their syncs, are under Monitor.
       </p>
-      <a href="/settings/sources" class="otw-btn-ghost inline-block mt-4 px-4 py-2 text-sm">
-        Manage sources →
+      <a href="/monitor/sync" class="otw-btn-ghost inline-block mt-4 px-4 py-2 text-sm">
+        Open sync →
       </a>
     </section>
 

@@ -4,11 +4,14 @@ inside PyGithub's PaginatedList (callers just iterate).
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
+import re
 import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
+import httpx
 from github import Auth, Github, GithubException, RateLimitExceededException
 from github.Repository import Repository as GHRepository
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -32,6 +35,23 @@ logger = logging.getLogger(__name__)
 # called from) surfaces the error quickly instead of hanging.
 _MAX_RATE_LIMIT_WAIT_SECONDS = 10.0
 
+# raw.githubusercontent.com serves file bodies outside the REST API's
+# quota (60 requests an hour per IP without a token), so README and
+# manifest text is read from there and only the listing costs quota.
+_RAW_TIMEOUT_SECONDS = 15.0
+
+_LAST_PAGE = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="last"')
+
+
+class RateLimitWindowExhausted(RateLimitExceededException):
+    """The hourly quota is spent and resets too far out to wait for.
+    Retrying before reset_at cannot succeed, so _call() raises this
+    straight away instead of backing off five times first."""
+
+    def __init__(self, source: GithubException, reset_at: dt.datetime):
+        super().__init__(source.status, source.data, source.headers)
+        self.reset_at = reset_at
+
 
 class GitHubClient:
     def __init__(self, token: str | None = None):
@@ -47,20 +67,29 @@ class GitHubClient:
         # only on the right status codes), so a second, uncapped retry
         # layer underneath it is redundant.
         self._gh = Github(auth=auth, per_page=100, retry=None)
+        self._token = token or None
+        self._users: dict[str, Any] = {}
 
-    def _wait_for_rate_limit_reset(self) -> None:
+    def _wait_for_rate_limit_reset(self) -> dt.datetime | None:
+        """Sleeps through a short reset window. Returns the reset time
+        instead when the hourly quota is spent and the reset is too far
+        away to wait for; a secondary limit (quota left, still blocked)
+        returns None so the normal backoff retries it."""
         core = self._gh.get_rate_limit().resources.core
         reset_at = core.reset.timestamp()
         sleep_for = max(0.0, reset_at - time.time()) + 1
         if sleep_for > _MAX_RATE_LIMIT_WAIT_SECONDS:
             logger.warning(
                 "rate limit exhausted, real reset is %.0fs away; too long to "
-                "block a request on, not sleeping (retry/backoff still applies)",
+                "block a request on, not sleeping",
                 sleep_for,
             )
-            return
+            if getattr(core, "remaining", 0) == 0:
+                return core.reset
+            return None
         logger.warning("rate limit exhausted, sleeping %.0fs", sleep_for)
         time.sleep(sleep_for)
+        return None
 
     @retry(
         # Only retry rate-limit-shaped errors (403/429) and real server
@@ -72,8 +101,11 @@ class GitHubClient:
         # backoff (~30s wasted) before finally surfacing, which read as a
         # hang on the sync-progress UI instead of an instant error.
         retry=retry_if_exception(
-            lambda e: isinstance(e, RateLimitExceededException)
-            or (isinstance(e, GithubException) and (e.status in (403, 429) or e.status >= 500))
+            lambda e: not isinstance(e, RateLimitWindowExhausted)
+            and (
+                isinstance(e, RateLimitExceededException)
+                or (isinstance(e, GithubException) and (e.status in (403, 429) or e.status >= 500))
+            )
         ),
         wait=wait_exponential(multiplier=2, min=2, max=60),
         stop=stop_after_attempt(5),
@@ -82,20 +114,28 @@ class GitHubClient:
     def _call(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
-        except RateLimitExceededException as e:
-            record_event("github", "rate_limited", str(e), context=getattr(fn, "__name__", None))
-            self._wait_for_rate_limit_reset()
-            raise
         except GithubException as e:
-            if e.status in (403, 429):
+            if isinstance(e, RateLimitWindowExhausted):
+                raise
+            if isinstance(e, RateLimitExceededException) or e.status in (403, 429):
                 record_event(
                     "github", "rate_limited", str(e), context=getattr(fn, "__name__", None)
                 )
-                self._wait_for_rate_limit_reset()
+                reset_at = self._wait_for_rate_limit_reset()
+                if reset_at is not None:
+                    raise RateLimitWindowExhausted(e, reset_at) from e
             raise
 
+    def _user(self, username: str) -> Any:
+        """One /users/{username} call per sync, shared by the count hint
+        and the repo listing."""
+        key = username.lower()
+        if key not in self._users:
+            self._users[key] = self._call(self._gh.get_user, username)
+        return self._users[key]
+
     def user_repos(self, username: str, include_forks: bool = True) -> Iterator[GHRepository]:
-        user = self._call(self._gh.get_user, username)
+        user = self._user(username)
         for repo in self._call(user.get_repos):
             if not include_forks and repo.fork:
                 continue
@@ -110,8 +150,7 @@ class GitHubClient:
         """Cheap approximate total for progress UI (one extra /users/{username}
         call). Counts forks too even when include_forks=False, and can drift
         if repos change mid-sync: a hint, not a guarantee."""
-        user = self._call(self._gh.get_user, username)
-        return user.public_repos
+        return self._user(username).public_repos
 
     def readme_text(self, repo: GHRepository) -> str | None:
         try:
@@ -148,14 +187,56 @@ class GitHubClient:
         except Exception:
             return None
 
-    def contributor_stats(self, repo: GHRepository) -> list[Any]:
-        """GET /repos/{owner}/{repo}/stats/contributors. Returns [] while
-        GitHub is still computing (202) after retries; caller should treat
-        that as 'unknown, try again next sync' rather than 'zero commits'.
-        """
-        for _ in range(3):
-            stats = self._call(repo.get_stats_contributors)
-            if stats is not None:
-                return stats
-            time.sleep(2)
-        return []
+    def entry_text(self, repo: GHRepository, entry: Any) -> str | None:
+        """Text of a file from a root_contents() listing. Read from its
+        raw download URL first, which costs no API quota; only falls back
+        to the contents API if that fails."""
+        url = getattr(entry, "download_url", None)
+        if url:
+            headers = {"Authorization": f"token {self._token}"} if self._token else {}
+            try:
+                resp = httpx.get(
+                    url, headers=headers, timeout=_RAW_TIMEOUT_SECONDS, follow_redirects=True
+                )
+                if resp.status_code == 200:
+                    return resp.content.decode("utf-8", errors="replace")
+            except httpx.HTTPError:
+                pass
+        return self.file_text(repo, entry.path)
+
+    def authored_commits(
+        self, repo: GHRepository, username: str
+    ) -> tuple[int, dt.datetime | None] | None:
+        """(commits by username on the default branch, date of the newest
+        one) from a single GET /commits?author=...&per_page=1: the page
+        holds the newest commit and the Link header's last page number is
+        the count. stats/contributors used to answer this, but it replies
+        202 while GitHub computes and needed several polls per repo.
+        None means unknown (don't overwrite a known value); an empty repo
+        is (0, None)."""
+
+        def list_authored_commits() -> tuple[dict, Any]:
+            return repo._requester.requestJsonAndCheck(
+                "GET",
+                f"{repo.url}/commits",
+                parameters={"author": username, "per_page": 1},
+            )
+
+        try:
+            headers, data = self._call(list_authored_commits)
+        except GithubException as e:
+            if e.status == 409:  # empty repository
+                return 0, None
+            if e.status == 404:
+                return None
+            raise
+        if not isinstance(data, list) or not data:
+            return 0, None
+        link = {k.lower(): v for k, v in (headers or {}).items()}.get("link", "")
+        match = _LAST_PAGE.search(link)
+        count = int(match.group(1)) if match else len(data)
+        committed = ((data[0].get("commit") or {}).get("author") or {}).get("date")
+        last = None
+        if committed:
+            last = dt.datetime.fromisoformat(committed.replace("Z", "+00:00"))
+        return count, last

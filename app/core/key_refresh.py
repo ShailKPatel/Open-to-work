@@ -53,6 +53,13 @@ def refresh_due_keys() -> list[dict]:
         len(checked),
         len(recovered),
     )
+    if recovered:
+        # skill extraction a spent key cut off can carry on now
+        from app.profile.jobs import resume_rate_limited_extractions
+
+        resumed = resume_rate_limited_extractions()
+        if resumed:
+            logger.info("continued skill extraction for account(s) %s", resumed)
     return checked
 
 

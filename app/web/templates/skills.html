@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Skills · Open to Work{% endblock %}
 {% block content %}
 <div x-data="skillsApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -6,7 +7,7 @@
   {% set top_active = 'portfolio' %}
   {% include "_header.html" %}
 
-  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+  <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
     {% set data_active = 'skills' %}
     {% include "_portfolio_subnav.html" %}
 
@@ -60,13 +61,13 @@
       <p class="text-[color:var(--muted)]">No skills match that search.</p>
     </div>
 
-    <!-- Skill Cards Grid with Dynamic Floating Popover Sources -->
-    <div x-cloak class="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 items-start">
-      <template x-for="(group, index) in pagedGroups" :key="group.name">
+    <!-- Skill cards. The last row stretches to fill (see .otw-fill), and
+         the page size divides by 2, 3 and 4 so full pages never leave a gap. -->
+    <div x-cloak class="mt-6 otw-fill" style="--fill-min: 13rem;">
+      <template x-for="group in pagedGroups" :key="group.name">
         <div
-          x-data="{ popoverOpen: false }"
-          @mouseleave="popoverOpen = false"
-          class="otw-tile p-5 relative transition-all duration-150 hover:border-[color:var(--line-strong)]"
+          class="otw-tile p-5 relative flex flex-col justify-between gap-3"
+          :class="group.starred ? 'otw-skill-starred' : ''"
         >
           <div class="flex items-start justify-between gap-4">
             <div class="flex items-center gap-2 min-w-0">
@@ -81,68 +82,33 @@
               </button>
               <p class="font-display text-lg truncate" x-text="group.name"></p>
             </div>
-            <button
-              x-show="group.manual_skill_id"
-              @click="removeManual(group)"
-              class="text-xs otw-btn-danger-text shrink-0"
-            >Remove</button>
+            {{ ui.bin_button("removeGroup(group)", label="Delete skill", disabled="Boolean(removeBusy[group.name])", size="sm") }}
           </div>
 
-          <!-- Sources Trigger Indicator -->
-          <div class="mt-3 flex items-center justify-between text-xs text-[color:var(--muted)]">
-            <template x-if="group.sources.length === 0">
-              <span class="italic text-[color:var(--muted)]">Added manually</span>
-            </template>
+          <!-- Where the skill comes from: each project or role by name,
+               linking to its page. -->
+          <div class="text-xs text-[color:var(--muted)] min-w-0">
             <template x-if="group.sources.length > 0">
-              <button
-                type="button"
-                @mouseenter="popoverOpen = true"
-                @click="popoverOpen = !popoverOpen"
-                class="flex items-center gap-1.5 cursor-pointer text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] transition-colors"
-              >
-                <span class="inline-block w-2 h-2 rounded-full bg-[color:var(--accent)]"></span>
-                <span class="font-medium" x-text="uniqueSources(group).length + (uniqueSources(group).length === 1 ? ' source' : ' sources')"></span>
-                <svg class="w-3 h-3 text-[color:var(--muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-              </button>
+              <p class="line-clamp-2" :title="uniqueSources(group).map((s) => s.name).join(', ')">
+                <template x-for="(source, i) in uniqueSources(group)" :key="source.type + '-' + source.ref_id">
+                  <span><a
+                    :href="source.type === 'project' ? '/portfolio/projects/' + source.ref_id : '/portfolio/experience/' + source.ref_id"
+                    class="hover:text-[color:var(--ink)] hover:underline underline-offset-2 transition-colors"
+                    x-text="source.name"
+                  ></a><span x-show="i < uniqueSources(group).length - 1">, </span></span>
+                </template>
+              </p>
             </template>
-          </div>
-
-          <!-- Dynamic Floating Popover (Positioned outside tile, auto-aligns left/center/right) -->
-          <div
-            x-show="popoverOpen && group.sources.length > 0"
-            x-cloak
-            x-transition:enter="transition ease-out duration-150"
-            x-transition:enter-start="opacity-0 scale-95"
-            x-transition:enter-end="opacity-100 scale-100"
-            x-transition:leave="transition ease-in duration-100"
-            x-transition:leave-start="opacity-100 scale-100"
-            x-transition:leave-end="opacity-0 scale-95"
-            class="absolute top-full mt-2 z-40 w-72 p-4 otw-tile bg-[color:var(--tile)] border border-[color:var(--line-strong)]"
-            :class="index % 3 === 2 ? 'right-0' : (index % 3 === 1 ? 'left-1/2 -translate-x-1/2' : 'left-0')"
-          >
-            <div class="flex items-center justify-between pb-2 border-b border-[color:var(--line)] mb-2">
-              <p class="text-[10px] uppercase tracking-wider text-[color:var(--muted)] font-semibold">Exact Sources</p>
-              <button @click="popoverOpen = false" class="text-[color:var(--muted)] hover:text-[color:var(--ink)]">
-                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-              </button>
-            </div>
-            <div class="flex flex-col gap-1.5 max-h-56 overflow-y-auto">
-              <template x-for="source in group.sources" :key="source.type + '-' + source.evidence_id">
-                <a
-                  :href="source.type === 'project' ? '/portfolio/projects/' + source.ref_id : '/portfolio/experience/' + source.ref_id"
-                  class="text-xs flex items-center justify-between gap-2 p-2 rounded hover:bg-[color:var(--surface)] border border-transparent hover:border-[color:var(--line)] text-[color:var(--muted)] hover:text-[color:var(--ink)] transition-colors"
-                >
-                  <div class="flex items-center gap-1.5 min-w-0">
-                    <span class="text-[10px] font-mono uppercase px-1 py-0.5 rounded bg-[color:var(--surface)] text-[color:var(--muted)] shrink-0" x-text="source.type === 'project' ? 'Project' : 'Exp'"></span>
-                    <span class="truncate font-medium text-[color:var(--ink)]" x-text="source.name"></span>
-                  </div>
-                  <span
-                    class="text-[10px] text-[color:var(--muted)] shrink-0 italic"
-                    x-text="formatEvidenceType(source.evidence_type)"
-                  ></span>
-                </a>
-              </template>
-            </div>
+            <template x-if="group.sources.length === 0 && group.source_resume">
+              <a
+                href="/portfolio/resume"
+                class="block truncate hover:text-[color:var(--ink)] transition-colors"
+                :title="'Extracted from resume: ' + group.source_resume.name"
+              >Extracted from <span class="font-medium" x-text="group.source_resume.name"></span></a>
+            </template>
+            <template x-if="group.sources.length === 0 && !group.source_resume">
+              <span class="italic">Added manually</span>
+            </template>
           </div>
         </div>
       </template>
@@ -159,11 +125,11 @@
     <div x-cloak x-show="!loading && rejected.length > 0" class="mt-12">
       <button @click="rejectedOpen = !rejectedOpen" class="text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">
         <span x-text="rejectedOpen ? '▾' : '▸'"></span>
-        Filtered out as not skills (<span x-text="rejected.length"></span>)
+        Filtered out (<span x-text="rejected.length"></span>)
       </button>
       <div x-show="rejectedOpen" class="mt-3">
         <p class="text-xs text-[color:var(--muted)]">
-          Found in your projects or resume, but judged not to be real skills. Future syncs keep them out unless you add one back.
+          Skills you deleted, and names found in your projects or resume that were judged not to be real skills. Future syncs keep them out unless you add one back.
         </p>
         <div class="mt-3 flex flex-wrap gap-2">
           <template x-for="item in rejected" :key="item.name">
@@ -186,7 +152,7 @@
     x-show="mapOpen"
     x-cloak
     @keydown.escape.window="closeMapView()"
-    class="fixed inset-0 z-50 bg-[color:var(--bg)] text-[color:var(--ink)] flex flex-col select-none overflow-hidden"
+    class="fixed inset-0 z-50 bg-[#1c1c1f] text-[color:var(--ink)] flex flex-col select-none overflow-hidden"
   >
     <!-- Fixed Header Control Bar -->
     <div class="absolute top-4 left-4 right-4 z-50 flex items-center justify-between gap-4 pointer-events-none">
@@ -208,15 +174,7 @@
         />
 
         <!-- Cluster Filter Dropdown (Spacious & Un-cramped) -->
-        <select
-          x-model="selectedClusterId"
-          class="otw-input text-xs w-52 font-medium cursor-pointer shrink-0"
-        >
-          <option :value="null">All Clusters</option>
-          <template x-for="c in mapData.clusters" :key="c.id">
-            <option :value="c.id" x-text="c.label + ' (' + getClusterNodeCount(c.id) + ')'"></option>
-          </template>
-        </select>
+        {{ ui.select("selectedClusterId", "[{ value: null, label: 'All Clusters' }].concat(mapData.clusters.map(c => ({ value: c.id, label: c.label + ' (' + getClusterNodeCount(c.id) + ')' })))", size="sm", class="w-52 shrink-0", label="Cluster") }}
       </div>
 
       <!-- Right Action Bar & Fixed Close Button -->
@@ -249,7 +207,7 @@
       @mouseup="endMapPan()"
       @mouseleave="endMapPan()"
       @wheel.prevent="handleMapWheel($event)"
-      class="relative flex-1 w-full h-full cursor-grab active:cursor-grabbing overflow-hidden bg-[color:var(--bg)]"
+      class="relative flex-1 w-full h-full cursor-grab active:cursor-grabbing overflow-hidden bg-[#1c1c1f]"
     >
       <!-- Background Infinite Radial Grid Lines -->
       <div
@@ -258,7 +216,7 @@
       ></div>
 
       <!-- Map Loading Spinner -->
-      <div x-show="mapLoading" class="absolute inset-0 z-30 flex items-center justify-center bg-[color:var(--bg)]/80 backdrop-blur-sm">
+      <div x-show="mapLoading" class="absolute inset-0 z-30 flex items-center justify-center bg-[#1c1c1f]/80 backdrop-blur-sm">
         <div class="flex flex-col items-center gap-3">
           <div class="w-10 h-10 border-4 border-[color:var(--line)] border-t-[color:var(--accent)] rounded-full animate-spin"></div>
           <p class="text-sm font-medium text-[color:var(--muted)]">Building layout</p>
@@ -363,21 +321,26 @@
         <div class="mt-4 pt-3 border-t border-[color:var(--line)]">
           <div class="flex items-center justify-between text-xs text-[color:var(--muted)] mb-2">
             <span>Sources</span>
-            <span x-text="selectedNode?.sources ? selectedNode.sources.length + ' evidence linked' : 'Manual entry'"></span>
+            <span x-text="selectedNode?.sources?.length ? selectedNode.sources.length + ' evidence linked' : (selectedNode?.source_resume ? 'Resume' : 'Manual entry')"></span>
           </div>
 
-          <template x-if="!selectedNode?.sources || selectedNode.sources.length === 0">
+          <template x-if="(!selectedNode?.sources || selectedNode.sources.length === 0) && selectedNode?.source_resume">
+            <a href="/portfolio/resume" class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] transition-colors">
+              Extracted from resume <span class="font-medium text-[color:var(--ink)]" x-text="selectedNode.source_resume.name"></span>
+            </a>
+          </template>
+          <template x-if="(!selectedNode?.sources || selectedNode.sources.length === 0) && !selectedNode?.source_resume">
             <p class="text-xs text-[color:var(--muted)] italic">Added manually (freestanding skill)</p>
           </template>
 
           <div class="flex flex-col gap-1.5 max-h-48 overflow-y-auto pr-1">
             <template x-for="src in selectedNode?.sources || []" :key="src.type + '-' + src.evidence_id">
               <a
-                :href="src.type === 'project' ? '/portfolio/projects/' + src.ref_id : '/portfolio/experience/' + src.ref_id"
+                :href="sourceHref(src)"
                 class="text-xs flex items-center justify-between p-2 rounded-lg bg-[color:var(--surface)] border border-[color:var(--line)] hover:border-[color:var(--line-strong)] text-[color:var(--muted)] hover:text-[color:var(--ink)] transition-colors"
               >
                 <div class="flex items-center gap-2 min-w-0">
-                  <span class="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-[color:var(--tile)] text-[color:var(--muted)] shrink-0" x-text="src.type"></span>
+                  <span class="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-[color:var(--paper)] text-[color:var(--muted)] shrink-0" x-text="src.type === 'github_profile' ? 'profile' : src.type"></span>
                   <span class="truncate font-medium text-[color:var(--ink)]" x-text="src.name"></span>
                 </div>
                 <span class="text-[10px] text-[color:var(--muted)] italic" x-text="formatEvidenceType(src.evidence_type)"></span>
@@ -389,6 +352,10 @@
     </div>
   </div>
 </div>
+
+<style>
+  .otw-skill-starred { border-color: color-mix(in srgb, #f59e0b 35%, var(--line)); }
+</style>
 
 <script>
   function skillsApp() {
@@ -403,12 +370,13 @@
       newSkillName: '',
       starBusy: {},
       page: 1,
-      pageSize: 20,
+      pageSize: 24,
       query: '',
       starredOnly: false,
       rejected: [],
       rejectedOpen: false,
       addBackBusy: {},
+      removeBusy: {},
 
       // 2D Map State
       mapOpen: false,
@@ -476,6 +444,12 @@
           seen.add(key);
           return true;
         });
+      },
+
+      sourceHref(source) {
+        if (source.type === 'project') return '/portfolio/projects/' + source.ref_id;
+        if (source.type === 'github_profile') return '/portfolio#github-profile';
+        return '/portfolio/experience/' + source.ref_id;
       },
 
       formatEvidenceType(type) {
@@ -669,11 +643,33 @@
         }
       },
 
-      async removeManual(group) {
-        if (!group.manual_skill_id) return;
-        await fetch(`/api/skills/${group.manual_skill_id}`, { method: 'DELETE' });
-        await this.load();
-        if (this.mapOpen) await this.loadMap();
+      // Deletes the skill from every source behind it, after saying
+      // which ones those are.
+      async removeGroup(group) {
+        const lines = this.uniqueSources(group).map((s) =>
+          s.type === 'project' ? `• Project ${s.name}` : `• Experience ${s.name}`
+        );
+        if (group.source_resume) lines.push(`• Resume "${group.source_resume.name}"`);
+        else if (group.manual_skill_id) lines.push('• Your hand-added skills');
+        const handAddedOnly = !group.sources.length && !group.source_resume;
+        const where = handAddedOnly ? '' : `This deletes it from:\n${lines.join('\n')}\n\n`;
+        const ok = await otwConfirm({
+          title: `Delete "${group.name}"?`,
+          body: where + 'Future syncs leave it out. You can add it back from "Filtered out" at the bottom of this page.',
+        });
+        if (!ok) return;
+        this.removeBusy[group.name] = true;
+        try {
+          await fetch('/api/skills/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), name: group.name }),
+          });
+          await this.load();
+          if (this.mapOpen) await this.loadMap();
+        } finally {
+          this.removeBusy[group.name] = false;
+        }
       },
     };
   }

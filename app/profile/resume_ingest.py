@@ -1,8 +1,9 @@
 """Shared resume-file ingestion: saving an uploaded file to disk, creating
 its Resume row, and (best-effort) running multimodal extraction against it,
-including folding whatever skills and work history it found into the
-account's actual profile data (app/profile/resume_profile_merge.py). Used
-from both POST /accounts's optional signup resume field
+including folding whatever skills, work history, education and contact
+details it found
+into the account's actual profile data (app/profile/resume_profile_merge.py).
+Used from both POST /accounts's optional signup resume field
 (app/api/accounts.py) and POST /api/resume (app/api/resume.py), so there is
 exactly one path that turns "a person just handed us a resume file" into a
 stored, tagged Resume row, not two copies of the same steps that could
@@ -21,9 +22,54 @@ from sqlalchemy.orm import Session
 
 from app.core.db import Account, Resume
 from app.core.settings import get_settings
-from app.profile.resume_extract import ResumeExtraction, UnsupportedResumeType, extract_resume
+from app.profile.resume_extract import (
+    ContactClaim,
+    EducationClaim,
+    ExperienceClaim,
+    ResumeExtraction,
+    UnsupportedResumeType,
+    extract_resume,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _iso(value: dt.date | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _experience_dict(claim: ExperienceClaim) -> dict:
+    return {
+        "company": claim.company,
+        "title": claim.title,
+        "location": claim.location,
+        "start_date": _iso(claim.start_date),
+        "end_date": _iso(claim.end_date),
+        "points": list(claim.points),
+    }
+
+
+def _education_dict(claim: EducationClaim) -> dict:
+    return {
+        "institution": claim.institution,
+        "degree": claim.degree,
+        "location": claim.location,
+        "start_date": _iso(claim.start_date),
+        "end_date": _iso(claim.end_date),
+    }
+
+
+def _contact_dict(claim: ContactClaim) -> dict:
+    return {
+        "name": claim.name,
+        "location": claim.location,
+        "emails": list(claim.emails),
+        "phones": list(claim.phones),
+        "links": [
+            {"platform": link.platform, "url": link.url, "label": link.label}
+            for link in claim.links
+        ],
+    }
 
 
 def ingest_resume(
@@ -98,6 +144,9 @@ def run_extraction(db: Session, row: Resume, file_bytes: bytes | None = None) ->
         row.tags_json = extraction.tags
         row.target_roles_json = extraction.target_roles
         row.summary = extraction.summary
+        row.experiences_json = [_experience_dict(c) for c in extraction.experiences]
+        row.education_json = [_education_dict(c) for c in extraction.education]
+        row.contact_json = _contact_dict(extraction.contact)
         row.extraction_status = "extracted"
         row.extraction_error = None
         row.extracted_at = dt.datetime.now(dt.UTC)
@@ -122,10 +171,10 @@ def run_extraction(db: Session, row: Resume, file_bytes: bytes | None = None) ->
         try:
             from app.profile.resume_profile_merge import merge_resume_into_profile
 
-            merge_resume_into_profile(db, row.account_id, extraction)
+            merge_resume_into_profile(db, row.account_id, extraction, resume_id=row.id)
         except Exception:
             logger.exception(
-                "could not merge resume id=%s into profile skills/experience; continuing",
+                "could not merge resume id=%s into profile; continuing",
                 row.id,
             )
 

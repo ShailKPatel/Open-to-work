@@ -8,262 +8,259 @@
 
   <main class="flex-1 px-10 pb-32 max-w-3xl mx-auto w-full">
     {% set data_active = 'projects' %}
+    {% set back_href = '/portfolio/projects' %}
     {% include "_portfolio_subnav.html" %}
-
-    <a href="/portfolio/projects" class="mt-8 inline-block text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">← all projects</a>
 
     <div x-show="!loading && !project" x-cloak class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">Project not found.</p>
     </div>
 
     <template x-if="project">
-      <div class="mt-6">
-        <div class="flex items-start justify-between gap-4 flex-wrap">
-          <div class="flex-1 min-w-[16rem]">
+      <div class="mt-8">
+        <div class="flex items-start gap-4">
+          <div class="flex-1 min-w-0">
             <input
               x-model="draft.name"
               placeholder="Project title"
-              class="otw-input font-display text-4xl px-0"
+              class="otw-input font-display text-4xl px-0 pt-0"
             />
-            <div class="flex items-center gap-2 mt-2">
-              <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">Full name</span>
-              <input x-model="draft.full_name" placeholder="owner/repo" class="otw-input text-sm" />
+            <div class="flex items-center gap-3 mt-1">
+              <input x-model="draft.full_name" placeholder="owner/repo" class="otw-input otw-input-quiet text-sm text-[color:var(--muted)] flex-1 min-w-0" />
+              <span x-show="project.is_manual" class="otw-pill">manual</span>
+              <span x-show="draft.is_fork" class="otw-pill">fork</span>
             </div>
           </div>
-          <div class="flex flex-col items-end gap-2 shrink-0">
+          <button
+            @click="draft.starred = !draft.starred"
+            :title="draft.starred ? 'Unstar' : 'Star (max 3)'"
+            class="text-2xl leading-none pt-2 shrink-0"
+            :class="draft.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
+          ><span x-text="draft.starred ? '★' : '☆'"></span></button>
+        </div>
+
+        <!-- Links: the repo URL first, then any extra links, then +. Each
+             one reads as a plain link; editing is tucked behind a hover. -->
+        <div class="otw-links mt-5">
+          <template x-if="!editingUrl">
+            <span class="otw-link-item">
+              <a x-show="draft.url" :href="draft.url" target="_blank" rel="noopener" class="otw-link">
+                <span x-html="otwIcon('link')"></span><span x-text="prettyUrl(draft.url)"></span>
+              </a>
+              <button
+                @click="editingUrl = true"
+                class="otw-link-tool"
+                :class="!draft.url && 'otw-link-tool-shown'"
+                :title="draft.url ? 'Edit URL' : 'Set repo URL'"
+                x-html="draft.url ? otwIcon('pencil') : 'Set repo URL'"
+              ></button>
+            </span>
+          </template>
+          <template x-if="editingUrl">
+            <span class="otw-link-form">
+              <input
+                x-model="draft.url"
+                x-init="$nextTick(() => $el.focus())"
+                @keydown.enter="editingUrl = false"
+                @keydown.escape="draft.url = project.url; editingUrl = false"
+                placeholder="https://github.com/owner/repo"
+                class="otw-input text-sm w-72"
+              />
+              <button @click="editingUrl = false" class="otw-btn-ghost text-xs px-3 py-1">Done</button>
+            </span>
+          </template>
+
+          <template x-for="l in linkDrafts" :key="l.id">
+            <span class="otw-link-item">
+              <template x-if="editingLinkId !== l.id">
+                <span class="otw-link-item">
+                  <a
+                    :href="l.url"
+                    target="_blank"
+                    rel="noopener"
+                    class="otw-link"
+                    :title="l.source === 'readme_extracted' ? l.url + ' (found in README)' : l.url"
+                  ><span x-html="otwIcon('link')"></span><span x-text="l.label"></span></a>
+                  <button @click="editingLinkId = l.id" class="otw-link-tool" title="Edit link" x-html="otwIcon('pencil')"></button>
+                  <button
+                    @click="deleteLink(l.id)"
+                    :disabled="Boolean(linkBusy[l.id])"
+                    class="otw-link-tool hover:text-[color:var(--danger)]"
+                    title="Delete link"
+                    x-html="otwIcon('trash')"
+                  ></button>
+                </span>
+              </template>
+              <template x-if="editingLinkId === l.id">
+                <span class="otw-link-form">
+                  <input x-model="l.label" @keydown.enter="saveLink(l.id)" @keydown.escape="cancelLink(l.id)" class="otw-input text-sm w-32" placeholder="Label" />
+                  <input x-model="l.url" @keydown.enter="saveLink(l.id)" @keydown.escape="cancelLink(l.id)" class="otw-input text-sm w-64" placeholder="https://…" />
+                  <button @click="cancelLink(l.id)" class="otw-btn-ghost text-xs px-3 py-1">Cancel</button>
+                  <button
+                    @click="saveLink(l.id)"
+                    :disabled="!linkDirty(l) || Boolean(linkBusy[l.id])"
+                    class="otw-btn-accent text-xs px-3 py-1"
+                  >Save</button>
+                </span>
+              </template>
+            </span>
+          </template>
+
+          <button
+            x-show="!linkFormOpen"
+            @click="linkFormOpen = true"
+            class="otw-link-add"
+            title="Add a link"
+            aria-label="Add a link"
+          >+</button>
+          <span x-show="linkFormOpen" class="otw-link-form">
+            <input
+              x-model="newLink.label"
+              x-effect="linkFormOpen && $nextTick(() => $el.focus())"
+              @keydown.enter="addLink"
+              @keydown.escape="closeLinkForm"
+              class="otw-input text-sm w-32"
+              placeholder="Demo, Docs…"
+            />
+            <input
+              x-model="newLink.url"
+              @keydown.enter="addLink"
+              @keydown.escape="closeLinkForm"
+              class="otw-input text-sm w-64"
+              placeholder="https://…"
+            />
+            <button @click="closeLinkForm" class="otw-btn-ghost text-xs px-3 py-1">Cancel</button>
             <button
-              @click="draft.starred = !draft.starred"
-              :title="draft.starred ? 'Unstar' : 'Star (max 3)'"
-              class="text-2xl leading-none"
-              :class="draft.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
-            ><span x-text="draft.starred ? '★' : '☆'"></span></button>
-            <a
-              x-show="draft.url"
-              :href="draft.url"
-              target="_blank"
-              rel="noopener"
-              class="otw-btn-ghost text-sm px-4 py-2"
-            >View link ↗</a>
-            <span x-show="project.is_manual" class="text-xs text-[color:var(--muted)] border border-[color:var(--line)] px-2 py-0.5">added manually</span>
-          </div>
+              @click="addLink"
+              :disabled="!newLink.label.trim() || !newLink.url.trim() || addingLink"
+              class="otw-btn-accent text-xs px-3 py-1"
+            >
+              <span x-show="!addingLink">Add</span>
+              <span x-show="addingLink" class="otw-working">Adding…</span>
+            </button>
+          </span>
         </div>
 
-        <div class="flex items-center gap-2 mt-3">
-          <span class="text-xs uppercase tracking-wide text-[color:var(--muted)] shrink-0">URL</span>
-          <input x-model="draft.url" placeholder="https://…" class="otw-input text-sm" />
-        </div>
+        <textarea
+          x-model="draft.description"
+          x-effect="draft.description; $nextTick(() => autoGrow($el))"
+          @input="autoGrow($el)"
+          rows="1"
+          placeholder="Add a description…"
+          class="otw-input otw-autogrow text-base mt-6"
+        ></textarea>
 
-        <label class="flex items-center gap-2 mt-4 text-sm text-[color:var(--muted)]">
-          <input type="checkbox" x-model="draft.is_fork" class="otw-checkbox" />
-          Fork
-        </label>
-
-        <div class="mt-6">
-          <p class="text-xs uppercase tracking-wide text-[color:var(--muted)] mb-1">Description</p>
-          <textarea
-            x-model="draft.description"
-            rows="2"
-            placeholder="No description."
-            class="otw-input text-sm"
-          ></textarea>
-        </div>
-
-        <div class="mt-6 flex flex-wrap gap-x-8 gap-y-3 text-sm text-[color:var(--muted)] items-end">
-          <div>
-            <p class="text-xs uppercase tracking-wide">Primary language</p>
-            <input x-model="draft.primary_language" placeholder="–" class="otw-input mt-1 w-40" />
-          </div>
+        <div class="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-sm text-[color:var(--muted)] items-center">
+          <input x-model="draft.primary_language" placeholder="Language" title="Primary language" class="otw-input otw-input-quiet text-sm w-32 text-[color:var(--ink)]" />
           <span><span x-text="project.stars"></span> star<span x-show="project.stars !== 1">s</span></span>
           <span><span x-text="project.commits_authored"></span> commit<span x-show="project.commits_authored !== 1">s</span> by you</span>
           <span x-show="project.last_commit_at">last commit <span x-text="formatDate(project.last_commit_at)"></span></span>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" x-model="draft.is_fork" class="otw-checkbox" />
+            Fork
+          </label>
         </div>
 
-        <!-- Save / cancel bar, always present, just inert until something changes.
-             No separate edit mode: every field above is live-editable, this is
-             the one place that turns those edits into a request. -->
-        <div class="otw-tile p-4 mt-6 flex items-center justify-between gap-4">
-          <p class="text-xs text-[color:var(--muted)]">
-            <span x-show="isDirty">Unsaved changes.</span>
-            <span x-show="!isDirty">No changes.</span>
-            <span x-show="saveError" class="otw-error block mt-1" x-text="saveError"></span>
-          </p>
-          <div class="flex items-center gap-2 shrink-0">
-            <button
-              @click="cancel"
-              :disabled="!isDirty || saving"
-              class="otw-btn-ghost text-sm px-4 py-2"
-            >Cancel</button>
-            <button
-              @click="save"
-              :disabled="!isDirty || saving"
-              class="otw-btn text-sm px-4 py-2"
-            >
-              <span x-show="!saving">Save</span>
-              <span x-show="saving" class="otw-working">Saving…</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="otw-tile p-6 mt-8">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Skill extraction</p>
-              <p class="mt-1" x-show="statusLabel()" x-text="statusLabel()"></p>
-            </div>
-            <button
-              @click="reprocess"
-              :disabled="Boolean(reprocessing)"
-              class="otw-btn-accent text-xs px-3 py-1.5"
-            >
-              <span x-show="!reprocessing">Reprocess</span>
-              <span x-show="reprocessing" class="otw-working">Working…</span>
-            </button>
-          </div>
-          <p
-            x-show="project.skill_extraction_status === 'failed' || project.skill_extraction_status === 'rate_limited'"
-            class="text-xs text-[color:var(--muted)] mt-3 border-t border-[color:var(--line)] pt-3"
-            x-text="project.skill_extraction_error"
-          ></p>
-        </div>
-
-        <div class="mt-8">
-          <h2 class="font-display text-xl">Skills detected</h2>
-          <p x-show="skillDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet.</p>
-          <div x-show="skillDrafts.length > 0" class="mt-3 space-y-3">
-            <template x-for="s in skillDrafts" :key="s.id">
-              <div class="border-b border-[color:var(--line)] pb-3">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <input x-model="s.skill" class="otw-input text-sm flex-1 min-w-[8rem]" placeholder="Skill" />
-                  <select x-model="s.evidence_type" class="hidden otw-input text-xs w-40">
-                    <option value="manual">added manually</option>
-                    <option value="declared_dependency">from dependencies</option>
-                    <option value="readme_described">from README</option>
-                    <option value="description_described">from description</option>
-                  </select>
-                  <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
-                    weight
-                    <input x-model.number="s.weight" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
-                  </label>
-                  <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
-                    confidence
-                    <input x-model.number="s.confidence" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
-                  </label>
-                  <button
-                    x-show="!skillDirty(s)"
-                    @click="deleteSkill(s.id)"
-                    :disabled="Boolean(skillBusy[s.id])"
-                    class="otw-btn-danger-text text-xs"
-                  >Delete</button>
-                  <button
-                    x-show="skillDirty(s)"
-                    @click="saveSkill(s.id)"
-                    :disabled="Boolean(skillBusy[s.id])"
-                    class="otw-btn-accent text-xs px-3 py-1"
-                  >Save</button>
-                </div>
-              </div>
-            </template>
-          </div>
-
-          <!-- Add-skill row, same editable-inline pattern, its "save" is Add. -->
-          <div class="flex items-center gap-2 flex-wrap mt-4">
-            <input x-model="newSkill.skill" class="otw-input text-sm flex-1 min-w-[8rem]" placeholder="Add a skill…" />
-            <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
-              weight
-              <input x-model.number="newSkill.weight" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
-            </label>
-            <label class="hidden text-xs text-[color:var(--muted)] items-center gap-1">
-              confidence
-              <input x-model.number="newSkill.confidence" type="number" step="0.05" min="0" max="1" class="otw-input text-xs w-16" />
-            </label>
-            <button
-              @click="addSkill"
-              :disabled="!newSkill.skill.trim() || addingSkill"
-              class="otw-btn-accent text-xs px-3 py-1.5"
-            >
-              <span x-show="!addingSkill">Add</span>
-              <span x-show="addingSkill" class="otw-working">Adding…</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="mt-8" x-show="Object.keys(project.manifests).length > 0">
-          <h2 class="font-display text-xl">Declared dependencies</h2>
-          <p class="text-xs text-[color:var(--muted)] mt-1">Parsed from manifest files at sync time, not editable here.</p>
-          <div class="mt-3 space-y-4">
+        <section class="mt-12" x-show="Object.keys(project.manifests).length > 0">
+          <h2 class="otw-section-title">Dependencies</h2>
+          <div class="mt-3 space-y-3">
             <template x-for="(manifest, filename) in project.manifests" :key="filename">
               <div>
-                <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
+                <p class="text-xs text-[color:var(--muted)]">
                   <span x-text="filename"></span> · <span x-text="manifest.ecosystem"></span>
                 </p>
                 <p class="text-sm mt-1" x-text="manifest.dependencies.join(', ') || 'none parsed'"></p>
               </div>
             </template>
           </div>
-        </div>
+        </section>
 
-        <div class="mt-8">
-          <h2 class="font-display text-xl">Links</h2>
-          <p class="text-xs text-[color:var(--muted)] mt-1">
-            GitHub, a demo video, a live deployment, docs: as many as you want.
-            Ones found automatically in the README are labeled "from README";
-            edit one and it becomes yours to keep.
-          </p>
-          <p x-show="linkDrafts.length === 0" class="text-sm text-[color:var(--muted)] mt-2">None yet.</p>
-          <div x-show="linkDrafts.length > 0" class="mt-3 space-y-3">
-            <template x-for="l in linkDrafts" :key="l.id">
-              <div class="border-b border-[color:var(--line)] pb-3">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <input x-model="l.label" class="otw-input text-sm w-40" placeholder="Label, e.g. GitHub" />
-                  <input x-model="l.url" class="otw-input text-sm flex-1 min-w-[10rem]" placeholder="https://…" />
-                  <span x-show="l.source === 'readme_extracted'" class="text-xs text-[color:var(--muted)] shrink-0">from README</span>
-                </div>
-                <div class="flex items-center justify-end gap-3 mt-2">
-                  <button
-                    @click="deleteLink(l.id)"
-                    :disabled="Boolean(linkBusy[l.id])"
-                    class="otw-btn-danger-text text-xs"
-                  >Delete</button>
-                  <button
-                    @click="cancelLink(l.id)"
-                    :disabled="!linkDirty(l) || Boolean(linkBusy[l.id])"
-                    class="otw-btn-ghost text-xs px-3 py-1"
-                  >Cancel</button>
-                  <button
-                    @click="saveLink(l.id)"
-                    :disabled="!linkDirty(l) || Boolean(linkBusy[l.id])"
-                    class="otw-btn-accent text-xs px-3 py-1"
-                  >Save</button>
-                </div>
-              </div>
+        <section class="mt-12">
+          <div class="flex items-center justify-between gap-4">
+            <h2 class="otw-section-title">
+              Skills
+              <span x-show="skillDrafts.length" class="text-[color:var(--muted)]" x-text="skillDrafts.length"></span>
+            </h2>
+            <div class="flex items-center gap-3 text-xs text-[color:var(--muted)]">
+              <span x-show="statusLabel()" x-text="statusLabel()"></span>
+              <button
+                @click="reprocess"
+                :disabled="Boolean(reprocessing)"
+                class="otw-btn-ghost text-xs px-2.5 py-1"
+                title="Re-run skill extraction for this project"
+              >
+                <span x-show="!reprocessing">Reprocess</span>
+                <span x-show="reprocessing" class="otw-working">Working…</span>
+              </button>
+            </div>
+          </div>
+          <p
+            x-show="project.skill_extraction_status === 'failed' || project.skill_extraction_status === 'rate_limited'"
+            class="text-xs text-[color:var(--muted)] mt-2"
+            x-text="project.skill_extraction_error"
+          ></p>
+
+          <!-- Chips, each one editable in place: Enter or blur saves a
+               rename, Escape reverts, the cross removes it. -->
+          <div class="flex flex-wrap gap-2 mt-4">
+            <template x-for="s in skillDrafts" :key="s.id">
+              <span class="otw-chip" :class="skillDirty(s) && 'otw-chip-dirty'">
+                <input
+                  x-model="s.skill"
+                  :style="`width: ${Math.max((s.skill || '').length, 2) * 0.85 + 0.5}ch`"
+                  @keydown.enter="$el.blur()"
+                  @keydown.escape="revertSkill(s.id); $el.blur()"
+                  @blur="skillDirty(s) && saveSkill(s.id)"
+                  :disabled="Boolean(skillBusy[s.id])"
+                />
+                <button
+                  @click="deleteSkill(s.id)"
+                  :disabled="Boolean(skillBusy[s.id])"
+                  title="Remove skill"
+                  aria-label="Remove skill"
+                >&times;</button>
+              </span>
             </template>
+            <span class="otw-chip otw-chip-new">
+              <input
+                x-model="newSkill.skill"
+                @keydown.enter="addSkill"
+                :disabled="addingSkill"
+                placeholder="+ add skill"
+                style="width: 9ch"
+              />
+            </span>
           </div>
+        </section>
 
-          <div class="flex items-center gap-2 flex-wrap mt-4">
-            <input x-model="newLink.label" class="otw-input text-sm w-40" placeholder="Label, e.g. Live Demo" />
-            <input x-model="newLink.url" class="otw-input text-sm flex-1 min-w-[10rem]" placeholder="https://…" />
-            <button
-              @click="addLink"
-              :disabled="!newLink.label.trim() || !newLink.url.trim() || addingLink"
-              class="otw-btn-accent text-xs px-3 py-1.5"
-            >
-              <span x-show="!addingLink">Add</span>
-              <span x-show="addingLink" class="otw-working">Adding…</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="mt-8">
-          <h2 class="font-display text-xl">README</h2>
-          <textarea
-            x-model="draft.readme"
-            rows="10"
-            placeholder="No README yet, write one, or leave blank."
-            class="otw-input text-xs font-mono whitespace-pre-wrap"
-          ></textarea>
-        </div>
+        <section class="mt-12">
+          <h2 class="otw-section-title">README</h2>
+          <p x-show="!project.has_readme" class="text-sm text-[color:var(--muted)] mt-3">No README.</p>
+          <pre
+            x-show="project.has_readme"
+            class="otw-readme mt-3"
+            x-text="project.readme_preview"
+          ></pre>
+        </section>
       </div>
     </template>
+
+    <!-- Save bar: only shows up once something above has changed. -->
+    <div
+      x-show="isDirty || saveError"
+      x-cloak
+      x-transition.opacity
+      class="otw-savebar"
+    >
+      <span class="text-xs text-[color:var(--muted)]">
+        <span x-show="!saveError">Unsaved changes</span>
+        <span x-show="saveError" class="otw-error" x-text="saveError"></span>
+      </span>
+      <button @click="cancel" :disabled="saving" class="otw-btn-ghost text-sm px-4 py-1.5">Discard</button>
+      <button @click="save" :disabled="!isDirty || saving" class="otw-btn text-sm px-4 py-1.5">
+        <span x-show="!saving">Save</span>
+        <span x-show="saving" class="otw-working">Saving…</span>
+      </button>
+    </div>
   </main>
 </div>
 
@@ -289,6 +286,9 @@
       skillBusy: {},
       addingLink: false,
       linkBusy: {},
+      editingUrl: false,
+      editingLinkId: null,
+      linkFormOpen: false,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -298,32 +298,32 @@
         await this.load();
       },
 
-      async load() {
+      async load(keepDraft = false) {
         this.loading = true;
         try {
           const res = await fetch(`/api/projects/${this.repoId}`);
           this.project = res.ok ? await res.json() : null;
-          this.syncFromProject();
+          this.syncFromProject(keepDraft);
         } finally {
           this.loading = false;
         }
       },
 
-      syncFromProject() {
+      // keepDraft: skill and link rows save on their own, so refreshing
+      // after one of those must not throw away unsaved header edits.
+      syncFromProject(keepDraft = false) {
         if (!this.project) return;
-        this.draft = {};
-        for (const key of editableFields) this.draft[key] = this.project[key];
-        this.draft.readme = this.project.readme_preview;
+        if (!keepDraft) {
+          this.draft = {};
+          for (const key of editableFields) this.draft[key] = this.project[key];
+        }
         this.skillDrafts = this.project.skills.map((s) => ({ ...s }));
         this.linkDrafts = this.project.links.map((l) => ({ ...l }));
       },
 
       get isDirty() {
         if (!this.project) return false;
-        return (
-          editableFields.some((key) => this.draft[key] !== this.project[key]) ||
-          this.draft.readme !== this.project.readme_preview
-        );
+        return editableFields.some((key) => this.draft[key] !== this.project[key]);
       },
 
       skillDirty(row) {
@@ -341,6 +341,21 @@
         const original = this.project.links.find((l) => l.id === row.id);
         if (!original) return false;
         return row.label !== original.label || row.url !== original.url;
+      },
+
+      prettyUrl(url) {
+        return String(url || '').replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+      },
+
+      autoGrow(el) {
+        el.style.height = 'auto';
+        el.style.height = el.scrollHeight + 'px';
+      },
+
+      revertSkill(id) {
+        const original = this.project.skills.find((s) => s.id === id);
+        const idx = this.skillDrafts.findIndex((s) => s.id === id);
+        if (original && idx !== -1) this.skillDrafts[idx] = { ...original };
       },
 
       formatDate(iso) {
@@ -368,7 +383,7 @@
         this.reprocessing = true;
         try {
           await fetch(`/api/projects/${this.repoId}/reprocess`, { method: 'POST' });
-          await this.load();
+          await this.load(true);
         } finally {
           this.reprocessing = false;
         }
@@ -376,6 +391,7 @@
 
       cancel() {
         this.syncFromProject();
+        this.editingUrl = false;
         this.saveError = '';
       },
 
@@ -403,6 +419,10 @@
       async saveSkill(id) {
         const row = this.skillDrafts.find((s) => s.id === id);
         if (!row) return;
+        if (!row.skill.trim()) {
+          this.revertSkill(id);
+          return;
+        }
         this.skillBusy[id] = true;
         try {
           const res = await fetch(`/api/projects/${this.repoId}/skills/${id}`, {
@@ -417,7 +437,7 @@
           });
           if (res.ok) {
             this.project = await res.json();
-            this.syncFromProject();
+            this.syncFromProject(true);
           }
         } finally {
           this.skillBusy[id] = false;
@@ -425,12 +445,14 @@
       },
 
       async deleteSkill(id) {
+        const name = (this.skillDrafts.find((s) => s.id === id) || {}).skill || 'this skill';
+        if (!(await otwConfirm({ title: `Delete "${name}" from this project?` }))) return;
         this.skillBusy[id] = true;
         try {
           const res = await fetch(`/api/projects/${this.repoId}/skills/${id}`, { method: 'DELETE' });
           if (res.ok) {
             this.project = await res.json();
-            this.syncFromProject();
+            this.syncFromProject(true);
           }
         } finally {
           this.skillBusy[id] = false;
@@ -448,7 +470,7 @@
           });
           if (res.ok) {
             this.project = await res.json();
-            this.syncFromProject();
+            this.syncFromProject(true);
             this.newSkill = { skill: '', weight: 1, confidence: 1 };
           }
         } finally {
@@ -460,6 +482,12 @@
         const original = this.project.links.find((l) => l.id === id);
         const idx = this.linkDrafts.findIndex((l) => l.id === id);
         if (original && idx !== -1) this.linkDrafts[idx] = { ...original };
+        this.editingLinkId = null;
+      },
+
+      closeLinkForm() {
+        this.linkFormOpen = false;
+        this.newLink = { label: '', url: '' };
       },
 
       async saveLink(id) {
@@ -474,7 +502,8 @@
           });
           if (res.ok) {
             this.project = await res.json();
-            this.syncFromProject();
+            this.syncFromProject(true);
+            this.editingLinkId = null;
           }
         } finally {
           this.linkBusy[id] = false;
@@ -482,12 +511,13 @@
       },
 
       async deleteLink(id) {
+        if (!(await otwConfirm({ title: 'Delete this link?' }))) return;
         this.linkBusy[id] = true;
         try {
           const res = await fetch(`/api/projects/${this.repoId}/links/${id}`, { method: 'DELETE' });
           if (res.ok) {
             this.project = await res.json();
-            this.syncFromProject();
+            this.syncFromProject(true);
           }
         } finally {
           this.linkBusy[id] = false;
@@ -505,8 +535,8 @@
           });
           if (res.ok) {
             this.project = await res.json();
-            this.syncFromProject();
-            this.newLink = { label: '', url: '' };
+            this.syncFromProject(true);
+            this.closeLinkForm();
           }
         } finally {
           this.addingLink = false;
@@ -515,4 +545,37 @@
     };
   }
 </script>
+<style>
+  .otw-input-quiet { border-bottom-color: transparent; padding-top: 0.2rem; padding-bottom: 0.2rem; }
+  .otw-input-quiet:hover { border-bottom-color: var(--line); }
+  textarea.otw-autogrow { resize: none; overflow: hidden; min-height: 0; line-height: 1.6; }
+  .otw-section-title { font-family: 'Fraunces', Georgia, serif; font-size: 1.25rem; display: flex; align-items: baseline; gap: 0.5rem; }
+  .otw-section-title span { font-family: 'Inter', system-ui, sans-serif; font-size: 0.8rem; }
+
+  .otw-links { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.25rem; }
+  .otw-link-item { display: inline-flex; align-items: center; gap: 0.15rem; }
+  .otw-link { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 4px; transition: text-decoration-color 0.15s ease; }
+  .otw-link:hover { text-decoration-color: var(--ink); }
+  .otw-link svg { width: 0.95rem; height: 0.95rem; color: var(--muted); }
+  .otw-link-tool { display: inline-flex; align-items: center; padding: 0.15rem 0.3rem; font-size: 0.9rem; color: var(--muted); opacity: 0; transition: opacity 0.15s ease, color 0.15s ease; }
+  .otw-link-tool svg { width: 0.8rem; height: 0.8rem; }
+  .otw-link-tool:hover { color: var(--ink); }
+  .otw-link-item:hover .otw-link-tool, .otw-link-tool:focus-visible, .otw-link-tool-shown { opacity: 1; }
+  .otw-link-tool-shown { font-size: 0.8rem; text-decoration: underline; text-underline-offset: 4px; }
+  .otw-link-form { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+  .otw-link-add { width: 1.75rem; height: 1.75rem; border: 1px dashed var(--line); border-radius: 9999px; color: var(--muted); line-height: 1; transition: color 0.15s ease, border-color 0.15s ease; }
+  .otw-link-add:hover { color: var(--ink); border-color: var(--line-strong); }
+
+  .otw-chip { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 9999px; padding: 0.2rem 0.35rem 0.2rem 0.75rem; font-size: 0.85rem; transition: border-color 0.15s ease; }
+  .otw-chip:focus-within, .otw-chip-dirty { border-color: var(--line-strong); }
+  .otw-chip input { background: transparent; border: none; outline: none; color: var(--ink); min-width: 2ch; }
+  .otw-chip button { color: var(--muted); padding: 0 0.35rem; font-size: 0.95rem; line-height: 1; }
+  .otw-chip button:hover { color: var(--danger); }
+  .otw-chip-new { border-style: dashed; padding-right: 0.75rem; }
+  .otw-chip-new input::placeholder { color: var(--muted); }
+
+  .otw-readme { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: var(--muted); border-left: 1px solid var(--line); padding-left: 1rem; }
+
+  .otw-savebar { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0.75rem 0.6rem 1.25rem; background: var(--surface); border: 1px solid var(--line-strong); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+</style>
 {% endblock %}

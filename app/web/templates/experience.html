@@ -56,24 +56,33 @@
       <p class="text-[color:var(--muted)]">No experience added yet.</p>
     </div>
 
-    <div x-cloak class="mt-10 space-y-4">
+    <div x-cloak x-show="rows.length > 0" class="mt-10 otw-timeline">
       <template x-for="row in pagedRows" :key="row.id">
-        <div @click="goToDetail(row)" class="otw-tile p-6 cursor-pointer">
-          <div class="flex items-start justify-between gap-4">
+        <div class="otw-timeline-item" :class="{ 'is-current': otwDates.isOngoing(row.start_date, row.end_date) }">
+          <a :href="'/portfolio/experience/' + row.id" class="otw-tile otw-entry otw-entry-link">
+            <div class="otw-monogram" x-text="otwMonogram(row.company)"></div>
             <div class="min-w-0">
-              <a
-                @click.stop
-                :href="'/portfolio/experience/' + row.id"
-                class="font-display text-xl hover:underline"
-                x-text="row.title"
-              ></a>
-              <p class="text-sm text-[color:var(--muted)] mt-1" x-text="row.company + (row.location ? ' · ' + row.location : '')"></p>
-              <p class="text-xs text-[color:var(--muted)] mt-1" x-text="dateRange(row)"></p>
+              <p class="otw-entry-title" x-text="row.title"></p>
+              <p class="otw-entry-org" x-text="row.company"></p>
+              <div class="otw-meta">
+                <span x-show="row.location" class="otw-meta-item">
+                  <span x-html="otwIcon('pin')"></span><span x-text="row.location"></span>
+                </span>
+                <span x-show="row.skill_count > 0" class="otw-meta-item">
+                  <span x-html="otwIcon('spark')"></span>
+                  <span x-text="row.skill_count + (row.skill_count === 1 ? ' skill' : ' skills')"></span>
+                </span>
+                <span class="otw-meta-item otw-entry-cta">
+                  View role <span x-html="otwIcon('arrow')"></span>
+                </span>
+              </div>
             </div>
-            <p x-show="row.skill_count > 0" class="text-xs text-[color:var(--muted)] shrink-0">
-              <span x-text="row.skill_count"></span> skill<span x-show="row.skill_count !== 1">s</span>
-            </p>
-          </div>
+            <div class="otw-when">
+              <span x-show="otwDates.isOngoing(row.start_date, row.end_date)" class="otw-pill otw-pill-live">Current</span>
+              <p class="otw-when-range" x-text="dateRange(row) || 'Dates not set'"></p>
+              <p x-show="otwDates.length(row.start_date, row.end_date)" class="otw-when-len" x-text="otwDates.length(row.start_date, row.end_date)"></p>
+            </div>
+          </a>
         </div>
       </template>
     </div>
@@ -131,15 +140,7 @@
       },
 
       dateRange(row) {
-        const fmt = (d) => d ? new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short' }) : null;
-        const start = fmt(row.start_date);
-        const end = row.end_date ? fmt(row.end_date) : 'Present';
-        if (!start) return '';
-        return `${start} to ${end}`;
-      },
-
-      goToDetail(row) {
-        window.location.href = `/portfolio/experience/${row.id}`;
+        return otwDates.range(row.start_date, row.end_date);
       },
 
       logout() {

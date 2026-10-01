@@ -25,7 +25,7 @@ from github import (
     UnknownObjectException,
 )
 
-from app.ingest.github.client import GitHubClient
+from app.ingest.github.client import GitHubClient, RateLimitWindowExhausted
 
 
 def _client() -> GitHubClient:
@@ -250,7 +250,7 @@ def test_user_repos_includes_forks_by_default_and_can_skip_them():
         "octocat/a",
         "octocat/c",
     ]
-    assert requested == ["octocat", "octocat"]
+    assert requested == ["octocat"]  # one /users lookup shared across calls
 
 
 def test_get_repo_and_repo_count_hint_delegate_to_pygithub():
@@ -341,26 +341,140 @@ def test_file_text_other_errors_propagate():
         raise AssertionError("expected BadCredentialsException")
 
 
-def test_contributor_stats_waits_while_github_is_computing(monkeypatch):
+def _commits_repo(respond) -> SimpleNamespace:
+    calls = []
+
+    def request_json_and_check(verb, url, parameters=None):
+        calls.append((verb, url, parameters))
+        return respond()
+
+    repo = SimpleNamespace(
+        full_name="o/r",
+        url="https://api.github.com/repos/o/r",
+        _requester=SimpleNamespace(requestJsonAndCheck=request_json_and_check),
+    )
+    return repo, calls
+
+
+def test_authored_commits_counts_from_the_last_page_link_in_one_request():
     client = _client()
+    link = (
+        '<https://api.github.com/repositories/1/commits?author=octocat&per_page=1&page=2>; '
+        'rel="next", '
+        '<https://api.github.com/repositories/1/commits?author=octocat&per_page=1&page=37>; '
+        'rel="last"'
+    )
+    newest = [{"commit": {"author": {"date": "2026-05-04T10:20:30Z"}}}]
+    repo, calls = _commits_repo(lambda: ({"Link": link}, newest))
+
+    assert client.authored_commits(repo, "octocat") == (
+        37,
+        dt.datetime(2026, 5, 4, 10, 20, 30, tzinfo=dt.UTC),
+    )
+    assert calls == [
+        (
+            "GET",
+            "https://api.github.com/repos/o/r/commits",
+            {"author": "octocat", "per_page": 1},
+        )
+    ]
+
+
+def test_authored_commits_single_page_and_no_commits():
+    client = _client()
+    one = [{"commit": {"author": {"date": "2026-01-02T00:00:00Z"}}}]
+    repo, _ = _commits_repo(lambda: ({}, one))
+    assert client.authored_commits(repo, "octocat")[0] == 1
+
+    repo, _ = _commits_repo(lambda: ({}, []))
+    assert client.authored_commits(repo, "octocat") == (0, None)
+
+
+def test_authored_commits_empty_repo_is_zero_and_missing_repo_is_unknown():
+    client = _client()
+
+    def empty():
+        raise GithubException(409, {"message": "Git Repository is empty."}, {})
+
+    repo, _ = _commits_repo(empty)
+    assert client.authored_commits(repo, "octocat") == (0, None)
+
+    repo, _ = _commits_repo(_not_found)
+    assert client.authored_commits(repo, "octocat") is None
+
+
+def test_entry_text_reads_the_raw_url_without_the_api(monkeypatch):
+    client = _client()
+    seen = {}
+
+    def fake_get(url, headers, timeout, follow_redirects):
+        seen["url"] = url
+        seen["headers"] = headers
+        return SimpleNamespace(status_code=200, content=b"flask\n")
+
+    monkeypatch.setattr("app.ingest.github.client.httpx.get", fake_get)
+    entry = SimpleNamespace(path="requirements.txt", download_url="https://raw.example/r.txt")
+    repo = _repo("o/r", get_contents=lambda path: (_ for _ in ()).throw(AssertionError("api")))
+
+    assert client.entry_text(repo, entry) == "flask\n"
+    assert seen["url"] == "https://raw.example/r.txt"
+    assert seen["headers"] == {"Authorization": "token fake-token"}
+
+
+def test_entry_text_falls_back_to_the_api_when_raw_fails(monkeypatch):
+    import httpx
+
+    client = _client()
+
+    def failing_get(*args, **kwargs):
+        raise httpx.ConnectError("offline")
+
+    monkeypatch.setattr("app.ingest.github.client.httpx.get", failing_get)
+    entry = SimpleNamespace(path="go.mod", download_url="https://raw.example/go.mod")
+    repo = _repo("o/r", get_contents=lambda path: SimpleNamespace(decoded_content=b"module x"))
+
+    assert client.entry_text(repo, entry) == "module x"
+
+
+def test_spent_hourly_quota_fails_fast_without_retrying(monkeypatch):
+    client = _client()
+    reset = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=40)
+    client._gh.get_rate_limit = lambda: SimpleNamespace(
+        resources=SimpleNamespace(core=SimpleNamespace(reset=reset, remaining=0))
+    )
+    monkeypatch.setattr("app.ingest.github.client.record_event", lambda *a, **kw: None)
     monkeypatch.setattr("time.sleep", lambda *_: None)
-    answers = iter([None, None, ["stats"]])
-
-    repo = _repo("o/r", get_stats_contributors=lambda: next(answers))
-
-    assert client.contributor_stats(repo) == ["stats"]
-
-
-def test_contributor_stats_gives_up_with_empty_list(monkeypatch):
-    client = _client()
-    sleeps = []
-    monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
     calls = {"n": 0}
 
-    def still_computing():
+    def fn():
         calls["n"] += 1
-        return None
+        raise RateLimitExceededException(403, "API rate limit exceeded", {})
 
-    assert client.contributor_stats(_repo("o/r", get_stats_contributors=still_computing)) == []
+    try:
+        client._call(fn)
+    except RateLimitWindowExhausted as e:
+        assert e.reset_at == reset
+    else:
+        raise AssertionError("expected RateLimitWindowExhausted")
+
+    assert calls["n"] == 1  # would have retried 5 times, ~30s of backoff
+
+
+def test_secondary_limit_with_quota_left_still_retries(monkeypatch):
+    client = _client()
+    reset = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=40)
+    client._gh.get_rate_limit = lambda: SimpleNamespace(
+        resources=SimpleNamespace(core=SimpleNamespace(reset=reset, remaining=4000))
+    )
+    monkeypatch.setattr("app.ingest.github.client.record_event", lambda *a, **kw: None)
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def fn():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise GithubException(403, "secondary rate limit", {})
+        return "ok"
+
+    assert client._call(fn) == "ok"
     assert calls["n"] == 3
-    assert len(sleeps) == 3
