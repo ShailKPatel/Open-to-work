@@ -21,11 +21,11 @@
     <section x-cloak x-show="showAddForm || composeWarnings.length > 0" class="otw-tile p-6 mt-6">
       <div x-show="showAddForm" class="space-y-3">
         <h2 class="font-display text-xl">Add a job posting</h2>
-        <p class="text-xs text-[color:var(--muted)]">Give us whatever you have for one job: the description, a link, screenshots, or all of them. We work out the rest.</p>
+        <p class="text-xs text-[color:var(--muted)]">Paste the description, add screenshots, or both. Include the link to the posting and it is kept as the apply link.</p>
         <div class="otw-drop" :class="dragging && 'otw-drop-active'"
              @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="dragging = false; addFiles($event.dataTransfer.files)">
           <textarea x-model="composeText" rows="7" class="otw-input" @paste="pasteImages($event)"
-                    placeholder="Paste the job description, a link to it, or both. You can also paste or drop screenshots here."></textarea>
+                    placeholder="Paste the job description and its link. You can also paste or drop screenshots here."></textarea>
           <div x-show="composeFiles.length > 0" class="flex items-center gap-2 flex-wrap mt-3">
             <template x-for="(f, i) in composeFiles" :key="f.url">
               <div class="otw-thumb" :title="f.file.name" @click="otwViewImage(f.url, f.file.name)">
@@ -42,25 +42,9 @@
           </div>
         </div>
 
-        <div x-show="foundLinks().length > 0" class="otw-tile p-4 space-y-2">
-          <label class="flex items-start gap-3 text-sm">
-            <input type="checkbox" class="otw-checkbox mt-0.5" x-model="openLinks" />
-            <span>
-              Open the link for me
-              <span class="block text-xs text-[color:var(--muted)] mt-1">We visit the page and read the posting. Sites you saved a sign-in for are opened logged in, which can get that account banned. Use a spare account.
-                <a href="/settings/auth-sources" class="underline">Sign-ins</a></span>
-            </span>
-          </label>
-          <ul class="text-xs text-[color:var(--muted)] space-y-1 pl-7">
-            <template x-for="u in foundLinks()" :key="u">
-              <li>
-                <span x-text="hostOf(u)"></span>
-                <span x-show="openLinks && signInFor(u)" class="otw-error" x-text="'· opens signed in as ' + (signInFor(u) || {}).label"></span>
-                <span x-show="!openLinks" x-text="'· saved as the apply link only'"></span>
-              </li>
-            </template>
-          </ul>
-        </div>
+        <p x-show="foundLinks().length > 0 && !hasDescription()" class="text-xs text-[color:var(--muted)]">
+          Links are not opened. Paste the description or add a screenshot as well.
+        </p>
 
         <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(saving) || !canCompose()" @click="compose()">
           <span x-show="!saving">Save job</span>
@@ -159,9 +143,7 @@
       // { file, url }: url is an object URL for the thumbnail, revoked
       // when the image is removed or the form is reset.
       composeFiles: [],
-      openLinks: true,
       dragging: false,
-      authSources: [],
       saving: false,
       deleting: null,
       composeError: '',
@@ -184,7 +166,7 @@
         }
         // The analytics page links here with ?place= to open one place.
         this.place = new URLSearchParams(window.location.search).get('place') || '';
-        await Promise.all([this.loadPostings(), this.loadAuthSources()]);
+        await this.loadPostings();
       },
 
       async loadPostings() {
@@ -197,29 +179,13 @@
         }
       },
 
-      async loadAuthSources() {
-        try {
-          const res = await fetch(`/api/auth-sources?account_id=${this.accountId}`);
-          this.authSources = (await res.json()).filter((s) => s.enabled);
-        } catch {
-          this.authSources = [];
-        }
-      },
-
       // Same pattern the server uses to pick links out of the text.
       foundLinks() {
         const found = this.composeText.match(/https?:\/\/[^\s<>"'\])]+/gi) || [];
         return [...new Set(found.map((u) => u.replace(/[.,;:!?]+$/, '')))];
       },
-      hostOf(url) {
-        try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
-      },
-      signInFor(url) {
-        const host = this.hostOf(url).toLowerCase();
-        return this.authSources.find((s) => {
-          const d = (s.site_domain || '').toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
-          return d && (host === d || host.endsWith('.' + d));
-        });
+      hasDescription() {
+        return this.composeText.replace(/https?:\/\/[^\s<>"'\])]+/gi, '').trim().length > 0 || this.composeFiles.length > 0;
       },
       addFiles(list) {
         for (const f of Array.from(list || [])) {
@@ -242,7 +208,6 @@
         return this.composeText.trim().length > 0 || this.composeFiles.length > 0;
       },
       savingLabel() {
-        if (this.openLinks && this.foundLinks().length) return 'Opening the link and reading…';
         if (this.composeFiles.length) return 'Reading screenshots…';
         return 'Reading…';
       },
@@ -251,7 +216,6 @@
         this.composeText = '';
         for (const f of this.composeFiles) URL.revokeObjectURL(f.url);
         this.composeFiles = [];
-        this.openLinks = true;
         this.showAddForm = false;
       },
 
@@ -263,7 +227,6 @@
           const form = new FormData();
           form.append('account_id', this.accountId);
           form.append('text', this.composeText);
-          form.append('open_links', this.openLinks ? 'true' : 'false');
           for (const f of this.composeFiles) form.append('files', f.file);
           const res = await fetch('/api/job-postings/compose', { method: 'POST', body: form });
           if (!res.ok) {

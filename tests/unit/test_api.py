@@ -7,7 +7,6 @@ import app.core.db as db_module
 from app.core.db import init_db
 from app.core.embeddings import EMBEDDING_MODEL
 from app.core.settings import get_settings
-from app.ingest.github.sync import SyncSummary
 
 
 def _reset_db(tmp_path: Path):
@@ -45,14 +44,6 @@ def test_index_serves_account_picker(tmp_path):
     assert "GitHub username" in resp.text  # inside the create-profile form
 
 
-def test_old_sync_page_redirects_to_monitor_sync_keeping_the_query(tmp_path):
-    _reset_db(tmp_path)
-    client = _client()
-    resp = client.get("/sync?new=1", follow_redirects=False)
-    assert resp.status_code == 307
-    assert resp.headers["location"] == "/monitor/sync?new=1"
-
-
 def test_home_page_serves_dashboard(tmp_path):
     """The home dashboard renders, including its "Pending" KPI tile (see
     app/web/templates/home.html's homeApp().pendingCount).
@@ -74,7 +65,7 @@ def test_portfolio_overview_page_serves_html(tmp_path):
     assert "Portfolio" in resp.text
 
 
-def test_sync_page_serves_html_and_old_sources_url_redirects(tmp_path):
+def test_sync_page_serves_html(tmp_path):
     _reset_db(tmp_path)
     client = _client()
     resp = client.get("/monitor/sync")
@@ -82,10 +73,6 @@ def test_sync_page_serves_html_and_old_sources_url_redirects(tmp_path):
     assert resp.headers["content-type"].startswith("text/html")
     assert "Skill extraction" in resp.text
     assert "GitHub" in resp.text
-
-    old = client.get("/settings/sources", follow_redirects=False)
-    assert old.status_code == 307
-    assert old.headers["location"] == "/monitor/sync"
 
 
 def test_jobs_analytics_page_serves_html(tmp_path):
@@ -95,15 +82,6 @@ def test_jobs_analytics_page_serves_html(tmp_path):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     assert "Insights" in resp.text
-
-
-def test_auth_sources_page_serves_html(tmp_path):
-    _reset_db(tmp_path)
-    client = _client()
-    resp = client.get("/settings/auth-sources")
-    assert resp.status_code == 200
-    assert resp.headers["content-type"].startswith("text/html")
-    assert "Authenticated job sources" in resp.text
 
 
 def test_resume_page_serves_html(tmp_path):
@@ -142,14 +120,6 @@ def test_contact_links_page_serves_html(tmp_path):
     assert "Contact &amp; Links" in resp.text
 
 
-def test_old_contact_page_redirects_with_query(tmp_path):
-    _reset_db(tmp_path)
-    client = _client()
-    resp = client.get("/portfolio/contact?q=jane", follow_redirects=False)
-    assert resp.status_code == 307
-    assert resp.headers["location"] == "/portfolio/contact-links?q=jane"
-
-
 def test_explanation_page_serves_html(tmp_path):
     """Static presentation page: renders with no account, and its diagram
     boxes (the data-node hooks the wire script attaches arrows to) come
@@ -183,176 +153,6 @@ def test_projects_page_serves_html_not_the_api_endpoint(tmp_path):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     assert "Projects" in resp.text
-
-
-def test_sync_github_not_tied_to_one_username(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    seen_usernames = []
-
-    def fake_sync_account(username, include_forks=True, client=None, account_id=None):
-        seen_usernames.append(username)
-        return SyncSummary(total_repos=3, fetched=3, cache_hits=0)
-
-    monkeypatch.setattr("app.api.main.sync_account", fake_sync_account)
-    client = _client()
-
-    resp1 = client.post("/sync/github", json={"username": "octocat"})
-    resp2 = client.post("/sync/github", json={"username": "some-other-user"})
-
-    assert resp1.status_code == 200
-    assert resp1.json() == {"total_repos": 3, "fetched": 3, "cache_hits": 0}
-    assert resp2.status_code == 200
-    # two different usernames, both accepted, nothing hardcoded
-    assert seen_usernames == ["octocat", "some-other-user"]
-
-
-def test_sync_github_forwards_account_id(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    seen = {}
-
-    def fake_sync_account(username, include_forks=True, client=None, account_id=None):
-        seen["account_id"] = account_id
-        return SyncSummary(total_repos=1, fetched=1, cache_hits=0)
-
-    monkeypatch.setattr("app.api.main.sync_account", fake_sync_account)
-    client = _client()
-
-    client.post("/sync/github", json={"username": "octocat", "account_id": 7})
-    assert seen["account_id"] == 7
-
-    client.post("/sync/github", json={"username": "octocat"})
-    assert seen["account_id"] is None
-
-
-def test_sync_github_stream_sends_progress_events(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-
-    def fake_progress(username, include_forks=True, client=None, account_id=None, run_id=None):
-        yield {"stage": "checking_profile", "username": username}
-        yield {"stage": "listing_repos", "total_hint": 1}
-        yield {
-            "stage": "repo_progress",
-            "index": 1,
-            "total_hint": 1,
-            "name": "octocat/proj",
-            "cache_hit": False,
-        }
-        yield {"stage": "done", "total_repos": 1, "fetched": 1, "cache_hits": 0}
-
-    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
-    client = _client()
-
-    with client.stream("GET", "/sync/github/stream?username=octocat") as resp:
-        assert resp.status_code == 200
-        assert resp.headers["content-type"].startswith("text/event-stream")
-        body = "".join(resp.iter_text())
-
-    assert '"stage": "checking_profile"' in body
-    assert '"stage": "listing_repos"' in body
-    assert '"name": "octocat/proj"' in body
-    assert '"stage": "done"' in body
-
-
-def test_sync_github_stream_empty_username_rejected(tmp_path):
-    _reset_db(tmp_path)
-    client = _client()
-    resp = client.get("/sync/github/stream?username=")
-    assert resp.status_code == 422
-
-
-def test_sync_github_stream_unknown_user_sends_error_event(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-
-    def fake_progress(username, include_forks=True, client=None, account_id=None, run_id=None):
-        raise UnknownObjectException(404, "Not Found", {})
-        yield  # pragma: no cover - unreachable, makes this a generator
-
-    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
-    client = _client()
-
-    with client.stream("GET", "/sync/github/stream?username=does-not-exist-xyz") as resp:
-        body = "".join(resp.iter_text())
-
-    assert '"stage": "error"' in body
-    assert "does-not-exist-xyz" in body
-
-
-def test_sync_github_stream_forwards_run_id(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    seen = {}
-
-    def fake_progress(username, include_forks=True, client=None, account_id=None, run_id=None):
-        seen["run_id"] = run_id
-        yield {"stage": "done", "total_repos": 0, "fetched": 0, "cache_hits": 0}
-
-    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
-    client = _client()
-
-    with client.stream(
-        "GET", "/sync/github/stream?username=octocat&run_id=abc-123"
-    ) as resp:
-        list(resp.iter_text())
-
-    assert seen["run_id"] == "abc-123"
-
-
-def test_sync_github_stream_without_run_id_generates_one_and_reports_it(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    seen = {}
-
-    def fake_progress(username, include_forks=True, client=None, account_id=None, run_id=None):
-        seen["run_id"] = run_id
-        yield {"stage": "done", "total_repos": 0, "fetched": 0, "cache_hits": 0}
-
-    monkeypatch.setattr("app.ingest.github.background.sync_account_progress", fake_progress)
-    client = _client()
-
-    with client.stream("GET", "/sync/github/stream?username=octocat") as resp:
-        body = "".join(resp.iter_text())
-
-    assert seen["run_id"]
-    assert f'"run_id": "{seen["run_id"]}"' in body
-
-
-def test_sync_github_status_for_an_account_never_synced(tmp_path):
-    _reset_db(tmp_path)
-    client = _client()
-
-    assert client.get("/sync/github/status?username=nobody-here").json() == {"running": False}
-
-
-def test_sync_github_cancel_flags_the_run_id(tmp_path):
-    from app.ingest.github.cancellation import clear, is_cancelled
-
-    _reset_db(tmp_path)
-    client = _client()
-
-    resp = client.post("/sync/github/cancel?run_id=test-cancel-main")
-
-    assert resp.status_code == 200
-    assert resp.json() == {"cancel_requested": True, "run_id": "test-cancel-main"}
-    assert is_cancelled("test-cancel-main") is True
-    clear("test-cancel-main")
-
-
-def test_sync_github_empty_username_rejected(tmp_path):
-    _reset_db(tmp_path)
-    client = _client()
-    resp = client.post("/sync/github", json={"username": "  "})
-    assert resp.status_code == 422
-
-
-def test_sync_github_unknown_user_returns_404(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-
-    def fake_sync_account(username, include_forks=True, client=None, account_id=None):
-        raise UnknownObjectException(404, "Not Found", {})
-
-    monkeypatch.setattr("app.api.main.sync_account", fake_sync_account)
-    client = _client()
-
-    resp = client.post("/sync/github", json={"username": "does-not-exist-xyz"})
-    assert resp.status_code == 404
 
 
 def test_list_accounts_empty(tmp_path):
@@ -728,34 +528,6 @@ def test_delete_account_removes_job_screenshot_files(tmp_path, monkeypatch):
     client.delete(f"/accounts/{account['id']}")
 
     assert not screenshot_dir.exists()
-
-
-def test_delete_account_removes_auth_sources(tmp_path):
-    from app.core.auth_sources_store import list_sources
-
-    _reset_db(tmp_path)
-    client = _client()
-    account = client.post(
-        "/accounts",
-        data={"first_name": "Ada", "last_name": "Lovelace", "github_username": "octocat"},
-    ).json()
-
-    client.post(
-        "/api/auth-sources",
-        json={
-            "account_id": account["id"],
-            "label": "Test site", "site_domain": "example.com",
-            "login_url": "https://example.com/login",
-            "username_selector": "#u", "password_selector": "#p", "submit_selector": "#s",
-            "post_login_wait_selector": None,
-            "username": "me@example.com", "password": "secret",
-            "acknowledged_risk": True,
-        },
-    )
-
-    client.delete(f"/accounts/{account['id']}")
-
-    assert list_sources(account["id"]) == []
 
 
 def test_delete_unknown_account_404(tmp_path):

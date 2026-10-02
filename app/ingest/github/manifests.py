@@ -32,14 +32,6 @@ _GRADLE_DEP_LINE = re.compile(
 )
 
 
-def is_manifest(filename: str) -> bool:
-    return filename in MANIFEST_FILENAMES
-
-
-def ecosystem_for(filename: str) -> str | None:
-    return MANIFEST_FILENAMES.get(filename)
-
-
 def parse_dependencies(filename: str, content: str) -> list[str]:
     """Best-effort dependency name extraction. Never raises on malformed input."""
     try:

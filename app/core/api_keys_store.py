@@ -475,11 +475,6 @@ def _resolve_rows(db: Session, provider: str, account_id: int | None) -> list[Ap
     return sorted((r for r in rows if _allows_account(r, account_id)), key=_dispatch_order)
 
 
-def _resolve_row(db: Session, provider: str, account_id: int | None) -> ApiKey | None:
-    rows = _resolve_rows(db, provider, account_id)
-    return rows[0] if rows else None
-
-
 @dataclass(frozen=True)
 class DispatchKey:
     """One usable key, as app/core/llm.py needs it at dispatch time.
@@ -514,38 +509,6 @@ def resolve_dispatch_keys(provider: str, account_id: int | None) -> list[Dispatc
             )
             for row in _resolve_rows(db, provider, account_id)
         ]
-    finally:
-        db.close()
-
-
-def resolve_dispatch_key(
-    provider: str, account_id: int | None
-) -> tuple[int, dict, float | None] | None:
-    """The single best key as a plain tuple, for callers that only want
-    one and don't do failover (the /home status tile, and tests). Real
-    dispatch uses resolve_dispatch_keys() and walks the whole list.
-    """
-    keys = resolve_dispatch_keys(provider, account_id)
-    if not keys:
-        return None
-    first = keys[0]
-    return first.id, first.credentials, first.budget_cap_usd
-
-
-def get_active_status(provider: str) -> dict:
-    """Status of whichever key WOULD serve an unrestricted (account_id=
-    None) call for this provider. Used by the /home KPI tile, not by real
-    dispatch."""
-    db = get_db()
-    try:
-        row = _resolve_row(db, provider, None)
-        if row is None:
-            return {"configured": False, "status": "unknown", "last_checked_at": None}
-        return {
-            "configured": True,
-            "status": row.status,
-            "last_checked_at": _iso(row.last_checked_at),
-        }
     finally:
         db.close()
 

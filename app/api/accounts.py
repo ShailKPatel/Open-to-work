@@ -19,7 +19,6 @@ from sqlalchemy import delete, select
 from app.api.deps import DbSession
 from app.core.db import (
     Account,
-    AuthSource,
     Education,
     Experience,
     ExperiencePoint,
@@ -219,10 +218,9 @@ def delete_account(account_id: int, *, db: DbSession) -> dict:
     points (SQLite and Qdrant), education, contact-adjacent social links,
     freestanding manual skills, any profile snapshot, every resume
     (SQLite, Qdrant, and its file), every job posting this account
-    created (SQLite, Qdrant, and any screenshot file), every stored
-    authenticated job-source login profile, and the account itself. No
-    soft-delete, this is what "delete" means here, per the confirmation
-    prompt the client shows before calling this.
+    created (SQLite, Qdrant, and any screenshot file), and the account
+    itself. No soft-delete, this is what "delete" means here, per the
+    confirmation prompt the client shows before calling this.
     """
     account = db.get(Account, account_id)
     if account is None:
@@ -329,7 +327,6 @@ def delete_account(account_id: int, *, db: DbSession) -> dict:
     )
     db.execute(delete(Resume).where(Resume.account_id == account_id))
     db.execute(delete(JobPosting).where(JobPosting.account_id == account_id))
-    db.execute(delete(AuthSource).where(AuthSource.account_id == account_id))
 
     # Removes every resume file for this account too: they all live
     # under this one per-account directory (app/profile/resume_ingest.py).

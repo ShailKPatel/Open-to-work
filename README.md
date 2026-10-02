@@ -39,7 +39,7 @@ Most resume tools let a language model write whatever sounds good. Open to Work 
 <td width="33%" valign="top">
 
 ### Jobs
-- Add postings by **text, URL, screenshot, or logged-in browser**
+- Add postings by **pasted text or screenshots**
 - Extracts salary, seniority, and required skills
 - Groups similar titles into role families
 - Skill gap per posting
@@ -95,9 +95,8 @@ Then:
 ```mermaid
 flowchart LR
     GH[GitHub API] --> SYNC[ingest/github]
-    JP[Job posting<br/>text · URL · screenshot · login] --> JOBS[ingest/jobs]
     SYNC --> PROF[profile<br/>extraction + weighting]
-    JOBS --> JEX[profile<br/>job extraction + role families]
+    JP[Job posting<br/>text · screenshots] --> JEX[profile<br/>job extraction + role families]
     PROF --> DB[(SQLite)]
     JEX --> DB
     DB --> IDX[retrieval<br/>local embeddings]
@@ -157,7 +156,7 @@ Every model call goes through a single client that:
 | **Retrieval** | ![Qdrant](https://img.shields.io/badge/Qdrant-DC244C?logo=qdrant&logoColor=white) ![Hugging Face](https://img.shields.io/badge/bge--base--en--v1.5-FFD21E?logo=huggingface&logoColor=black) ![BM25](https://img.shields.io/badge/rank--bm25-555555) |
 | **LLM** | ![LiteLLM](https://img.shields.io/badge/LiteLLM-1f2937) ![Gemini](https://img.shields.io/badge/Gemini-8E75B2?logo=googlegemini&logoColor=white) ![OpenAI](https://img.shields.io/badge/OpenAI-412991) ![Anthropic](https://img.shields.io/badge/Anthropic-191919?logo=anthropic&logoColor=white) ![Mistral](https://img.shields.io/badge/Mistral-FA520F?logo=mistralai&logoColor=white) ![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white) |
 | **Frontend** | ![Jinja](https://img.shields.io/badge/Jinja2-B41717?logo=jinja&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind-06B6D4?logo=tailwindcss&logoColor=white) ![Alpine.js](https://img.shields.io/badge/Alpine.js-8BC0D0?logo=alpinedotjs&logoColor=black) |
-| **Documents** | ![LaTeX](https://img.shields.io/badge/Tectonic-008080?logo=latex&logoColor=white) ![Playwright](https://img.shields.io/badge/Playwright-2EAD33) ![pypdf](https://img.shields.io/badge/pypdf-555555) |
+| **Documents** | ![LaTeX](https://img.shields.io/badge/Tectonic-008080?logo=latex&logoColor=white) ![pypdf](https://img.shields.io/badge/pypdf-555555) |
 | **Quality** | ![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white) ![Ruff](https://img.shields.io/badge/Ruff-D7FF64?logo=ruff&logoColor=black) ![mypy](https://img.shields.io/badge/mypy-2A6DB2) ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white) |
 | **Runtime** | ![Docker](https://img.shields.io/badge/Docker%20Compose-2496ED?logo=docker&logoColor=white) |
 
@@ -203,7 +202,7 @@ docker compose up -d qdrant
 
 <br>
 
-**`tests/unit/`** covers every layer in isolation, with temporary SQLite databases, in-memory Qdrant, and fakes for GitHub, the LLM, embeddings, Tectonic, and Playwright. Every API router is exercised, and a route sweep renders every page.
+**`tests/unit/`** covers every layer in isolation, with temporary SQLite databases, in-memory Qdrant, and fakes for GitHub, the LLM, embeddings, and Tectonic. Every API router is exercised, and a route sweep renders every page.
 
 **`tests/live/`** talks to real services and only runs suites whose variable is set:
 
@@ -240,13 +239,12 @@ app/
   api/            FastAPI routers and page routes
   core/           settings, models, LLM client, embeddings, credential storage
   ingest/github/  GitHub client, sync, manifest parsing, cancellation
-  ingest/jobs/    public URL fetch and authenticated browser fetch
   profile/        skill extraction and weighting, resume and job extraction
   retrieval/      Qdrant indexing and search
   resume_build/   resume assembly, LaTeX templates, compilation, page fitting
   evals/          golden set, BM25 baseline, metrics, groundedness
   web/templates/  Jinja2 pages
-scripts/          golden-set labeling and one-off migrations
+scripts/          golden-set labeling, eval gate, embedding benchmark, maintenance
 tests/            unit and live suites
 ```
 
@@ -257,13 +255,12 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Privacy
 
 > [!IMPORTANT]
-> Everything is stored and embedded locally. Only this text is sent to your chosen LLM provider: README and description text, job postings and screenshots, uploaded resumes, and the profile content used to build a resume. Job posting text is always sent as a separate user message, never inside a system prompt.
+> Everything is stored and embedded locally. Only this text is sent to your chosen LLM provider: README and description text, job posting text and screenshots, uploaded resumes, and the profile content used to build a resume. Job posting text is always sent as a separate user message, never inside a system prompt.
 
 ## Limitations
 
 - Source files are not scanned for imports; evidence comes from manifests, READMEs, commits, and manual entries.
-- Job postings are added one at a time. There is no job-board crawler.
-- Authenticated fetching needs user-supplied CSS selectors and cannot pass CAPTCHA or 2FA. Automated logins may break a site's terms of service.
+- Job postings are added one at a time from pasted text or screenshots. Links are stored, not fetched, and there is no job-board crawler.
 - The golden set is empty on a fresh checkout, so eval numbers only mean something after you label your own data.
 - Editing a skill or job title does not re-index it until its parent is reprocessed.
 - Resume import supports PDF and images only.

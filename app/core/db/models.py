@@ -1,8 +1,4 @@
-"""Every ORM model in the app, one table per class.
-
-A few tables (Detection, MatchResult) are declared ahead of the features
-that will write to them.
-"""
+"""Every ORM model in the app, one table per class."""
 
 from __future__ import annotations
 
@@ -58,10 +54,6 @@ class Account(Base):
     contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_location: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-    @property
-    def display_name(self) -> str:
-        return f"{self.first_name} {self.last_name}".strip()
 
 
 class SyncSource(Base):
@@ -233,7 +225,7 @@ class ProjectLink(Base):
 
     `source` distinguishes a link a person typed in by hand from one the
     first-pass README extraction found (app/profile/extract.py's
-    extract_links_from_repo), mirrors SkillEvidence.evidence_type's
+    extract_repo_facts), mirrors SkillEvidence.evidence_type's
     manual-vs-derived split, for the same reason: Reprocess deletes and
     re-derives "readme_extracted" rows without touching "manual" ones (see
     build.py's _process_repo), and editing an extracted link's label/url
@@ -319,20 +311,12 @@ class ContactPhone(Base):
 
 
 class Experience(Base):
-    """A job/role, entered manually, there's no GitHub-shaped source to
-    sync this from, so unlike Repository there's no is_manual flag or
-    synthetic-id trick: every row here is manual. account_id is NOT NULL
-    (unlike Repository/Profile's nullable account_id, which is nullable
-    only for pre-account-era compatibility this table has no need for).
-    end_date left null means "current role", no separate is_current flag,
-    one source of truth for the same fact.
+    """A role the person held, entered by hand or read from an uploaded
+    resume. end_date left null means "current role".
 
-    No free-text `description` field on purpose (dropped in the same pass
-    that added ExperiencePoint's Qdrant indexing, see
-    scripts/migrate_experience_description_to_points.py for the one-time
-    backfill). A single paragraph is one blob that resume-building semantic
-    search can only take or leave whole. ExperiencePoint rows are the only
-    place detail goes, each one its own retrievable unit.
+    There is no free-text description: a paragraph is one blob that
+    resume-building search can only take or leave whole, so detail lives
+    in ExperiencePoint rows, each one its own retrievable unit.
     """
 
     __tablename__ = "experiences"
@@ -779,7 +763,8 @@ class JobPosting(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
-    # "pasted" | "url" | "screenshot" | "authenticated" | "mixed"
+    # "pasted" | "screenshot" | "mixed"; older rows may also say "url" or
+    # "authenticated", from when links were fetched
     source: Mapped[str] = mapped_column(String, index=True)
     external_id: Mapped[str] = mapped_column(String)
     company: Mapped[str] = mapped_column(String, index=True)
@@ -844,31 +829,6 @@ class JobPosting(Base):
     # saved before screenshot_paths existed.
     screenshot_path: Mapped[str | None] = mapped_column(String, nullable=True)
     screenshot_paths: Mapped[list | None] = mapped_column(JSON, nullable=True)
-
-
-class Detection(Base):
-    __tablename__ = "detections"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    posting_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"))
-    kind: Mapped[str] = mapped_column(String)
-    span: Mapped[str] = mapped_column(String)
-    snippet: Mapped[str] = mapped_column(Text)
-    detected_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-
-class MatchResult(Base):
-    __tablename__ = "match_results"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    posting_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"))
-    profile_id: Mapped[int] = mapped_column(ForeignKey("profiles.id"))
-    score: Mapped[float] = mapped_column(Float)
-    gaps_json: Mapped[list] = mapped_column(JSON, default=list)
-    bullets_json: Mapped[list] = mapped_column(JSON, default=list)
-    citations_json: Mapped[list] = mapped_column(JSON, default=list)
-    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
-    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class LLMCall(Base):
@@ -1059,53 +1019,3 @@ class AppSetting(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
-
-
-class AuthSource(Base):
-    """One stored login profile for fetching a job posting from a
-    login-walled site (Wellfound, LinkedIn, etc) on the account holder's
-    own behalf, via a real automated browser login
-    (app/ingest/jobs/auth_fetch.py, Playwright). Opt-in per source:
-    acknowledged_risk must be True to create a row, enforced in
-    app/api/auth_sources.py, not just a UI checkbox. Meant for a person's
-    own credentials on their own job search, not bulk scraping. The UI
-    carries a standing warning: automated login is fragile (breaks on any
-    site UI change, CAPTCHA, or 2FA), is against most sites' terms of
-    service, and can get the logged-in account flagged or banned. Use an
-    alternate account, never a primary one.
-
-    `encrypted_credentials` is a JSON-encoded {"username", "password"}
-    blob, encrypted the same way the ApiKey model above stores provider
-    credentials (app/core/crypto.py): never plaintext, never logged.
-    The three CSS selectors let a generic Playwright driver log into an
-    arbitrary site without hardcoding per-site scraping logic: the account
-    holder supplies them once, by inspecting the site's login form.
-    """
-
-    __tablename__ = "auth_sources"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
-    label: Mapped[str] = mapped_column(String)
-    # e.g. "wellfound.com". Advisory only (shown in the UI so a target URL
-    # can be checked against it before use), not enforced against the URL
-    # passed to fetch_job_url_authenticated at fetch time.
-    site_domain: Mapped[str] = mapped_column(String)
-    login_url: Mapped[str] = mapped_column(String)
-    username_selector: Mapped[str] = mapped_column(String)
-    password_selector: Mapped[str] = mapped_column(String)
-    submit_selector: Mapped[str] = mapped_column(String)
-    # Optional: a selector Playwright waits for after submit to know login
-    # actually succeeded (e.g. a nav element only shown when signed in).
-    # Empty means "just wait for navigation," a weaker signal.
-    post_login_wait_selector: Mapped[str | None] = mapped_column(String, nullable=True)
-    encrypted_credentials: Mapped[str] = mapped_column(Text)
-    masked_username: Mapped[str] = mapped_column(String)
-    acknowledged_risk: Mapped[bool] = mapped_column(default=False)
-    enabled: Mapped[bool] = mapped_column(default=True)
-    status: Mapped[str] = mapped_column(String, default="unknown")  # unknown|valid|invalid
-    last_checked_at: Mapped[dt.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_check_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -1,16 +1,14 @@
 """Job posting record: POST /compose takes any mix of pasted text, links
 and screenshots for one posting and works out what each piece is. The
-older single-input routes remain: paste text, fetch a public URL, upload a
-screenshot, or fetch a login-walled URL via a stored authenticated source
-(app/core/db/models.py's AuthSource, app/ingest/jobs/auth_fetch.py). Every path
-ends up as one JobPosting row, structured-extracted the same way
+single-input routes remain for pasted text and a single screenshot. Every
+path ends up as one JobPosting row, structured-extracted the same way
 (app/profile/job_extract.py), best-effort role-family resolved
 (app/profile/role_family.py), and best-effort indexed for semantic search
 (app/retrieval/index.py's index_job_posting).
 
 raw_text lands in JobPosting.raw_text_quarantined untouched regardless of
-which path produced it (typed by a human, scraped from a public page,
-transcribed by an LLM from a screenshot, or fetched from behind a login).
+which path produced it (typed by a human or transcribed by an LLM from a
+screenshot).
 This text must never be string-formatted into a prompt template or enter
 a system prompt; every extraction call passes it as its own separate
 user-role document instead.
@@ -23,32 +21,21 @@ import hashlib
 import logging
 import re
 from pathlib import Path
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
 from app.core.db import (
-    AuthSource,
-    Detection,
     JobPosting,
-    MatchResult,
     Resume,
     RoleFamily,
     get_db,
 )
 from app.core.settings import get_settings
-from app.ingest.jobs.auth_fetch import (
-    AuthFetchError,
-    AuthLoginFailedError,
-    AuthSourceNotFoundError,
-    fetch_job_url_authenticated,
-)
-from app.ingest.jobs.url_fetch import JobUrlFetchError, fetch_job_url
 from app.profile.job_extract import (
     JobExtraction,
     JobExtractionError,
@@ -177,13 +164,11 @@ def _create_posting_from_text(
     screenshot_paths: list[str] | None = None,
     extraction: JobExtraction | None = None,
 ) -> JobPosting:
-    """Shared core of every ingestion path (paste/url/screenshot/
-    authenticated): dedup by content hash, create the row, run extraction.
-    Raises HTTPException(422) on blank text. The caller-facing wrapper
-    for each entry point translates its own failure modes (a bad URL, an
-    unsupported image type, a failed login) into their own error before
-    ever reaching here, so a 422 from this function specifically always
-    means "the text we ended up with was empty."
+    """Shared core of the text-based ingestion paths: dedup by content
+    hash, create the row, run extraction. Raises HTTPException(422) on
+    blank text. Callers translate their own failure modes (an unsupported
+    image type, say) before reaching here, so a 422 from this function
+    always means "the text we ended up with was empty."
     """
     raw_text = raw_text.strip()
     if not raw_text:
@@ -351,71 +336,6 @@ def create_posting(body: JobPostingCreate, *, db: DbSession) -> JobPostingDetail
     return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
-class JobPostingFromUrl(BaseModel):
-    account_id: int
-    url: str
-
-
-@router.post("/from-url", response_model=JobPostingDetail)
-def create_posting_from_url(body: JobPostingFromUrl, *, db: DbSession) -> JobPostingDetail:
-    """Public-URL ingestion, no login (see app/ingest/jobs/url_fetch.py).
-    A page that needs login or renders via client-side JS will fail here
-    with a 422 explaining why; use /from-authenticated-url for a
-    login-walled source instead.
-    """
-    try:
-        title_guess, text = fetch_job_url(body.url)
-    except JobUrlFetchError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    posting = _create_posting_from_text(
-        account_id=body.account_id,
-        raw_text=text,
-        source="url",
-        external_id=body.url.strip(),
-        title=title_guess or None,
-        apply_url=body.url.strip(),
-    )
-    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-
-
-class JobPostingFromAuthUrl(BaseModel):
-    account_id: int
-    url: str
-    auth_source_id: int
-
-
-@router.post("/from-authenticated-url", response_model=JobPostingDetail)
-def create_posting_from_authenticated_url(
-    body: JobPostingFromAuthUrl,
-    *,
-    db: DbSession,
-) -> JobPostingDetail:
-    """Login-walled URL ingestion via a stored AuthSource
-    (app/core/db/models.py, app/api/auth_sources.py): a real automated browser
-    login, see app/ingest/jobs/auth_fetch.py's module docstring for the
-    risks.
-    """
-    try:
-        title_guess, text = fetch_job_url_authenticated(body.auth_source_id, body.url)
-    except AuthSourceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except AuthLoginFailedError as e:
-        raise HTTPException(status_code=502, detail=str(e)) from e
-    except AuthFetchError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    posting = _create_posting_from_text(
-        account_id=body.account_id,
-        raw_text=text,
-        source="authenticated",
-        external_id=body.url.strip(),
-        title=title_guess or None,
-        apply_url=body.url.strip(),
-    )
-    return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
-
-
 @router.post("/from-screenshot", response_model=JobPostingDetail)
 def create_posting_from_screenshot(
     account_id: int = Form(...),
@@ -479,9 +399,6 @@ def create_posting_from_screenshot(
 
 
 _URL_RE = re.compile(r"https?://[^\s<>\"'\]\)]+", re.IGNORECASE)
-# Links opened per add: one posting rarely spans more, and each one is a
-# real request (or a real browser login) against someone else's site.
-_MAX_LINKS = 3
 
 
 def _find_urls(*texts: str) -> list[str]:
@@ -494,32 +411,9 @@ def _find_urls(*texts: str) -> list[str]:
     return seen
 
 
-def _host(url: str) -> str:
-    host = (urlparse(url).hostname or "").casefold()
-    return host.removeprefix("www.")
-
-
-def _auth_source_for(db: Session, account_id: int, url: str) -> AuthSource | None:
-    """The account's enabled signed-in source whose domain the link is
-    on, so a LinkedIn link uses the LinkedIn login without anyone having
-    to pick it."""
-    host = _host(url)
-    if not host:
-        return None
-    sources = db.execute(
-        select(AuthSource).where(AuthSource.account_id == account_id, AuthSource.enabled)
-    ).scalars()
-    for source in sources:
-        domain = source.site_domain.strip().casefold()
-        domain = _host(domain) if "://" in domain else domain.removeprefix("www.")
-        if domain and (host == domain or host.endswith("." + domain)):
-            return source
-    return None
-
-
 class JobPostingComposed(JobPostingDetail):
-    # Inputs that could not be used (a link that would not open, say)
-    # while the rest still made a posting.
+    # Inputs that could not be used (screenshots that could not be read,
+    # say) while the rest still made a posting.
     warnings: list[str]
 
 
@@ -528,7 +422,6 @@ def compose_posting(
     account_id: int = Form(...),
     text: str = Form(""),
     links: str = Form(""),
-    open_links: bool = Form(False),
     files: list[UploadFile] | None = File(None),
     *,
     db: DbSession,
@@ -537,12 +430,8 @@ def compose_posting(
     and screenshots describing a single posting. Nobody has to say which
     kind they are giving; links are also picked out of the pasted text.
 
-    Links are only opened when open_links is set. An opened link uses the
-    account's signed-in source for that site when one exists (a real
-    browser login, see app/ingest/jobs/auth_fetch.py), otherwise a plain
-    public fetch. A link that fails to open becomes a warning as long as
-    something else gave usable text. The first link is kept as the apply
-    link either way.
+    Links are never opened. The first one is kept as the apply link, and
+    the posting itself has to come from the text or the screenshots.
     """
     warnings: list[str] = []
     urls = _find_urls(links, text)
@@ -567,27 +456,6 @@ def compose_posting(
         sections.append(text.strip())
         kinds.add("pasted")
 
-    if urls and open_links:
-        if len(urls) > _MAX_LINKS:
-            warnings.append(f"Only the first {_MAX_LINKS} links were opened.")
-        for url in urls[:_MAX_LINKS]:
-            source = _auth_source_for(db, account_id, url)
-            try:
-                if source is not None:
-                    _, page_text = fetch_job_url_authenticated(source.id, url)
-                    kinds.add("authenticated")
-                else:
-                    _, page_text = fetch_job_url(url)
-                    kinds.add("url")
-            except (JobUrlFetchError, AuthFetchError, AuthLoginFailedError) as e:
-                warnings.append(f"Could not read {url}: {e}")
-                continue
-            except AuthSourceNotFoundError:
-                warnings.append(f"Could not read {url}: its signed-in source is gone")
-                continue
-            labeled = len(urls) > 1 or bool(typed)
-            sections.append(f"Page at {url}:\n{page_text}" if labeled else page_text)
-
     extraction: JobExtraction | None = None
     if images:
         try:
@@ -609,15 +477,13 @@ def compose_posting(
             kinds.add("screenshot")
 
     if not sections:
-        if urls and not open_links:
+        if urls:
             detail = (
-                "Only a link was given. Turn on \"Open the link for me\", "
-                "or add the posting text or a screenshot."
+                "Only a link was given. Paste the posting text or add a "
+                "screenshot as well; the link is kept as the apply link."
             )
-        elif warnings:
-            detail = " ".join(warnings)
         else:
-            detail = "Add the posting text, a link, or a screenshot."
+            detail = "Add the posting text or a screenshot."
         raise HTTPException(status_code=422, detail=detail)
 
     raw_text = "\n\n".join(sections)
@@ -793,7 +659,7 @@ def _delete_qdrant_point(posting_id: int) -> None:
 def delete_posting(posting_id: int, *, db: DbSession) -> dict:
     """Removes the posting and everything derived from it: its required
     skills and other extracted fields live on the row itself, its search
-    vector, detections, match results and image files are removed too.
+    vector and image files are removed too.
     Resumes built for it are the person's own and stay in the library,
     only unlinked from the posting."""
     posting = db.get(JobPosting, posting_id)
@@ -801,8 +667,6 @@ def delete_posting(posting_id: int, *, db: DbSession) -> dict:
         raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
     images = _image_paths(posting)
     _delete_qdrant_point(posting_id)
-    db.execute(delete(Detection).where(Detection.posting_id == posting_id))
-    db.execute(delete(MatchResult).where(MatchResult.posting_id == posting_id))
     db.execute(
         update(Resume).where(Resume.job_posting_id == posting_id).values(job_posting_id=None)
     )

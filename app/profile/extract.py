@@ -13,11 +13,9 @@ so the UI can show "no README" instead of a retry-suggesting error.
 Does not walk the rest of the repo tree looking for something else to feed
 the model, for the same reason at a higher cost.
 
-Skills and links come back from one call, not two. Both read the same
-README with the same fallback chain, so asking separately sent every
-README twice and paid for it twice. `extract_repo_facts` is the real
-entrypoint; `extract_skills_from_repo`/`extract_links_from_repo` stay as
-thin wrappers for callers (and tests) that want one half of the answer.
+Skills and links come back from one call, `extract_repo_facts`: both
+read the same README with the same fallback chain, so one request covers
+both.
 
 What actually reaches the model is the cleaned README
 (`_clean_source_text`), not the raw one: badges, raw HTML, fenced code
@@ -439,17 +437,3 @@ def _extract_group(repos: list[Repository]) -> dict[int, RepoFacts]:
             links=_link_claims(entry.get("links", [])),
         )
     return facts
-
-
-def extract_skills_from_repo(repo: Repository) -> list[SkillClaim]:
-    """The skills half of extract_repo_facts(). Kept as its own function
-    for callers that want only skills; it is the same one call, so asking
-    for both halves separately costs one call, not two (the second one
-    hits app/core/llm.py's response cache)."""
-    return extract_repo_facts(repo).skills
-
-
-def extract_links_from_repo(repo: Repository) -> list[LinkClaim]:
-    """The links half of extract_repo_facts(), same one call and same
-    fallback chain (README → description → NoSourceTextError)."""
-    return extract_repo_facts(repo).links

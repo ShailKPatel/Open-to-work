@@ -24,8 +24,6 @@
 {% set T_HASH = "Hashing|SHA-256 over the trimmed text|The same posting from any path hashes the same." %}
 {% set T_WEIGHT = "Scoring|Pure Python, no LLM|Base: manifest 0.5, README 0.6, description 0.4, times LLM confidence.|Fork × 0.3. Recency: full for 6 months, then decays over 36 months to 0.3.|Volume: log-scaled on authored commits, saturating at 50." %}
 {% set T_ROLE = "Clustering|Nearest neighbour in the role_families collection (cosine)|Score ≥ 0.86: reuse that family.|Otherwise one call to the cheaper LLM names a new one, then it is embedded." %}
-{% set T_HTTPX = "HTTP fetch|httpx, 15s timeout, follows redirects|BeautifulSoup (html.parser) strips script, style, svg and iframe tags.|Text capped at 20,000 characters to bound LLM cost." %}
-{% set T_PLAYWRIGHT = "Browser automation|Playwright driving headless Chromium|30s navigation timeout, a fresh browser context per fetch.|Credentials are Fernet-decrypted in memory for this one fetch only." %}
 {% set T_TECTONIC = "PDF engine|Tectonic, a self-contained LaTeX engine|Fetches only the packages the document uses.|60s timeout per compile." %}
 {% set T_PYPDF = "Page counter|pypdf|Reads the real page count of the compiled PDF, not an estimate." %}
 {% set T_SEARCH = "Vector search|Query embedded with " ~ models.embedding ~ "|Searched in Qdrant with cosine similarity, filtered to your account." %}
@@ -77,7 +75,7 @@
         <div class="ex-diagram ex-overview" data-wires="overview">
           {{ ex.node('in-github', 'Input', 'GitHub', 'Repos, READMEs, manifests, commit stats.', 'branch', ext=true, area='grid-column:1;grid-row:1', tip=T_GITHUB) }}
           {{ ex.node('in-resume', 'Input', 'Resume file', 'PDF or image.', 'doc', ext=true, area='grid-column:1;grid-row:3') }}
-          {{ ex.node('in-job', 'Input', 'Job posting', 'Text, link, login-walled page or screenshot.', 'briefcase', ext=true, area='grid-column:1;grid-row:4') }}
+          {{ ex.node('in-job', 'Input', 'Job posting', 'Pasted text, its link, screenshots.', 'briefcase', ext=true, area='grid-column:1;grid-row:4') }}
 
           {{ ex.node('A', 'Layer A', 'GitHub sync', 'Saves your repos. Unchanged ones are skipped.', 'download', area='grid-column:2;grid-row:1', layer='github', tip=T_GITHUB) }}
           {{ ex.node('B', 'Layer B', 'Skill extraction', 'Finds the skills each repo shows.', 'spark', area='grid-column:2;grid-row:2', layer='extract', tip=T_BULK) }}
@@ -375,7 +373,7 @@ result    start jan 2022     <em># already set, kept</em>
           <div class="ex-meta">
             <span><b>Trigger</b> Jobs page</span>
             <span><b>Writes</b> JobPosting, RoleFamily, Qdrant job_postings and role_families</span>
-            <span><b>Code</b> app/api/job_postings.py · app/ingest/jobs/ · app/profile/job_extract.py · role_family.py</span>
+            <span><b>Code</b> app/api/job_postings.py · app/profile/job_extract.py · role_family.py</span>
           </div>
         </div>
       </header>
@@ -383,16 +381,12 @@ result    start jan 2022     <em># already set, kept</em>
       <div class="ex-panel">
         <div class="ex-scroll">
           <div class="ex-diagram ex-flow ex-cols-5" data-wires="flowD">
-            {{ ex.node('d-paste', 'Input', 'Paste text', 'POST /api/job-postings', 'doc', ext=true, area='grid-column:1;grid-row:1') }}
-            {{ ex.node('d-url', 'Input', 'Public URL', '/from-url', 'link', ext=true, area='grid-column:1;grid-row:2') }}
-            {{ ex.node('d-auth', 'Input', 'Login-walled URL', '/from-authenticated-url', 'lock', ext=true, area='grid-column:1;grid-row:3') }}
-            {{ ex.node('d-shot', 'Input', 'Screenshot', '/from-screenshot', 'image', ext=true, area='grid-column:1;grid-row:4') }}
+            {{ ex.node('d-paste', 'Input', 'Pasted text', 'The description and its link. The link is saved, never opened.', 'doc', ext=true, area='grid-column:1;grid-row:2') }}
+            {{ ex.node('d-shot', 'Input', 'Screenshots', 'Pasted, dropped or picked, alongside any text.', 'image', ext=true, area='grid-column:1;grid-row:4') }}
 
-            {{ ex.node('d-fetchurl', 'Fetch', 'httpx + BeautifulSoup', 'GET the page, strip markup to visible text.', 'download', errs=['422 under 200 chars'], area='grid-column:2;grid-row:2', tip=T_HTTPX) }}
-            {{ ex.node('d-fetchauth', 'Fetch', 'Playwright login', 'Fresh headless Chromium: fill selectors, read one page, close.', 'lock', errs=['404 source', '502 login failed'], area='grid-column:2;grid-row:3', tip=T_PLAYWRIGHT) }}
             {{ ex.node('d-shotllm', 'LLM (vision)', 'Transcribe + extract', 'One call returns the text and every field, so step 4 is skipped.', 'image', errs=['422 bad image'], area='grid-column:2;grid-row:4', tip=T_VISION) }}
 
-            {{ ex.node('d-hash', '1 · Normalize', 'SHA-256 content hash', 'Trimmed text. Fetched pages capped at 20,000 chars.', 'hash', area='grid-column:3;grid-row:2', tip=T_HASH) }}
+            {{ ex.node('d-hash', '1 · Normalize', 'SHA-256 content hash', 'Trimmed text, so the same posting always hashes the same.', 'hash', area='grid-column:3;grid-row:2', tip=T_HASH) }}
             {{ ex.node('d-dedupe', '2 · Decision', 'Seen this hash?', 'The same text from any path is one posting.', 'split', variant='decision', area='grid-column:3;grid-row:3') }}
             {{ ex.node('d-dup', 'Short-circuit', 'Existing posting', 'Returned as-is. No second LLM call.', 'loop', area='grid-column:3;grid-row:4') }}
 

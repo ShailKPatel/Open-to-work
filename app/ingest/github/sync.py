@@ -1,7 +1,5 @@
-"""sync_account(username) -> list[Repository]
-
-Fetches repos, README, manifests, and authorship stats; upserts into SQLite
-by github_id. Skips README/manifest/stats refetch when pushed_at is
+"""GitHub sync: fetches repos, README, manifests, and authorship stats,
+and upserts them into SQLite by github_id. Skips README/manifest/stats refetch when pushed_at is
 unchanged since the last sync (cache hit); the cheap repo-list call still runs
 every time to detect what changed, and is also what finds new repos.
 
@@ -21,7 +19,6 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
-import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -35,8 +32,6 @@ from app.ingest.github.cancellation import clear as clear_cancel
 from app.ingest.github.cancellation import is_cancelled
 from app.ingest.github.client import GitHubClient
 from app.ingest.github.manifests import MANIFEST_FILENAMES, parse_dependencies
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -243,50 +238,21 @@ def sync_account_progress(
     account_id: int | None = None,
     run_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Generator twin of sync_account() for the SSE progress endpoint:
-    yields dicts as each stage happens instead of returning once at the end.
-    Same upsert logic, duplicated rather than shared with sync_account()
-    below so the plain (non-streaming) path used by the CLI and by existing
-    mocked tests stays untouched.
+    """Syncs every repo of `username`, yielding a progress event per stage:
 
-    Stages yielded, in order:
       {"stage": "checking_profile", "username": ...}
       {"stage": "listing_repos", "total_hint": int}
-      {"stage": "repo_progress", "index": int, "total_hint": int, "name": str,
-       "cache_hit": bool}  (repeated)
-      {"stage": "done", "total_repos": int, "fetched": int, "cache_hits": int}
+      {"stage": "repo_progress", "index", "total_hint", "name", "cache_hit"}  (repeated)
+      {"stage": "done", "total_repos", "fetched", "cache_hits"}
 
-    Or, if GitHub starts blocking us partway through a big account (rate
-    limit / secondary rate limit hit mid-batch, after some repos already
-    committed): {"stage": "rate_limited", "completed": int, "total_hint":
-    int, "detail": str} instead of "done". The repos processed before the
-    block are already committed to SQLite (per-repo db.commit() above, not
-    batched), so nothing already fetched is lost; this just tells the
-    caller how much of the batch actually landed so it can say "3 of 8
-    saved, try again later" instead of a bare "sync failed". A 404/401/etc
-    mid-batch is not this (those aren't "try again later", they're real
-    errors), so only rate-limit-shaped exceptions are caught here;
-    everything else still propagates to the caller's existing error
-    handling.
+    A rate limit partway through ends with {"stage": "rate_limited", ...}
+    instead of "done"; every repo before it is already committed, so the
+    caller can report "3 of 8 saved". Other GitHub errors propagate.
 
-    Or, if the caller asks to stop mid-batch (run_id given, and
-    app.ingest.github.cancellation.request_cancel(run_id) gets called from
-    another request while this generator is running): {"stage":
-    "cancelled", "completed": int, "total_hint": int} instead of "done".
-    Checked once per repo, before starting the next one, same granularity
-    as the rate-limit path, so the repo currently in flight still finishes
-    and stays committed, but no further repos start.
-
-    Caller's responsibility: pass a run_id that's unique to THIS attempt,
-    not reused across separate syncs (e.g. a fresh UUID generated
-    client-side per click of "Sync", not a fixed id like a repo's own id).
-    The cancellation registry is a bare id->flag set with no notion of
-    "which attempt": if a cancel flag is left set after this generator
-    already finished on its own (a request_cancel arriving just after the
-    last check, too late to matter) and the SAME run_id gets reused for a
-    brand new sync later, that new sync will see the leftover flag and
-    cancel itself immediately. A fresh id per attempt makes this
-    structurally impossible; reusing one is a real footgun.
+    With a run_id, a cancel requested through
+    app/ingest/github/cancellation.py stops the run before the next repo
+    and ends with {"stage": "cancelled", ...}. The run_id must be unique
+    per attempt: a leftover flag would cancel a later run that reused it.
     """
     client = client or GitHubClient()
     db = get_db()
@@ -332,28 +298,6 @@ def sync_account_progress(
     yield {"stage": "done", "total_repos": total, "fetched": fetched, "cache_hits": cache_hits}
 
 
-def sync_single_repo(
-    repo_full_name: str,
-    attribution_username: str,
-    client: GitHubClient | None = None,
-    account_id: int | None = None,
-) -> SyncSummary:
-    """Fetches and upserts exactly one repo ("owner/name"), for a project
-    someone contributed to but doesn't own, where syncing the whole owning
-    account would pull in repos that aren't theirs. Commit attribution
-    (commits_authored/last_commit_at) is credited to attribution_username,
-    not the repo's owner; pass the account's own GitHub username here.
-    """
-    client = client or GitHubClient()
-    db = get_db()
-    try:
-        gh_repo = client.get_repo(repo_full_name)
-        hit = _save(db, gh_repo, client, attribution_username, account_id)
-    finally:
-        db.close()
-    return SyncSummary(total_repos=1, fetched=0 if hit else 1, cache_hits=1 if hit else 0)
-
-
 def sync_single_repo_progress(
     repo_full_name: str,
     attribution_username: str,
@@ -361,15 +305,9 @@ def sync_single_repo_progress(
     account_id: int | None = None,
     run_id: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Generator twin of sync_single_repo(): same event vocabulary as
-    sync_account_progress() (checking_profile / listing_repos /
-    repo_progress / done) so the sync-sources UI can drive one progress
-    component for both a whole-account sync and a single-repo sync,
-    total_hint is always 1 here. Only one unit of work here (one repo), so
-    "stop" only has one moment to take effect: before that fetch starts,
-    not after, since there's nothing partial to preserve once it's
-    underway. Same run_id-uniqueness caveat as
-    sync_account_progress(); see its docstring.
+    """Syncs one repo ("owner/name") with the same events as
+    sync_account_progress, for a project the person contributed to but does
+    not own. Commits are credited to attribution_username, not the owner.
     """
     client = client or GitHubClient()
     yield {"stage": "checking_profile", "username": attribution_username}
@@ -399,31 +337,45 @@ def sync_single_repo_progress(
     }
 
 
+class SyncRateLimitedError(Exception):
+    """GitHub stopped a blocking sync partway; the repos before it are saved."""
+
+
+def _run_to_end(events: Iterator[dict[str, Any]]) -> SyncSummary:
+    for event in events:
+        if event["stage"] == "rate_limited":
+            raise SyncRateLimitedError(event["detail"])
+        if event["stage"] == "done":
+            return SyncSummary(
+                total_repos=event["total_repos"],
+                fetched=event["fetched"],
+                cache_hits=event["cache_hits"],
+            )
+    raise RuntimeError("sync ended without a result")
+
+
 def sync_account(
     username: str,
     include_forks: bool = True,
     client: GitHubClient | None = None,
     account_id: int | None = None,
 ) -> SyncSummary:
-    """account_id is optional: a sync isn't required to belong to an
-    account (e.g. looking up someone else's public profile out of
-    curiosity). When given, every repo this run touches gets stamped with
-    it, so the projects page can filter to "my repos" only.
-    """
-    client = client or GitHubClient()
-    db = get_db()
-    fetched = 0
-    cache_hits = 0
-    total = 0
-    try:
-        for gh_repo in client.user_repos(username, include_forks=include_forks):
-            total += 1
-            hit = _save(db, gh_repo, client, username, account_id)
-            if hit:
-                cache_hits += 1
-            else:
-                fetched += 1
-            logger.info("%s %s", "cache-hit" if hit else "fetched", gh_repo.full_name)
-    finally:
-        db.close()
-    return SyncSummary(total_repos=total, fetched=fetched, cache_hits=cache_hits)
+    """Blocking form of sync_account_progress, for the command line. When
+    account_id is given, every repo the run touches is stamped with it."""
+    return _run_to_end(
+        sync_account_progress(username, include_forks, client=client, account_id=account_id)
+    )
+
+
+def sync_single_repo(
+    repo_full_name: str,
+    attribution_username: str,
+    client: GitHubClient | None = None,
+    account_id: int | None = None,
+) -> SyncSummary:
+    """Blocking form of sync_single_repo_progress."""
+    return _run_to_end(
+        sync_single_repo_progress(
+            repo_full_name, attribution_username, client=client, account_id=account_id
+        )
+    )

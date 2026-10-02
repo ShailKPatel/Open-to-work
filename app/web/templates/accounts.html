@@ -324,7 +324,7 @@
         // username was given (non-technical signup), nothing to sync,
         // so skip straight to the profile they'll fill in by hand.
         if (isNew && account.github_username) {
-          window.location.href = '/sync?new=1';
+          window.location.href = '/monitor/sync?new=1';
         } else {
           window.location.href = '/home';
         }

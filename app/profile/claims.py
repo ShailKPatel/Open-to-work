@@ -21,7 +21,7 @@ class SkillClaim:
 @dataclass
 class LinkClaim:
     """One outbound link found in a repo's README/description text; see
-    app/profile/extract.py's extract_links_from_repo. `label` is a short
+    app/profile/extract.py's extract_repo_facts. `label` is a short
     human-readable title ("GitHub", "YouTube Video", "Live Demo"), not an
     enum: same free-text reasoning as ProjectLink.label.
     """

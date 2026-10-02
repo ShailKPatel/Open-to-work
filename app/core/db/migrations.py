@@ -578,6 +578,19 @@ def _migrate_month_year_dates(engine: Engine) -> None:
         conn.commit()
 
 
+# Tables an older database may still carry that no model declares any more.
+# auth_sources held encrypted job-site logins, so it is dropped rather than
+# left on disk; the other two were never written to.
+_RETIRED_TABLES = ("auth_sources", "detections", "match_results")
+
+
+def _drop_retired_tables(engine: Engine) -> None:
+    with engine.connect() as conn:
+        for table in _RETIRED_TABLES:
+            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        conn.commit()
+
+
 def init_db() -> None:
     _backup_sqlite_file(get_settings().database_url)
     engine = get_engine()
@@ -604,3 +617,4 @@ def init_db() -> None:
     _migrate_education_extras_columns(engine)
     _migrate_month_year_date_column_types(engine)
     _migrate_month_year_dates(engine)
+    _drop_retired_tables(engine)

@@ -152,8 +152,8 @@ def test_delete_posting(tmp_path):
     assert client.get(f"/api/job-postings/{created['id']}").status_code == 404
 
 
-def test_delete_posting_cleans_up_what_points_at_it(tmp_path):
-    from app.core.db import Detection, Resume
+def test_delete_posting_unlinks_resumes_built_for_it(tmp_path):
+    from app.core.db import Resume
 
     _reset_db(tmp_path)
     account_id = _make_account()
@@ -163,7 +163,6 @@ def test_delete_posting_cleans_up_what_points_at_it(tmp_path):
     ).json()
 
     db = get_db()
-    db.add(Detection(posting_id=created["id"], kind="injection", span="0:5", snippet="x"))
     resume = Resume(
         account_id=account_id,
         filename="tailored.pdf",
@@ -178,7 +177,6 @@ def test_delete_posting_cleans_up_what_points_at_it(tmp_path):
     assert client.delete(f"/api/job-postings/{created['id']}").status_code == 200
 
     db = get_db()
-    assert db.query(Detection).filter_by(posting_id=created["id"]).count() == 0
     kept = db.get(Resume, resume_id)
     assert kept is not None
     assert kept.job_posting_id is None
@@ -370,48 +368,6 @@ def test_unmarking_applied_clears_date_and_notes(tmp_path):
     assert body["applied_notes"] is None
 
 
-def test_create_from_url_fetches_and_saves(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    account_id = _make_account()
-
-    monkeypatch.setattr(
-        "app.api.job_postings.fetch_job_url",
-        lambda url: ("Backend Engineer at Acme", "We need a backend engineer with Python."),
-    )
-
-    client = _client()
-    resp = client.post(
-        "/api/job-postings/from-url",
-        json={"account_id": account_id, "url": "https://acme.example/careers/1"},
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["source"] == "url"
-    assert body["title"] == "Backend Engineer at Acme"
-    assert body["apply_url"] == "https://acme.example/careers/1"
-    assert body["raw_text"] == "We need a backend engineer with Python."
-
-
-def test_create_from_url_maps_fetch_error_to_422(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    account_id = _make_account()
-
-    from app.ingest.jobs.url_fetch import JobUrlFetchError
-
-    def _raise(url):
-        raise JobUrlFetchError("could not reach that page")
-
-    monkeypatch.setattr("app.api.job_postings.fetch_job_url", _raise)
-
-    client = _client()
-    resp = client.post(
-        "/api/job-postings/from-url",
-        json={"account_id": account_id, "url": "https://unreachable.example"},
-    )
-    assert resp.status_code == 422
-
-
 def test_create_from_screenshot_saves_transcription_and_image(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     account_id = _make_account()
@@ -467,45 +423,6 @@ def test_create_from_screenshot_unsupported_type_422s(tmp_path, monkeypatch):
         files={"file": ("doc.pdf", b"%PDF-fake", "application/pdf")},
     )
     assert resp.status_code == 422
-
-
-def test_create_from_authenticated_url_maps_login_failure_to_502(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    account_id = _make_account()
-
-    from app.ingest.jobs.auth_fetch import AuthLoginFailedError
-
-    def _raise(source_id, url):
-        raise AuthLoginFailedError("bad credentials")
-
-    monkeypatch.setattr("app.api.job_postings.fetch_job_url_authenticated", _raise)
-
-    client = _client()
-    resp = client.post(
-        "/api/job-postings/from-authenticated-url",
-        json={"account_id": account_id, "url": "https://site.example/job", "auth_source_id": 1},
-    )
-    assert resp.status_code == 502
-
-
-def test_create_from_authenticated_url_success(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    account_id = _make_account()
-
-    monkeypatch.setattr(
-        "app.api.job_postings.fetch_job_url_authenticated",
-        lambda source_id, url: ("Role at Site", "Full posting text behind the login wall."),
-    )
-
-    client = _client()
-    resp = client.post(
-        "/api/job-postings/from-authenticated-url",
-        json={"account_id": account_id, "url": "https://site.example/job", "auth_source_id": 1},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["source"] == "authenticated"
-    assert body["title"] == "Role at Site"
 
 
 def test_extraction_stores_annual_salary_bounds(tmp_path, monkeypatch):
@@ -600,11 +517,9 @@ def test_compose_text_only_is_a_paste(tmp_path):
     assert body["warnings"] == []
 
 
-def test_compose_link_only_without_opening_asks_for_more(tmp_path, monkeypatch):
+def test_compose_link_only_asks_for_the_posting_text(tmp_path):
     _reset_db(tmp_path)
     account_id = _make_account()
-    called = []
-    monkeypatch.setattr("app.api.job_postings.fetch_job_url", lambda url: called.append(url))
 
     resp = _client().post(
         "/api/job-postings/compose",
@@ -612,87 +527,32 @@ def test_compose_link_only_without_opening_asks_for_more(tmp_path, monkeypatch):
     )
 
     assert resp.status_code == 422
-    assert "Open the link for me" in resp.json()["detail"]
-    assert called == []
+    assert "Only a link was given" in resp.json()["detail"]
 
 
-def test_compose_opens_link_found_in_text(tmp_path, monkeypatch):
+def test_compose_keeps_link_from_text_as_apply_url(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     account_id = _make_account()
-    monkeypatch.setattr(
-        "app.api.job_postings.fetch_job_url",
-        lambda url: ("Page title", "We need a backend engineer with Python."),
-    )
+    _fake_extraction(monkeypatch)
 
     resp = _client().post(
         "/api/job-postings/compose",
         data={
             "account_id": str(account_id),
-            "text": "see https://acme.example/jobs/1.",
-            "open_links": "true",
+            "text": "Backend engineer, Python. Apply at https://acme.example/jobs/1.",
         },
     )
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["apply_url"] == "https://acme.example/jobs/1"
-    # Typed text plus a page is a mix, and the page is labeled in the record.
-    assert body["source"] == "mixed"
-    assert "Page at https://acme.example/jobs/1:" in body["raw_text"]
-    assert "We need a backend engineer with Python." in body["raw_text"]
+    assert body["source"] == "pasted"
+    assert body["warnings"] == []
 
 
-def test_compose_uses_signed_in_source_for_matching_domain(tmp_path, monkeypatch):
+def test_compose_screenshots_with_text_and_link(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     account_id = _make_account()
-    from app.core.db import AuthSource
-
-    db = get_db()
-    source = AuthSource(
-        account_id=account_id, label="Spare", site_domain="www.wellfound.com",
-        login_url="https://wellfound.com/login", username_selector="#u",
-        password_selector="#p", submit_selector="#s", encrypted_credentials="x",
-        masked_username="s***", acknowledged_risk=True, enabled=True,
-    )
-    db.add(source)
-    db.commit()
-    source_id = source.id
-    db.close()
-
-    used = []
-
-    def _auth(sid, url):
-        used.append(sid)
-        return "", "Full posting text behind the login wall."
-
-    monkeypatch.setattr("app.api.job_postings.fetch_job_url_authenticated", _auth)
-    monkeypatch.setattr(
-        "app.api.job_postings.fetch_job_url",
-        lambda url: (_ for _ in ()).throw(AssertionError("public fetch used")),
-    )
-
-    resp = _client().post(
-        "/api/job-postings/compose",
-        data={
-            "account_id": str(account_id),
-            "links": "https://jobs.wellfound.com/role/123",
-            "open_links": "true",
-        },
-    )
-
-    assert resp.status_code == 200
-    assert used == [source_id]
-    assert resp.json()["source"] == "authenticated"
-
-
-def test_compose_screenshots_with_text_and_a_failing_link(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    account_id = _make_account()
-    from app.ingest.jobs.url_fetch import JobUrlFetchError
-
-    def _fail(url):
-        raise JobUrlFetchError("needs login")
-
     seen = {}
 
     def _read(images, context_text="", account_id=None):
@@ -700,7 +560,6 @@ def test_compose_screenshots_with_text_and_a_failing_link(tmp_path, monkeypatch)
         seen["context"] = context_text
         return _fake_screenshot_result()
 
-    monkeypatch.setattr("app.api.job_postings.fetch_job_url", _fail)
     monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_images", _read)
 
     resp = _client().post(
@@ -708,7 +567,6 @@ def test_compose_screenshots_with_text_and_a_failing_link(tmp_path, monkeypatch)
         data={
             "account_id": str(account_id),
             "text": "Referred by a friend, salary 20 LPA. https://acme.example/jobs/9",
-            "open_links": "true",
         },
         files=[
             ("files", ("one.png", b"png-1", "image/png")),
@@ -724,7 +582,7 @@ def test_compose_screenshots_with_text_and_a_failing_link(tmp_path, monkeypatch)
     assert body["company"] == "Acme"
     assert body["apply_url"] == "https://acme.example/jobs/9"
     assert "Python required." in body["raw_text"]
-    assert len(body["warnings"]) == 1 and "needs login" in body["warnings"][0]
+    assert body["warnings"] == []
     assert Path(body["screenshot_path"]).exists()
     assert body["image_count"] == 2
 
@@ -790,26 +648,3 @@ def test_compose_rejects_non_image_attachment(tmp_path):
     )
 
     assert resp.status_code == 422
-
-
-def test_compose_nothing_usable_reports_the_link_failure(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    account_id = _make_account()
-    from app.ingest.jobs.url_fetch import JobUrlFetchError
-
-    def _fail(url):
-        raise JobUrlFetchError("returned HTTP 403")
-
-    monkeypatch.setattr("app.api.job_postings.fetch_job_url", _fail)
-
-    resp = _client().post(
-        "/api/job-postings/compose",
-        data={
-            "account_id": str(account_id),
-            "links": "https://acme.example/jobs/2",
-            "open_links": "true",
-        },
-    )
-
-    assert resp.status_code == 422
-    assert "HTTP 403" in resp.json()["detail"]

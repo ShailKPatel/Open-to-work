@@ -59,7 +59,7 @@
        'Not everything lives on GitHub. Add past jobs bullet by bullet, education, skills, contact details and links, or upload an old resume and let it fill those in for you.',
        ['Old resume as PDF or image', 'What you typed is never overwritten', 'Star your best projects and skills'], ''),
       ('briefcase', 'Save jobs you want', 'Add job listings',
-       'Found a job you like? Paste the text, drop in the link, upload a screenshot, or fetch a page you have to sign in to see. It pulls out the salary, seniority, years of experience and every skill they ask for.',
+       'Found a job you like? Paste the text and its link, or add screenshots. It pulls out the salary, seniority, years of experience and every skill they ask for.',
        ['Same posting is only saved once', 'Shows the skills you are missing', 'Track where you applied'], ''),
       ('db', 'Nothing is forgotten', 'It keeps the memory',
        'Your projects, skills, saved jobs and every resume it writes stay in a local database. Come back next month and it all is still there, ready for the next application.',
@@ -88,7 +88,7 @@
         ('user', 'Add anything by hand', 'Projects, experience bullets, education, skills, contact details and links.'),
       ]),
       ('Track jobs', [
-        ('briefcase', 'Save a job four ways', 'Paste the text, a link, a screenshot, or a page you have to sign in to see.'),
+        ('briefcase', 'Save a job in one box', 'Paste the text and its link, add screenshots, or both.'),
         ('filter', 'Get the details', 'Salary, seniority, years of experience and each required skill.'),
         ('gauge', 'See your skill gaps', 'What a job asks for that you lack, and which skills your saved jobs want most.'),
         ('check', 'Track applications', 'Mark a job applied, with a date and notes.'),
@@ -211,7 +211,7 @@
         ('Frontend', [('jinja', 'Jinja2', 'server-rendered pages'), ('tailwindcss', 'Tailwind CSS', 'styling'), ('alpinedotjs', 'Alpine.js', 'interactivity, no build step')]),
         ('AI', [('litellm', 'LiteLLM', 'one API for every LLM provider'), ('huggingface', 'sentence-transformers', 'embeddings, run locally'), ('pytorch', 'PyTorch (CPU)', 'runs the embedding model')]),
         ('Data', [('sqlite', 'SQLite', 'app data'), ('qdrant', 'Qdrant', 'vector search')]),
-        ('Ingestion', [('github', 'GitHub API', 'repos, READMEs, commits'), ('playwright', 'Playwright', 'job pages behind a login')]),
+        ('Ingestion', [('github', 'GitHub API', 'repos, READMEs, commits')]),
         ('Output and infra', [('latex', 'LaTeX (Tectonic)', 'resume PDF'), ('docker', 'Docker Compose', 'one-command setup')]),
         ('Testing and quality', [('pytest', 'pytest', 'unit, API and live tests, with coverage'), ('ruff', 'Ruff and mypy', 'linting and type checks')]),
       ] %}
@@ -262,11 +262,10 @@
               {{ ex.node('browser', 'Frontend', 'Web pages', 'Server-rendered HTML. No Node, no build step.', logos=['jinja', 'tailwindcss', 'alpinedotjs'], area='grid-column:3;grid-row:1') }}
 
               {{ ex.node('github', 'Outside', 'GitHub API', 'Public repos work without a token.', logos=['github'], ext=true, area='grid-column:1;grid-row:2') }}
-              {{ ex.node('ingest', 'Ingestion', 'Fetchers', 'Repos, job pages and resume files come in here.', logos=['playwright'], area='grid-column:2;grid-row:2') }}
+              {{ ex.node('ingest', 'Ingestion', 'Fetchers', 'Repos, job postings and resume files come in here.', 'download', area='grid-column:2;grid-row:2') }}
               {{ ex.node('api', 'Web server', 'FastAPI', 'Routes, background jobs, live progress.', logos=['python', 'fastapi'], area='grid-column:3;grid-row:2') }}
               {{ ex.node('resume', 'Resume builder', 'LaTeX to PDF', 'The LLM writes JSON, a template turns it into a PDF.', logos=['latex'], area='grid-column:4;grid-row:2') }}
 
-              {{ ex.node('jobsites', 'Outside', 'Job sites', 'Career pages and job boards.', 'briefcase', ext=true, area='grid-column:1;grid-row:3') }}
               {{ ex.node('embed', 'Embeddings', 'sentence-transformers', models.embedding ~ ' on CPU. No API key.', logos=['huggingface'], area='grid-column:2;grid-row:3', tip='Embedding model|' ~ models.embedding ~ '|Runs locally via sentence-transformers, downloaded once into the hf_cache volume.|Vector size follows the model: 768 for the default bge-base.|The same model embeds every Qdrant collection and every search query.') }}
               {{ ex.node('sqlite', 'Database', 'SQLite', 'Stores all app data.', logos=['sqlite', 'sqlalchemy'], area='grid-column:3;grid-row:3', tip='Database|SQLite via SQLAlchemy|WAL journal mode plus a 30s busy timeout.|Every LLM call is logged here with model, tokens and cost.') }}
               {{ ex.node('llm', 'LLM gateway', 'LiteLLM', 'One call path: cached and budget-capped.', logos=['litellm'], area='grid-column:4;grid-row:3', tip='LLM models|Any LiteLLM model, picked on Manage APIs|A cheaper model for repo skills and links, a stronger one for extraction and resume writing.|Monthly budget: $' ~ ('%g' | format(models.budget)) ~ ', checked before every call.') }}
@@ -969,7 +968,6 @@
         { from: 'browser', fs: 'bottom', to: 'api', ts: 'top', label: 'HTTP' },
         { from: 'api', fs: 'left', to: 'ingest', ts: 'right' },
         { from: 'ingest', fs: 'left', to: 'github', ts: 'right' },
-        { from: 'ingest', fs: 'left', to: 'jobsites', ts: 'right' },
         { from: 'ingest', fs: 'bottom', to: 'embed', ts: 'top', label: 'text' },
         { from: 'embed', fs: 'bottom', to: 'qdrant', ts: 'top', label: 'vectors' },
         { from: 'api', fs: 'bottom', to: 'sqlite', ts: 'top', label: 'rows' },
@@ -1067,11 +1065,7 @@
         { from: 'c-mexp', fs: 'left', to: 'c-out', ts: 'right' },
       ],
       flowD: [
-        { from: 'd-paste', fs: 'right', to: 'd-hash', ts: 'top', label: 'text as-is' },
-        { from: 'd-url', fs: 'right', to: 'd-fetchurl', ts: 'left' },
-        { from: 'd-fetchurl', fs: 'right', to: 'd-hash', ts: 'left' },
-        { from: 'd-auth', fs: 'right', to: 'd-fetchauth', ts: 'left' },
-        { from: 'd-fetchauth', fs: 'right', to: 'd-hash', ts: 'left', tf: 0.85 },
+        { from: 'd-paste', fs: 'right', to: 'd-hash', ts: 'left', label: 'text as-is' },
         { from: 'd-shot', fs: 'right', to: 'd-shotllm', ts: 'left' },
         { from: 'd-shotllm', fs: 'right', to: 'd-dedupe', ts: 'left', tf: 0.8 },
         { from: 'd-hash', fs: 'bottom', to: 'd-dedupe', ts: 'top' },

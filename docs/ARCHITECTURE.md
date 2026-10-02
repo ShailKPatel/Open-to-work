@@ -10,13 +10,12 @@ One FastAPI process serves both the JSON API and server-rendered pages. SQLite h
 | --- | --- |
 | `settings.py` | Fixed local paths and URLs. Only `GITHUB_TOKEN` is read from `.env`; tests and Docker Compose override the rest through the process environment. |
 | `app_settings.py` | Settings picked in the app, stored in `app_settings`: the bulk and quality models (Gemini by default) and the global monthly budget. |
-| `db.py` | SQLAlchemy models, engine, `get_db()`, `init_db()`. |
+| `db/` | SQLAlchemy models (`models.py`), engine and `get_db()` (`engine.py`), `init_db()` and in-place migrations (`migrations.py`). |
 | `llm.py` | The only module that calls an LLM provider. |
 | `llm_providers.py` | Provider registry: credential fields, which fields are secret, a cheap validation request, and the extra LiteLLM arguments. |
 | `api_keys_store.py` | Encrypted provider credentials, dispatch key resolution, and the recheck pass for keys that ran out of quota. |
 | `key_cooldown.py` | How long an exhausted key waits before a recheck is worth making, read from the provider's own refusal (Gemini in detail, a default interval elsewhere). |
 | `key_refresh.py` | Background thread that runs the due-key recheck at startup and on an interval. |
-| `auth_sources_store.py` | Encrypted login profiles for authenticated job fetching. |
 | `crypto.py` | Fernet encryption. The key comes from `APP_SECRET_KEY`, or from `data/.secret_key` (created with 0600 permissions). |
 | `embeddings.py` | Local sentence-transformers embeddings (`EMBEDDING_MODEL`, fixed in code), cached by content hash and model in `embedding_cache`. `embed(model_name=)` overrides the model for callers whose vectors never meet the retrieval ones; only the skill map does. |
 | `jobs.py` | In-process registry of background jobs (daemon threads with pollable state). |
@@ -63,11 +62,6 @@ The cheap check lists models rather than generating, so it proves a credential i
 - `cancellation.py`: an in-process set of cancelled run ids, checked before each repository. A run id must be unique for each sync attempt; the UI generates a UUID per click, so a leftover flag can't cancel a later sync.
 - `source_parser.py`: parses a username, profile URL, or repository URL into a `ParsedSource`.
 - `manifests.py`: extracts dependency names from `requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `Cargo.toml`, `Gemfile`, `pom.xml`, and `build.gradle(.kts)`.
-
-### `app/ingest/jobs`
-
-- `url_fetch.py`: fetches with httpx and extracts text with BeautifulSoup. A page with less than 200 characters of text after markup is stripped is rejected, since that usually means a login wall or a client-rendered page. Text is capped at 20,000 characters.
-- `auth_fetch.py`: uses headless Chromium through Playwright. Each fetch opens a fresh browser context, logs in with the stored selectors, reads one page, and closes the browser. No cookies or sessions are kept.
 
 ### `app/profile`
 
@@ -123,23 +117,21 @@ The cheap check lists models rather than generating, so it proves a credential i
 
 ### `app/api` and `app/web`
 
-Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts`, `/sync/github`, and `/health`. Page routes return a template, and an Alpine.js component on the page loads its data from the API.
+Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts` and `/health`. Page routes return a template, and an Alpine.js component on the page loads its data from the API.
 
 | Pages | |
 | --- | --- |
 | `/` | Profile picker and first-run setup |
 | `/home` | Dashboard |
-| `/sync` | Initial GitHub sync |
-| `/portfolio`, `/portfolio/{projects,skills,experience,education,contact,resume}` | Portfolio sections and detail pages |
+| `/portfolio`, `/portfolio/{projects,skills,experience,education,contact-links,resume}` | Portfolio sections and detail pages |
 | `/portfolio/resume/build` | Resume generation for a posting |
-| `/jobs`, `/jobs/analytics` | Job postings (one composer for any mix of text, links and screenshots) and the insights dashboard |
-| `/monitor` | Rate limits and LLM usage |
-| `/settings`, `/settings/sources`, `/settings/auth-sources`, `/apis` | Settings, GitHub sources, login profiles, API keys with models and budget |
+| `/jobs`, `/jobs/analytics` | Job postings (one composer for pasted text and screenshots; links are kept as the apply link, never opened) and the insights dashboard |
+| `/monitor`, `/monitor/sync` | Rate limits and LLM usage; GitHub sources, their syncs and skill extraction |
+| `/settings`, `/apis` | Settings, API keys with models and budget |
 
 | API prefix | Router |
 | --- | --- |
 | `/accounts` | `accounts.py` |
-| `/sync/github` | `main.py` (sync, SSE stream, cancel) |
 | `/api/projects` | `projects.py` |
 | `/api/skills` | `skills.py` |
 | `/api/experience` | `experience.py` |
@@ -150,7 +142,6 @@ Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts`, `/
 | `/api/resume-build` | `resume_build.py` |
 | `/api/job-postings` | `job_postings.py` |
 | `/api/job-analytics` | `job_analytics.py` |
-| `/api/auth-sources` | `auth_sources.py` |
 | `/api/api-keys` | `api_keys.py` |
 | `/api/app-settings` | `app_settings.py` |
 | `/api/monitor` | `monitor.py` |
@@ -175,14 +166,12 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `profiles` | Aggregated skill snapshots (`skills_json`). |
 | `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is globally unique. |
 | `role_families` | Canonical job-title clusters. |
-| `auth_sources` | Encrypted login profiles and CSS selectors. |
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |
 | `app_settings` | One row per setting picked in the app: bulk model, quality model, monthly budget. A missing row means the default. |
 | `llm_calls` | Cached responses plus cost, token, and latency records for every call, each tagged with the feature (`purpose`) that spent it. |
 | `rate_limit_events` | Event log: rate limits, budget caps, keys swapped out or exhausted, runs stopped. |
 | `embedding_cache` | Embedding vectors by content hash and model. |
 | `skill_map_cache` | One stored skill-map layout per account, with the fingerprint of the skills it was built from. |
-| `detections`, `match_results` | Reserved; not yet written to. |
 
 Archived projects, roles, education entries and skills stay on their pages under an Archived section but are left out of resume building, the portfolio counts, the skill map and job analytics. A skill whose every project and role is archived counts as archived too.
 
@@ -193,7 +182,7 @@ Archived projects, roles, education entries and skills stay on their pages under
 - **Tiers.** Bulk-tier models handle high-volume, per-item work. Quality-tier models handle single-document extraction and resume generation.
 - **Source of truth.** SQLite is authoritative. Qdrant writes are best-effort: a failure is logged and never rolls back a database write.
 - **Route prefixes.** A JSON route that shares a path with a page must use the `/api` prefix. FastAPI matches routes in registration order, so a collision silently hides one of them.
-- **Schema changes.** A new column needs a migration function in `db.py` that follows the `PRAGMA table_info` pattern.
-- **Test isolation.** Tests set `QDRANT_URL=":memory:"`, use a temporary SQLite file, and inject fakes through `_completion_fn`, `_encode_fn`, `_run_fn`, and `_playwright_fn`.
+- **Schema changes.** A new column needs a migration function in `app/core/db/migrations.py` that follows the `PRAGMA table_info` pattern.
+- **Test isolation.** Tests set `QDRANT_URL=":memory:"`, use a temporary SQLite file, and inject fakes through `_completion_fn`, `_encode_fn`, and `_run_fn`.
 - **Alpine `:disabled`.** Wrap dynamic lookups in boolean attribute bindings: `:disabled="Boolean(obj[item.id])"`. Alpine 3 renders the attribute as present for a falsy property lookup.
 - **Filtered inputs.** Live-filtered inputs must write the DOM value directly: `$event.target.value = form.x = sanitize($event.target.value)`. Otherwise, a keystroke that sanitizes to the unchanged model value stays visible.
