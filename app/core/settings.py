@@ -32,11 +32,9 @@ class _DotEnvAllowlist(DotEnvSettingsSource):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Optional. Raises the GitHub API rate limit from 60/hr to 5,000/hr.
-    # Public repo, README, manifest, and commit-stats data is readable
-    # without auth. There is no GITHUB_USERNAME setting: the username is a
-    # per-request input (POST /sync/github body, or a CLI arg), not
-    # deployment config.
+    # Optional. Raises the GitHub API rate limit from 60/hr to 5,000/hr;
+    # public data is readable without it. Which accounts to sync is chosen
+    # in the app, not configured here.
     github_token: str = ""
 
     database_url: str = "sqlite:///./data/open_to_work.db"

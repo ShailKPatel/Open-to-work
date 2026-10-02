@@ -1,66 +1,29 @@
-"""Folds a resume's LLM-extracted skills, work-history and education
-entries into an account's actual profile data (the `skills`,
-`experiences` and `education` tables), once extraction succeeds (see
-app/profile/resume_ingest.py's run_extraction). Different dedup rules, matching how each table
-already treats duplicates elsewhere in this codebase:
+"""Merges what was extracted from a resume into the account's profile,
+once extraction succeeds (resume_ingest.py's run_extraction). Every row
+a resume creates or matches is recorded as a ResumeProfileLink.
 
-Skills: reuses the resume's own `tags` (already "concrete skills, tools,
-technologies, and practices" per resume_extract.py's prompt, no separate
-"skills" field needed). A tag whose casefolded name already exists
-anywhere for this account (a manual `Skill` row, or evidence from a
-project or experience, the exact same union GET /api/skills reads) is
-left alone, no new row, no new evidence source; a name that's
-new becomes a freestanding `Skill` row pointing back at the resume it
-came from, so the Skills page can say where it was found, unless the
-skill review (app/profile/skill_review.py) rejects it first. No fuzzy
-matching, casefold-equal is equal, the same rule this app already uses
-everywhere skills get deduplicated.
+Skills: the resume's tags. A name the account already has anywhere
+(casefolded, as GET /api/skills groups) is skipped; a new one becomes a
+freestanding Skill pointing at the resume, unless the skill review
+rejects it. Roles merge first, so a skill tied to a role is never also
+freestanding.
 
-Experience: matched on (company, title), NOT on dates, each folded by
-_org_key/_title_key: casefolded, punctuation and spacing ignored, and
-the company's parenthetical note and legal suffix dropped, since one
-extraction reads "RestaurantPilot.ai" where the next reads
-"RestaurantPilot.ai (Restaurant Tech)", or "Acme Inc." for "Acme". Two
-resumes (or a resume and a hand-entered role) describing "Engineer at
-Acme" are the same line item even if one states different start/end
-dates or none at all; a promotion at the same company is a different
-title, so a legitimately different, second row. A role left off resumes
-(exclude_from_resume) still matches, so a resume naming it again adds
-points to it instead of bringing it back as a new row. A matching
-existing row gets its location/start_date/end_date filled in from the
-resume ONLY where that field was previously null, so a date entered by
-hand (or by an earlier resume) never gets silently overwritten; a new
-(company, title) pair becomes a new Experience row. Skills the resume
-ties to a role become that row's experience evidence (evidence_type
-"resume"), skipping names it already has or the skill review rejects.
-Roles merge before the tags do, so a skill tied to a role is never also
-added as freestanding; a freestanding skill an earlier resume added is
-removed once a role's evidence carries the same name.
+Experience: matched on (company, title), not dates, after folding case,
+punctuation, parenthetical notes and legal suffixes ("Acme Inc." is
+"Acme"). A promotion is a new title and so a new row; an archived role
+still matches. A match only fills fields that are empty, so nothing
+entered earlier is overwritten. Skills the resume ties to a role become
+that role's evidence.
 
-Education: same shape as Experience, matched on (institution, degree),
-folded the same way as (company, title), not on dates. A matching row only gets its
-location/start_date/end_date/grade filled where previously null, and its
-details only when it has none yet (a list the account holder edited is
-never merged into); a new
-(institution, degree) pair becomes a new Education row.
+Education: the same, on (institution, degree). details are filled only
+when the entry has none.
 
-Every experience, bullet point, experience skill, education entry and
-freestanding skill a resume creates or matches is recorded as a
-ResumeProfileLink row, so what a resume contributed can be read back
-later without re-extracting it.
-
-Contact: every extracted email, phone and link that the account doesn't
-already have is added; one it already has is skipped, never edited,
-except that a saved link with no name (a bare "website") takes the name
-the resume gives the same URL, e.g. "Portfolio".
-Emails match casefolded; phones match on their digits alone, ignoring a
-country-code prefix present on only one side; links match on the URL
-with scheme, "www.", query/fragment and trailing slash stripped,
-casefolded, and a GitHub link to Account.github_username counts as
-already present. The first email/phone an account ever gets becomes its
-primary, same as adding one on the Links page. Location fills
-Account.contact_location only when it's empty. The name is never
-merged: first/last name are set at signup and only change by hand.
+Contact: emails, phones and links the account lacks are added; existing
+ones are never edited, except that an unnamed link takes the resume's
+label for the same URL. Emails match casefolded, phones on digits with
+or without a country code, links on the URL without scheme, "www.",
+query or trailing slash. The first email or phone becomes primary.
+Location fills only an empty field; the name is never changed.
 """
 
 from __future__ import annotations

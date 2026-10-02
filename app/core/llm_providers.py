@@ -149,26 +149,17 @@ def is_blocked_detail(detail: str | None) -> bool:
 
 
 def validate_credentials(provider: str, credentials: dict) -> tuple[CheckStatus, str]:
-    """Cheap check using a list-models or reachability endpoint, never a
-    billed completion call. "unknown" means "couldn't check" (network
-    error, or Bedrock's no-cheap-call case below); never treat that the
-    same as a confirmed-bad "invalid" key. "rate_limited" means the check
-    call itself got a 429: the credentials may be fine, just out of quota
-    right now, and the returned detail keeps the provider's own words
-    because that is where the reset information is (app/core/key_cooldown.py
-    reads it). "blocked" means the provider forbade the credential
-    outright, which no waiting fixes. Real dispatch (app/core/llm.py) can
-    also set any of these, via record_dispatch_outcome().
+    """Checks a credential with a list-models or reachability call, never a
+    billed completion. Returns one of:
 
-    A key whose generation quota is spent still answers a list-models call
-    with 200, so "valid" here means "this credential is live", not "this
-    key has quota left"; only a real dispatch can tell the latter. That is
-    what the cooldown in app/core/key_cooldown.py exists for.
-
-    AWS Bedrock has no such lightweight call without a full AWS SigV4
-    client (boto3 isn't a dependency here), so its credentials are
-    accepted as "unknown" and only proven right/wrong by a real dispatch
-    later.
+    - valid: the credential is live. Not proof of remaining quota, since a
+      spent key still lists models.
+    - invalid: rejected.
+    - rate_limited: the check itself got a 429; the detail keeps the
+      provider's words for app/core/key_cooldown.py.
+    - blocked: the provider forbade the credential outright.
+    - unknown: could not check (network error, or Bedrock, which has no
+      cheap call without boto3). Never treated as invalid.
     """
     fields = fields_for(provider)
     missing = [f.label for f in fields if not credentials.get(f.name, "").strip()]

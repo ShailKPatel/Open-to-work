@@ -310,19 +310,13 @@
         return ((account.first_name[0] || '') + (account.last_name[0] || '')).toUpperCase();
       },
 
-      // Picking an EXISTING account from the picker goes straight to
-      // /home, the KPI dashboard for "your account and what data you've
-      // fetched". The one-time /sync onboarding walkthrough is only for a
-      // just-created account (see submitCreate below), not shown again
-      // on every return visit.
+      // An existing account goes straight to /home; only a new one is sent
+      // to the sync page first.
       selectAccount(account, { isNew = false } = {}) {
         localStorage.setItem('otw_account_id', account.id);
         localStorage.setItem('otw_account_name', account.first_name);
-        // ?new=1 tells /sync to kick GitHub linking off immediately on
-        // load instead of waiting for a second, redundant button press:
-        // Continue on this form already was that confirmation. No GitHub
-        // username was given (non-technical signup), nothing to sync,
-        // so skip straight to the profile they'll fill in by hand.
+        // ?new=1 starts the first sync on arrival. Without a GitHub
+        // username there is nothing to sync, so go to the profile instead.
         if (isNew && account.github_username) {
           window.location.href = '/monitor/sync?new=1';
         } else {

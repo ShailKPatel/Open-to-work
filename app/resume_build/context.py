@@ -1,26 +1,11 @@
-"""Builds the deterministic parts of a resume's template data: header
-(name/location/contact/social links), experience (every role, compulsory
-and sequential: job history isn't something an LLM gets to pick and
-choose from, for accuracy reasons), and
-education (every entry, same posture, a degree history is a fact record
-too, not a curated list). This is the "plug data into the right slot"
-layer: none of this goes through the LLM,
-it's a straight DB-to-template mapping.
+"""The parts of a resume's template data that never go through the LLM:
+the header (name, location, contact, links), every role and every
+education entry, mapped straight from the database.
 
-Every role's *points* here are still the raw, complete list, every point
-this account ever added, not curated. app/resume_build/orchestrator.py is
-what narrows each role's points down to the best-matching subset via
-semantic search (app/retrieval/search.py's search_experience_points,
-scoped per role) before rendering, an account's actual point history
-still lives here in full: this module always tells the truth about what
-exists, only the orchestrator decides what to show for a given job.
-
-Projects, skills, technologies, and summary are NOT built here: those
-need either semantic search over a job posting (projects, skills) or an
-LLM pass (summary), which belong to the orchestrator, not this module.
-This module's output is one piece of the dict
-app/resume_build/latex.py's render_resume() expects; the caller merges
-it with whatever the orchestrator produces for the rest.
+Roles come with all their points; orchestrator.py narrows those to the
+best matches for the job. Projects, skills and the summary are built by
+the orchestrator too, and merged with this module's output before
+latex.py's render_resume().
 """
 
 from __future__ import annotations

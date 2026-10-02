@@ -1,25 +1,13 @@
-"""Comes back for the keys that were out of quota.
+"""Rechecks keys that ran out of quota.
 
-An exhausted key is the one failure in this app that repairs itself: the
-quota window rolls over and the key works again. Without something to
-notice that, the /apis page keeps showing a dead key, and dispatch keeps
-sorting a perfectly good key last (app/core/api_keys_store.py's
-_dispatch_order) until somebody clicks a button. This module is that
-something: one daemon thread that runs the "due" recheck pass at startup
-and then every REFRESH_INTERVAL, which covers both cases the user cares
-about, a machine that gets restarted daily and one left running for a
-week.
+A quota window rolls over by itself, so an exhausted key usually works
+again later. One daemon thread runs the "due" recheck pass at startup and
+then every REFRESH_INTERVAL_SECONDS, so both a machine restarted daily and one
+left running for a week catch it. /apis offers the same pass as a button
+(POST /api/api-keys/recheck).
 
-Deliberately a thread and an interval rather than a cron entry or a task
-queue: this is a single-process local app, the pass is a handful of cheap
-HTTP GETs, and nothing outside the process needs to know it happened. The
-same pass is exposed as a button on /apis (POST /api/api-keys/recheck) for
-anyone who does not want to wait for the next tick.
-
-Blocked and rejected keys are never in this pass. That is the whole point
-of keeping them in their own status: a revoked key cannot come back on its
-own, so asking the provider about it every half hour is noise, and the
-answer would not change until someone fixes it in the provider's console.
+Rejected and blocked keys are never in this pass: they cannot recover on
+their own, so they wait until someone rechecks them.
 """
 
 from __future__ import annotations

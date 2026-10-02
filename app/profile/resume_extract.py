@@ -1,26 +1,14 @@
-"""Multimodal resume analysis. Given the raw bytes of an uploaded resume,
-asks the LLM (via app.core.llm's multimodal message helpers) to read the
-document and return skill/keyword tags, the kinds of roles it reads as
-suited for, a short summary, its work-history entries (company, title,
-location, dates, bullet points, skills used there), its education entries (institution, degree,
-location, dates), and its header contact block (name, location, every
-email, phone number, portfolio site, social link and certificate link,
-each link named). Quality tier, not bulk: this runs once per
-upload/reprocess, not across a batch of repos, and misreading a person's
-own resume is a worse failure than the extra cost of the better model.
+"""Reads an uploaded resume with a multimodal LLM call and returns its
+tags, suitable roles, a summary, work history (with points and skills
+per role), education and header contact details. Quality tier: it runs
+once per upload, and misreading someone's own resume costs more than the
+better model.
 
-`tags`, `experiences`, `education` and `contact` are also what
-app/profile/resume_profile_merge.py folds into the account's actual
-Skill/Experience/Education/contact tables after a successful extraction, on top
-of the per-resume copy kept on the Resume row itself, see that module's
-docstring for the dedup rules.
+resume_profile_merge.py merges the result into the account's profile.
 
-Supports the formats app/core/llm.py's multimodal helpers actually cover: a
-PDF (sent as a file part) or an image (sent as an image part). Anything
-else, .docx, .txt, etc., raises UnsupportedResumeType rather than guessing
-at a parse; there is no local document-text extractor in this codebase
-yet, and sending arbitrary bytes to the LLM as if they were a PDF would
-either fail outright or silently misread.
+PDFs are sent as a file part and images as an image part. Any other
+format raises UnsupportedResumeType rather than sending bytes the model
+would misread.
 """
 
 from __future__ import annotations

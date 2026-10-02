@@ -1,11 +1,8 @@
-"""Detected-projects page backend: list synced repos with skill-extraction
-status, and manual (re)process triggers.
+"""Projects: synced and hand-added repos with their skill-extraction
+status, edits, links, and the (re)process triggers.
 
-Extraction isn't bundled into POST /sync/github. A sync just fetches; this
-router is the separate, explicit step that turns fetched repos into skill
-evidence. Keeps /sync/github's duration predictable regardless of how many
-repos need an LLM call, and matches the page split: /sync fetches, /projects
-shows and manages extraction.
+Syncing only fetches; extraction is this router's separate step, so a
+sync takes the same time however many repos need an LLM call.
 """
 
 from __future__ import annotations

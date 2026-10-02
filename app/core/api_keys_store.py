@@ -1,41 +1,21 @@
-"""Multi-provider LLM credential store. Nothing outside this module ever
-decrypts a credential for display: listing keys reads
-`masked_preview` only; app/core/llm.py is the one caller that gets a real
-decrypted dict back (via resolve_dispatch_keys()), to hand straight to
-litellm and never log or return.
+"""Stored LLM provider keys. Credentials are encrypted at rest; listing
+keys reads only masked_preview, and only app/core/llm.py receives a
+decrypted credential, through resolve_dispatch_keys(). Each provider's
+credential fields are defined in app/core/llm_providers.py.
 
-Multiple rows per provider are allowed (rotation, differently-labeled
-keys); at most one is `is_active` per provider at a time, enforced here,
-not by a DB constraint (see app/core/db/models.py's ApiKey docstring). Each
-provider's credential shape lives in app/core/llm_providers.py, not here:
-this module just encrypts/decrypts/masks whatever dict that module hands
-it.
+A provider may have several keys, at most one of them active.
+resolve_dispatch_keys(provider, account_id) drops disabled keys and keys
+restricted to other accounts, and orders the rest best first: no recent
+complaint, then the active key, then by id. Status only reorders: a key
+rate-limited an hour ago is likely fine now, so it goes last rather than
+being dropped, and record_dispatch_outcome() marks it valid once it
+answers.
 
-Dispatch key resolution (resolve_dispatch_keys) is per (provider,
-account_id): a key can be `enabled=False` (manually switched off,
-regardless of is_active) or restricted to a list of accounts
-(allowed_account_ids, empty = every account). Disabled keys and keys
-restricted to other accounts are dropped outright; what's left comes
-back as an ordered list, best first, and app/core/llm.py walks down it,
-trying the next one whenever the provider blames the key it just used
-(quota exhausted, credential rejected, model not permitted). An empty
-list means nothing usable exists for this provider+account.
-
-The order is: keys the provider hasn't recently complained about first,
-then the `is_active` one, then by id. Status is a hint, not a filter: a
-key marked `rate_limited` an hour ago is very likely fine now, so it
-goes last rather than getting dropped, and one that answers again is
-marked `valid` again by record_dispatch_outcome().
-
-Exhaustion is tracked with a clock, not just a flag. A key refused on
-quota grounds gets `exhausted_at`, the `exhaustion_kind` the provider
-named, and a `retry_at` planned by app/core/key_cooldown.py, and it sorts
-behind a key whose cooldown has already elapsed so dispatch spends its
-first attempt on the one more likely to answer. recheck_keys() is the
-pass that comes back for them, run at startup and on an interval by
-app/core/key_refresh.py and from the buttons on /apis. Keys the provider
-rejected or blocked outright are never in that pass: no amount of waiting
-un-revokes a key, so they wait for someone to ask (scope="blocked").
+A key refused on quota gets exhausted_at, exhaustion_kind and a retry_at
+from app/core/key_cooldown.py. recheck_keys() revisits keys whose retry_at
+has passed, at startup and on an interval (app/core/key_refresh.py) or
+from /apis. Rejected or blocked keys are only rechecked on request, since
+waiting does not fix them.
 """
 
 from __future__ import annotations
@@ -522,29 +502,15 @@ def record_dispatch_outcome(
     detail: str | None = None,
     provider_detail: str | None = None,
 ) -> None:
-    """Called by app/core/llm.py right after a real dispatch that used
-    this exact key (one of the ids resolve_dispatch_keys() returned). A
-    provider failure updates status between manual checks, same as a
-    manual 'check status' would.
+    """Records what a real dispatch with this key revealed, from
+    app/core/llm.py. The only place quota is learned from a real call, so a
+    rate_limited outcome also plans the cooldown from provider_detail, the
+    provider's own text (app/core/key_cooldown.py); detail is the message
+    shown on /apis. blocked means the provider refused the credential itself
+    and is never rechecked automatically.
 
-    This is the only place that learns about quota from a real call, since
-    the cheap check cannot observe it, so a `rate_limited` outcome is also
-    where the cooldown gets planned. `detail` is the message shown on
-    /apis; `provider_detail` is the provider's own untranslated text,
-    passed separately because that is what app/core/key_cooldown.py reads
-    to work out which window was hit and when it rolls over.
-
-    `blocked` is for the provider refusing the credential itself
-    (suspended, revoked, its API not enabled). It is kept apart from
-    `invalid` and from a quota because it is the one outcome that will not
-    fix itself, so nothing rechecks it until someone asks.
-
-    A success only writes when there is something to undo: a key that
-    was marked `rate_limited`, `invalid` or `blocked` and has just
-    answered anyway goes back to `valid` with its cooldown cleared,
-    because the quota reset or the outage passed and the /apis page
-    shouldn't keep showing a dead key that works. A key already `valid`
-    needs no write on every call.
+    A success writes only when it undoes something: a key marked
+    rate_limited, invalid or blocked that just answered goes back to valid.
     """
     now = _now()
     db = get_db()

@@ -1,71 +1,27 @@
-"""Page-fit loop: land a resume on exactly the page count the user asked
-for, one page or two, never over it and never under it.
+"""Page-fit loop: lands a resume on exactly the page count asked for, one
+or two pages, never over and never under. Four levers, cheapest first:
 
-Four levers, applied in that order of preference, because they cost
-very different things:
+1. Typography. layout.py exposes a ladder of density rungs (margins,
+   spacing, type size). A rung costs one Tectonic run, no LLM call, and
+   loses nothing. Usually the only lever needed.
+2. Reserve content. The orchestrator passes along what the model did not
+   pick: other candidate projects, points and skills. When the resume is
+   too short even at the loosest rung, these are added back, largest
+   first. All of it is the account's own data, so no model call.
+3. Rewording, once, when the tightest rung still overflows by a line or
+   two. The model reads the PDF and proposes shorter wordings, each
+   checked by _is_faithful_shortening (shorter, keeps at least two fifths
+   of the original, no new numbers or words, no em dash) and dropped if
+   it fails.
+4. Cutting, last and one item at a time: a skill, then a project point,
+   then an experience point if the role keeps at least one. Roles and
+   their company, title and dates are never cut. One model call returns
+   an ordered plan, applied entry by entry with a recompile between each.
 
-1. Typography. app/resume_build/layout.py turns the templates' geometry
-   (margins, section spacing, bullet spacing, type size, leading) into
-   parameters and exposes a ladder of density rungs. Re-rendering one
-   rung tighter or one rung looser changes roughly a third of a page of
-   capacity across the full ladder, costs one Tectonic run, costs no LLM
-   tokens at all, and loses nothing the account holder actually wrote.
-   This is the first thing tried in both directions, and usually the
-   only thing needed.
-
-2. Content the account already has but the resume is not showing. The
-   orchestrator hands over a `reserve` alongside the resume data: the
-   candidate projects the model did not pick, the per-role experience
-   points the retrieval step narrowed away, the candidate skills that
-   did not make the cut. When the content is too thin to reach the
-   target even at the loosest rung, these get added back, largest first
-   so the count converges quickly. Nothing here is invented, it is all
-   the account's own already-grounded data, which is why this step needs
-   no LLM call and carries no hallucination risk.
-
-3. Rewording, when the tightest rung still overflows. Often the overflow
-   is a line or two: a bullet whose last two words wrap onto a line of
-   their own, a summary one clause too long. One look at the PDF, and the
-   model names specific bullets (or the summary) with a shorter wording
-   of each. Every shorter wording is checked before it is used
-   (_is_faithful_shortening): it must actually be shorter, keep at least
-   two fifths of the original, bring in no number and no word the
-   original did not already have, and carry no em dash. A wording that
-   fails the check is dropped, never trusted. Runs once per fit: it loses
-   nothing, but it is a model call with the PDF attached, and if one round
-   of rewording did not get there, cutting is the next step anyway.
-
-4. Cutting real content. Only when the tightest rung still overflows
-   after rewording.
-   This is the one lever that loses something, so it runs last and one
-   cut at a time, always the smallest kind available, in a fixed
-   priority order the model is told to follow: a skill first (cheapest,
-   most flexible), then one project bullet point (dropping the whole
-   project only if that empties it), then one experience bullet point
-   last and only if a role would still keep at least one. An experience
-   role itself is never removable, and neither is its company, title or
-   dates, since job history is compulsory.
-
-One look at the PDF, several cuts: the model returns an ordered plan
-(weakest item first) and this module applies it one entry at a time,
-re-compiling between each, only going back for a new plan when the plan
-runs out. Cuts are still applied one at a time for the same reason as
-before, since each one may be the one that fits; what changed is that a
-resume needing three of them costs one call with the PDF attached instead
-of three.
-
-Why the model sees the compiled PDF rather than a character count:
-overflow is a layout fact, not a text-length fact. One long word or one
-extra bullet can push a whole section onto a second page while a much
-longer summary does not. Only a look at the actual rendered page tells
-which cut would help versus which would trim words for no layout benefit
-at all.
-
-Picking the *loosest* rung that still fits, rather than the first one
-that fits, is what stops a resume from falling below its target. For a
-one-page target it means the page is filled rather than half empty; for
-a two-page target it means the second page carries as much as it can
-instead of trailing off after three lines.
+The model sees the compiled PDF rather than a character count because
+overflow is a layout fact: one long word can push a section onto a new
+page while a longer summary does not. The loosest rung that still fits
+is chosen, so pages come out full rather than half empty.
 """
 
 from __future__ import annotations

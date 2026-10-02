@@ -1,46 +1,22 @@
-"""The piece that actually builds a tailored resume: pulls a job posting's
-text, runs it through app/retrieval/search.py (semantic search over the
-account's skill evidence and, elsewhere, experience points), asks the LLM
-to pick a project subset + write a summary + write project bullets, and
-hands everything to app/resume_build/latex.py to render into a .tex
-string. The LLM never sees or writes LaTeX, by design:
-it returns plain JSON (summary/projects/skills), and
-app/resume_build/context.py + this module's own assembly step are what
-place that JSON into the right template slots.
+"""Builds a resume tailored to one job posting. Semantic search
+(app/retrieval/search.py) narrows the account's projects, skills and
+experience points to candidates; one LLM call picks among them and
+writes the summary and project bullets as JSON; latex.py renders it. The
+model never sees or writes LaTeX.
 
-Experience *roles* are never touched by the LLM: every role
-(company/title/dates), in full, in order, is compulsory (job history
-isn't something an LLM gets to curate), enforced
-structurally by app/resume_build/context.py's build_experience_context()
-rather than by asking the model nicely. Each role's *points*, though, ARE
-chosen per job, in two steps. _select_experience_points() below runs a
-per-role search_experience_points() query (app/retrieval/search.py)
-against the job text and keeps a pool of that role's best-matching
-points, falling back to the role's full point list if the search comes
-back empty (infra hiccup, or points not yet indexed). The model then
-picks from each pool by number, up to a per-role limit set by the page
-count or by the account holder, in the same call that writes the rest.
-It may reword a picked point to fit the job; a rewording that states a
-number the original does not falls back to the account's own text, and a
-role the model gives nothing usable for keeps its best retrieval matches
-(_pick_experience_points()).
+Roles are never chosen by the model: every role, with its company, title
+and dates, is always included (context.py's build_experience_context).
+Points are chosen per job: _select_experience_points keeps each role's
+best search matches (or all its points if search returns nothing), and
+the model picks from that pool by number. A reworded point that states a
+number the original does not falls back to the original text.
 
-Untrusted job text handling: the
-posting's raw_text_quarantined never enters the system prompt (that's a
-fixed constant string below, zero interpolation) and is never folded into
-the same string as instructions. It's its own separate user-role message,
-clearly labeled as reference material, with an explicit instruction not
-to follow anything inside it as a command. The candidate evidence handed
-to the model (project descriptions, skill names) all comes from this
-account's own already-verified data, not from the posting.
+The posting text never enters the system prompt. It is sent as its own
+user message, labelled as reference material not to be followed.
 
-Grounding against hallucination: the model can only select from the
-candidate project ids and candidate skill names it was actually given.
-Anything it returns outside those sets is dropped by this module before
-rendering, never trusted outright. This is also why a project's LLM-
-written bullets are the only trusted-from-the-model content for that
-project; name/url/date always come from this account's own Repository
-row, never from what the model echoed back.
+The model can only select from the ids and names it was given; anything
+else it returns is dropped. Project names, URLs and dates always come
+from the Repository row, never from the model.
 """
 
 from __future__ import annotations

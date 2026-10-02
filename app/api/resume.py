@@ -521,24 +521,15 @@ def _job_text_for_edit(resume: Resume, db: Session) -> str:
 
 @router.post("/{resume_id}/edit", response_model=ResumeItem)
 def edit_resume(resume_id: int, body: ResumeEditRequest, *, db: DbSession) -> ResumeItem:
-    """Prompt-driven edit: the account holder writes a message describing
-    what to change, an LLM updates the resume's summary/projects/skills
-    to match (app/resume_build/orchestrator.py's edit_resume_content()),
-    grounded against this account's own real projects/skills exactly
-    like generating one from scratch. experience/education/header are
-    never touched (rebuilt fresh from the account's own data inside
-    edit_resume_content(), not sent to the LLM at all), and the compiled
-    template is fixed (whatever this resume already used, "onepage" by
-    default for a plain upload's first edit), so "facts change, layout
-    doesn't" holds structurally, not just by prompt instruction.
+    """Edits a resume from a written instruction (orchestrator.py's
+    edit_resume_content). Only the summary, projects and skills change,
+    grounded in the account's own data; experience, education and the header
+    are rebuilt from the profile and never sent to the model, and the
+    template stays the same.
 
-    A plain uploaded file that's never been edited before (content_json
-    still null) gets adopted first: build_resume_data_from_seed() builds
-    an initial structured version from its own extraction, seeded from
-    the account's real data the same grounded way, before this message's
-    edit is applied on top. The original uploaded file (stored_path) is
-    never touched by any of this; only compiled_path, a separate
-    artifact, changes.
+    An upload never edited before is first turned into structured content
+    from its own extraction (build_resume_data_from_seed). The uploaded file
+    is never modified; only compiled_path changes.
     """
     message = body.message.strip()
     if not message:

@@ -80,27 +80,14 @@ _API_KEY_PREFIXES = ("AIza", "sk-", "gsk_", "xai-", "hf_", "AKIA", "ya29.")
 
 
 def is_model_priced(model: str) -> bool:
-    """Whether LiteLLM can put a dollar figure on a call to this model.
+    """Whether LiteLLM can price a call to this model. Every budget is a sum
+    of LLMCall.cost_usd, and an unpriced call is recorded as $0.00, so such
+    a model spends real money while no cap ever trips.
 
-    Matters because every budget in this app is a sum over
-    `LLMCall.cost_usd`, and app/core/llm.py's _safe_completion_cost()
-    records 0.00 for a response it cannot price. A model LiteLLM has no
-    pricing entry for therefore spends real money while reading as free:
-    the monthly cap in complete() never trips, every per-key
-    budget_cap_usd never trips, and /monitor reports $0.00 all month. The
-    only trace is one log line per call.
-
-    Not a lookup in litellm.model_cost: that table is keyed inconsistently
-    for prefixed names and a membership test can disagree with the
-    function that actually prices a response. This runs the real pricing
-    call against a synthetic response with non-zero usage, so it cannot
-    drift from what dispatch will do. Offline, no network, no provider
-    key.
-
-    False for a model nobody can price *and* for one whose pricing is
-    genuinely zero, which a local Ollama model legitimately is. Callers
-    treat this as "budgets cannot see this model", which is true either
-    way, rather than as "this model is wrong".
+    Runs LiteLLM's real pricing function on a synthetic response rather than
+    looking the name up in litellm.model_cost, whose keys are inconsistent
+    for prefixed names. Offline, no key needed. Also False for a model that
+    is genuinely free (local Ollama); either way, budgets cannot see it.
     """
     try:
         import litellm

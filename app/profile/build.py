@@ -1,43 +1,24 @@
-"""build_profile(repos) -> Profile, the skill-profile entrypoint.
+"""Builds the skill profile from synced repos.
 
-Per repo: manifest-declared skills (free, deterministic) + README/description
-skills and project links (one bulk-tier LLM call for both, see extract.py
-for the fallback chain and NoSourceTextError). Before the per-repo loop,
-_prefetch_facts runs extract.py's batched pass, which covers several repos
-per call; a repo it answered needs no call of its own, and a repo it missed
-falls through to one, so nothing depends on the batched pass succeeding.
+Per repo: manifest skills (deterministic, free) plus README skills and
+links (one bulk-tier call, see extract.py). _prefetch_facts runs the
+batched pass first; any repo it misses gets its own call, so nothing
+depends on the batch succeeding.
 
-Each claim gets a weight from `weighting.compute_weight`
-(fork status, recency, commit volume, evidence type). Writes one
-`SkillEvidence` row per claim, then aggregates across repos into
-`Profile.skills_json` via noisy-OR: multiple independent pieces of evidence
-for the same skill raise confidence with diminishing returns, rather than a
-plain sum that could exceed 1.0 or a max that ignores corroboration.
+Each claim is weighted by weighting.compute_weight (fork, recency, commit
+volume, evidence type) and stored as a SkillEvidence row. Evidence for
+the same skill across repos combines by noisy-OR into
+Profile.skills_json: corroboration raises confidence with diminishing
+returns and never past 1.0.
 
-Fault isolation: one repo's LLM call failing (auth revoked, malformed
-input, an unexpected error specific to that repo) marks that repo
-"failed" and moves on without losing any other repo's already-computed
-evidence. Each repo commits independently, so a single exception can't
-lose the entire batch.
+A failure specific to one repo marks it "failed" and the batch moves on;
+each repo commits on its own. Running out of budget, rate limit or keys
+is different, since every remaining repo would fail the same way: that
+repo is marked "rate_limited" and the batch stops, leaving the rest
+pending for the next run.
 
-Rate limit / budget exhaustion, or running out of usable API keys, is not
-treated as "this repo failed"; it means every remaining repo in this
-batch is about to fail the same way. (A key dying is normally invisible
-here: app/core/llm.py switches to the next stored key and the call
-succeeds. This is the case where there is no next key.)
-Continuing would spend one doomed call per remaining repo and fill each
-with the same raw error. Instead, `BudgetExceededError`/`LLMRateLimitedError`
-(app/core/llm.py) are caught separately: that one repo is marked
-"rate_limited" with a clean message (not the raw exception), and the whole
-batch stops. Every repo not yet attempted is left as it was (usually still
-"pending"), so the next process-pending call picks up where this one
-stopped without re-spending on repos that already succeeded.
-
-Idempotent by default: a repo already `extracted` (or `no_signal`: no
-README/description, nothing changed since) is skipped on a normal call,
-so calling `build_profile` again doesn't re-spend LLM budget on repos
-that already succeeded. `force=True` (or `reprocess_repo`) bypasses that,
-for the UI's manual retry button.
+Repos already extracted, or with nothing to extract, are skipped unless
+force=True (the UI's retry), so a rerun does not spend twice.
 """
 
 from __future__ import annotations
@@ -131,28 +112,17 @@ def _process_repo(
     now: dt.datetime,
     prefetched: dict[int, RepoFacts] | None = None,
 ) -> bool:
-    """Mutates repo's status and this repo's SkillEvidence rows in place.
-    Never raises: every failure mode ends in a status, not an exception,
-    so the caller can commit unconditionally after this returns.
+    """Extracts one repo's skills and links, updating its status and evidence
+    rows. Never raises; every outcome ends as a status, so the caller can
+    commit afterwards. Returns True when the batch should stop (budget, rate
+    limit or keys exhausted), since every later repo would fail the same way.
 
-    Returns True if the caller should stop the whole batch now (rate
-    limit / budget exhaustion hit on this repo, since every repo after it
-    would fail the identical way) rather than continue to the next repo.
-    False otherwise, including the normal "this repo failed for its own
-    reasons, others might still succeed" case.
+    prefetched holds what the batched pass already got; a repo it missed
+    gets its own call.
 
-    `prefetched` is what the batched pass already got for this repo (see
-    extract.py's prefetch_repo_facts), if anything. A hit there means this
-    repo needs no call of its own; a miss falls through to one, so a group
-    whose batched call failed still gets processed normally.
-
-    Commits partway through, before calling extract_repo_facts. Not
-    optional. That call reaches core.llm.complete(), which opens its own
-    independent session to record the LLMCall row. If this function's own
-    session still had an uncommitted delete/insert pending at that point,
-    SQLite would deadlock by construction: the inner session waits on a
-    write lock this (outer) session holds, and this session can't release
-    it until the inner call returns.
+    Commits before calling the LLM: complete() records the call in its own
+    session, and SQLite would deadlock on a write lock this session still
+    held.
     """
     # A profile README repo saved as a project before the flag existed
     # moves out of the projects list the moment it is (re)processed.
@@ -296,58 +266,14 @@ def _prefetch_facts(db: Session, repos: list[Repository], force: bool) -> dict[i
 def build_profile(
     repos: list[Repository], now: dt.datetime | None = None, force: bool = False
 ) -> Profile:
-    now = now or dt.datetime.now(dt.UTC)
+    """Blocking form of build_profile_progress; returns the profile snapshot."""
+    profile_id = None
+    for event in build_profile_progress(repos, now, force):
+        profile_id = event.get("profile_id", profile_id)
     db = get_db()
     try:
-        prefetched = _prefetch_facts(db, repos, force)
-        for i, repo_ref in enumerate(repos):
-            # repo_ref may be detached (loaded in an earlier, now-closed
-            # session); mutating it directly wouldn't be tracked by this
-            # function's own session and would silently fail to persist.
-            # Re-fetch within this session so status changes actually commit.
-            repo = db.get(Repository, repo_ref.id)
-            if repo is None:
-                continue
-            if not force and repo.skill_extraction_status in _SKIP_STATUSES:
-                continue
-            try:
-                stop_batch = _process_repo(db, repo, now, prefetched)
-                db.commit()
-            except Exception:
-                # _process_repo shouldn't raise (it catches its own LLM
-                # errors); this is a last-resort net so a truly unexpected
-                # exception (e.g. a DB error) still doesn't lose the rest
-                # of the batch's already-committed repos.
-                logger.exception("unexpected error processing %s", repo.full_name)
-                db.rollback()
-                continue
-            _index_repo_evidence(db, repo)
-            if stop_batch:
-                # Rate limit / budget hit: every repo after this one
-                # would fail the identical way right now. Leave them
-                # untouched (still "pending" in the common case) rather
-                # than burn more doomed calls; the next process-pending
-                # call picks up exactly where this one stopped.
-                logger.warning(
-                    "stopping skill-extraction batch early at %s; %d repo(s) left untouched",
-                    repo.full_name,
-                    len(repos) - (i + 1),
-                )
-                break
-
-        db.commit()  # end any open read before review's nested LLM-call sessions
-        review_skill_evidence([r.account_id for r in repos])
-        evidence = list(
-            db.execute(
-                select(SkillEvidence).where(
-                    SkillEvidence.repo_id.in_([r.id for r in repos])
-                )
-            ).scalars()
-        )
-        profile = Profile(skills_json=_aggregate(evidence))
-        db.add(profile)
-        db.commit()
-        db.refresh(profile)
+        profile = db.get(Profile, profile_id)
+        assert profile is not None
         return profile
     finally:
         db.close()
@@ -356,32 +282,28 @@ def build_profile(
 def build_profile_progress(
     repos: list[Repository], now: dt.datetime | None = None, force: bool = False
 ) -> Iterator[dict[str, Any]]:
-    """Generator twin of build_profile(): yields progress per repo instead
-    of only returning once the whole batch is done, for the background
-    extraction job's SSE stream (see app/profile/jobs.py). Duplicated rather
-    than shared with build_profile(), same reasoning as
-    sync_account_progress() vs sync_account() in app/ingest/github/sync.py:
-    keeps the plain (non-streaming) path used by tests/CLI untouched.
+    """Extracts skills for each repo, yielding progress as it goes:
 
-    Stages yielded, in order:
-      {"stage": "repo_progress", "index": int, "total": int, "name": str,
-       "status": str}  (repeated; status is the repo's
-       skill_extraction_status after processing: "extracted"/"no_signal"/
-       "failed", or "skipped" if it was already done and force=False)
-      {"stage": "rate_limited", "index": int, "total": int} instead of the
-      next repo_progress, same stop-the-batch reasoning as build_profile's
-      stop_batch: every repo after this one would fail the same way
-      right now, so they're left untouched for a later run to pick up.
-      {"stage": "done", "total": int, "processed": int}; processed counts
-      only repos actually sent to _process_repo, not skipped ones.
+      {"stage": "repo_progress", "index", "total", "name", "status"}  (repeated)
+      {"stage": "done", "total", "processed", "profile_id"}
+
+    status is the repo's extraction status afterwards, or "skipped" when it
+    was already done and force is False. When the budget, rate limit or keys
+    run out, the batch stops and ends with {"stage": "rate_limited",
+    "index", "total", "profile_id"} instead; the repos after it stay pending
+    for the next run. Either way the profile snapshot is rebuilt from the
+    evidence written so far.
     """
     now = now or dt.datetime.now(dt.UTC)
     db = get_db()
     total = len(repos)
     processed = 0
+    stopped_at: int | None = None
     try:
         prefetched = _prefetch_facts(db, repos, force)
         for i, repo_ref in enumerate(repos, start=1):
+            # repo_ref may belong to a closed session; re-read it here so
+            # status changes are tracked and committed.
             repo = db.get(Repository, repo_ref.id)
             if repo is None:
                 continue
@@ -398,6 +320,8 @@ def build_profile_progress(
                 stop_batch = _process_repo(db, repo, now, prefetched)
                 db.commit()
             except Exception:
+                # _process_repo catches its own LLM errors; this keeps an
+                # unexpected one (a database error, say) from losing the batch.
                 logger.exception("unexpected error processing %s", repo.full_name)
                 db.rollback()
                 yield {
@@ -418,10 +342,13 @@ def build_profile_progress(
                 "status": repo.skill_extraction_status,
             }
             if stop_batch:
-                yield {"stage": "rate_limited", "index": i, "total": total}
-                db.commit()
-                review_skill_evidence([r.account_id for r in repos])
-                return
+                logger.warning(
+                    "stopping skill-extraction batch early at %s; %d repo(s) left untouched",
+                    repo.full_name,
+                    total - i,
+                )
+                stopped_at = i
+                break
 
         db.commit()  # end any open read before review's nested LLM-call sessions
         review_skill_evidence([r.account_id for r in repos])
@@ -435,9 +362,23 @@ def build_profile_progress(
         profile = Profile(skills_json=_aggregate(evidence))
         db.add(profile)
         db.commit()
+        profile_id = profile.id
     finally:
         db.close()
-    yield {"stage": "done", "total": total, "processed": processed}
+    if stopped_at is not None:
+        yield {
+            "stage": "rate_limited",
+            "index": stopped_at,
+            "total": total,
+            "profile_id": profile_id,
+        }
+    else:
+        yield {
+            "stage": "done",
+            "total": total,
+            "processed": processed,
+            "profile_id": profile_id,
+        }
 
 
 def reprocess_repo(repo_id: int, now: dt.datetime | None = None) -> Repository:
