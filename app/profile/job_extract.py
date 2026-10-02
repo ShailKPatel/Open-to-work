@@ -17,6 +17,7 @@ same column for the exact same reason.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.core.llm import complete, system_message, user_message
@@ -130,6 +131,14 @@ class JobExtraction:
             "other_requirements": self.other_requirements,
             "role_summary": self.role_summary,
         }
+
+
+def skill_key(name: str) -> str:
+    """Matching key for a skill name, loose enough that "Node.js",
+    "NodeJS" and "node js" meet, while "C++" and "C#" stay apart from
+    "C"."""
+    folded = name.strip().casefold()
+    return re.sub(r"[^a-z0-9+#]", "", folded) or folded
 
 
 def parse_skills_required(raw: list) -> list[dict]:

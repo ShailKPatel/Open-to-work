@@ -94,7 +94,7 @@ def test_jobs_analytics_page_serves_html(tmp_path):
     resp = client.get("/jobs/analytics")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
-    assert "Skill analytics" in resp.text
+    assert "Insights" in resp.text
 
 
 def test_auth_sources_page_serves_html(tmp_path):
@@ -131,6 +131,23 @@ def test_education_page_serves_html(tmp_path):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     assert "Education" in resp.text
+
+
+def test_contact_links_page_serves_html(tmp_path):
+    _reset_db(tmp_path)
+    client = _client()
+    resp = client.get("/portfolio/contact-links")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    assert "Contact &amp; Links" in resp.text
+
+
+def test_old_contact_page_redirects_with_query(tmp_path):
+    _reset_db(tmp_path)
+    client = _client()
+    resp = client.get("/portfolio/contact?q=jane", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/portfolio/contact-links?q=jane"
 
 
 def test_explanation_page_serves_html(tmp_path):

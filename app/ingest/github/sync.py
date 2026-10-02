@@ -3,7 +3,13 @@
 Fetches repos, README, manifests, and authorship stats; upserts into SQLite
 by github_id. Skips README/manifest/stats refetch when pushed_at is
 unchanged since the last sync (cache hit); the cheap repo-list call still runs
-every time to detect what changed.
+every time to detect what changed, and is also what finds new repos.
+
+A pushed repo only goes back to skill extraction when its extraction
+source changed: the README (judged by its git blob SHA, which the root
+listing carries for free) or, for a repo without one, its description.
+Any other push refreshes manifests and commit stats and reweights the
+existing evidence in code (build.py's refresh_repo_evidence), no LLM call.
 
 A changed repo costs two REST calls: the root listing (README and manifest
 bodies then come from raw download URLs, outside the API quota) and one
@@ -14,6 +20,7 @@ hour, so every call per repo matters.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -49,7 +56,28 @@ def _readme_rank(name: str) -> int | None:
     return None
 
 
-def _fetch_readme_and_manifests(client: GitHubClient, gh_repo: Any) -> tuple[str | None, dict]:
+def git_blob_sha(text: str) -> str:
+    """The SHA git (and GitHub's contents listing) gives a file with this
+    content, so a stored README can be checked against the listing without
+    downloading it again."""
+    data = text.encode("utf-8")
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+
+
+def _known_readme_sha(repo: Repository | None) -> str | None:
+    if repo is None:
+        return None
+    if repo.readme_sha:
+        return repo.readme_sha
+    # synced before readme_sha existed
+    return git_blob_sha(repo.readme) if repo.readme else None
+
+
+def _fetch_readme_and_manifests(
+    client: GitHubClient, gh_repo: Any, existing: Repository | None = None
+) -> tuple[str | None, str | None, dict]:
+    """(readme, readme_sha, manifests). A root README whose SHA matches
+    the stored one is not downloaded again; the stored text is reused."""
     manifests: dict[str, dict] = {}
     readme_entry = None
     readme_rank = 0
@@ -71,17 +99,39 @@ def _fetch_readme_and_manifests(client: GitHubClient, gh_repo: Any) -> tuple[str
             "dependencies": parse_dependencies(entry.name, content),
         }
     if readme_entry is not None:
+        sha = getattr(readme_entry, "sha", None)
+        if sha and existing is not None and sha == _known_readme_sha(existing):
+            return existing.readme, sha, manifests
         readme = client.entry_text(gh_repo, readme_entry)
     else:
         # GitHub also finds a README under docs/ or .github/
+        sha = None
         readme = client.readme_text(gh_repo)
-    return readme, manifests
+    if readme is not None and not sha:
+        sha = git_blob_sha(readme)
+    return readme, sha, manifests
+
+
+def _source_changed(existing: Repository, readme: str | None, description: str | None) -> bool:
+    """Whether what skill extraction reads (extract.py: the README, else
+    the description) is different from what it last read."""
+    if (readme or "").strip() != (existing.readme or "").strip():
+        return True
+    if (readme or "").strip():
+        return False
+    return (description or "").strip() != (existing.description or "").strip()
+
+
+# _upsert outcomes
+CACHE_HIT = "cache_hit"  # not pushed since the last sync, nothing fetched
+REFRESHED = "refreshed"  # pushed, README unchanged: stats and manifests only
+FETCHED = "fetched"  # new repo or new README: goes back to skill extraction
 
 
 def _upsert(
     db: Session, gh_repo: Any, client: GitHubClient, username: str, account_id: int | None
-) -> bool:
-    """Returns True if this repo was a cache hit (no refetch of readme/manifests/stats)."""
+) -> str:
+    """Returns CACHE_HIT, REFRESHED or FETCHED."""
     existing = db.execute(
         select(Repository).where(Repository.github_id == gh_repo.id)
     ).scalar_one_or_none()
@@ -104,16 +154,19 @@ def _upsert(
         existing.stars = gh_repo.stargazers_count
         existing.is_profile_readme = is_profile_repo(gh_repo.full_name)
         existing.fetched_at = dt.datetime.now(dt.UTC)
-        return True
+        return CACHE_HIT
 
-    readme, manifests = _fetch_readme_and_manifests(client, gh_repo)
+    readme, readme_sha, manifests = _fetch_readme_and_manifests(client, gh_repo, existing)
     authored = client.authored_commits(gh_repo, username)
 
     if existing is None:
+        changed = True
         existing = Repository(github_id=gh_repo.id, account_id=account_id)
         db.add(existing)
-    elif account_id is not None:
-        existing.account_id = account_id
+    else:
+        changed = _source_changed(existing, readme, gh_repo.description)
+        if account_id is not None:
+            existing.account_id = account_id
 
     existing.name = gh_repo.name
     existing.full_name = gh_repo.full_name
@@ -123,6 +176,7 @@ def _upsert(
     existing.primary_language = gh_repo.language
     existing.stars = gh_repo.stargazers_count
     existing.readme = readme
+    existing.readme_sha = readme_sha
     existing.description = gh_repo.description
     existing.manifests_json = manifests
     # None means GitHub couldn't say; don't clobber a known value with zero.
@@ -130,11 +184,31 @@ def _upsert(
         existing.commits_authored, existing.last_commit_at = authored
     existing.pushed_at = pushed_at
     existing.fetched_at = dt.datetime.now(dt.UTC)
-    # content changed (or this is a new repo): any prior extraction is
+    if not changed:
+        return REFRESHED
+    # source changed (or this is a new repo): any prior extraction is
     # stale, whether it previously succeeded, failed, or had no signal.
     existing.skill_extraction_status = "pending"
     existing.skill_extraction_error = None
-    return False
+    return FETCHED
+
+
+def _save(
+    db: Session, gh_repo: Any, client: GitHubClient, username: str, account_id: int | None
+) -> bool:
+    """Upserts and commits one repo. Returns True on a cache hit."""
+    outcome = _upsert(db, gh_repo, client, username, account_id)
+    db.commit()
+    if outcome == REFRESHED:
+        repo_id = db.execute(
+            select(Repository.id).where(Repository.github_id == gh_repo.id)
+        ).scalar_one()
+        db.commit()  # end the read before refresh opens its own session
+        # imported here to keep the LLM stack out of this module's import
+        from app.profile.build import refresh_repo_evidence
+
+        refresh_repo_evidence(repo_id)
+    return outcome == CACHE_HIT
 
 
 def _rate_limited_event(e: GithubException, completed: int, total_hint: int) -> dict[str, Any]:
@@ -234,8 +308,7 @@ def sync_account_progress(
                     }
                     return
                 total += 1
-                hit = _upsert(db, gh_repo, client, username, account_id)
-                db.commit()
+                hit = _save(db, gh_repo, client, username, account_id)
                 if hit:
                     cache_hits += 1
                 else:
@@ -275,8 +348,7 @@ def sync_single_repo(
     db = get_db()
     try:
         gh_repo = client.get_repo(repo_full_name)
-        hit = _upsert(db, gh_repo, client, attribution_username, account_id)
-        db.commit()
+        hit = _save(db, gh_repo, client, attribution_username, account_id)
     finally:
         db.close()
     return SyncSummary(total_repos=1, fetched=0 if hit else 1, cache_hits=1 if hit else 0)
@@ -309,8 +381,7 @@ def sync_single_repo_progress(
     try:
         gh_repo = client.get_repo(repo_full_name)
         yield {"stage": "listing_repos", "total_hint": 1}
-        hit = _upsert(db, gh_repo, client, attribution_username, account_id)
-        db.commit()
+        hit = _save(db, gh_repo, client, attribution_username, account_id)
         yield {
             "stage": "repo_progress",
             "index": 1,
@@ -347,8 +418,7 @@ def sync_account(
     try:
         for gh_repo in client.user_repos(username, include_forks=include_forks):
             total += 1
-            hit = _upsert(db, gh_repo, client, username, account_id)
-            db.commit()
+            hit = _save(db, gh_repo, client, username, account_id)
             if hit:
                 cache_hits += 1
             else:

@@ -544,6 +544,48 @@ def rebuild_manifest_evidence(now: dt.datetime | None = None) -> tuple[int, int]
         db.close()
 
 
+def refresh_repo_evidence(repo_id: int, now: dt.datetime | None = None) -> None:
+    """For a repo that was pushed to without its README changing: the
+    LLM-derived rows still hold, but the manifests may have changed and
+    the commit count and recency that weight every row have. Rewrites the
+    declared_dependency rows from the stored manifests and reweights the
+    README/description rows from their stored confidence. No LLM call, no
+    GitHub fetch; manual rows and links are left alone."""
+    now = now or dt.datetime.now(dt.UTC)
+    db = get_db()
+    try:
+        repo = db.get(Repository, repo_id)
+        if repo is None:
+            return
+        stale = (
+            SkillEvidence.repo_id == repo.id,
+            SkillEvidence.evidence_type == "declared_dependency",
+        )
+        old_ids = list(db.execute(select(SkillEvidence.id).where(*stale)).scalars())
+        db.execute(delete(SkillEvidence).where(*stale))
+        _write_claims(db, repo, skills_from_manifests(repo.manifests_json or {}), now)
+        described = db.execute(
+            select(SkillEvidence).where(
+                SkillEvidence.repo_id == repo.id,
+                SkillEvidence.evidence_type.in_(("readme_described", "description_described")),
+            )
+        ).scalars()
+        for row in described:
+            row.weight = compute_weight(
+                row.evidence_type,  # type: ignore[arg-type]
+                row.confidence,
+                is_fork=repo.is_fork,
+                last_commit_at=repo.last_commit_at,
+                commits_authored=repo.commits_authored,
+                now=now,
+            )
+        db.commit()
+        _delete_index_points(old_ids)
+        _index_repo_evidence(db, repo)
+    finally:
+        db.close()
+
+
 def skill_evidence_for_repos(repo_ids: list[int]) -> list[SkillEvidence]:
     """Fresh query rather than returning the rows built inside
     `build_profile`, since those get detached the moment that function's session

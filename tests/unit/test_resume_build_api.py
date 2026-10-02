@@ -289,7 +289,10 @@ def test_generate_saves_result_into_resume_library(tmp_path, monkeypatch):
 
     resp = _client().post(
         "/api/resume-build/generate",
-        json={"account_id": account_id, "job_posting_id": posting_id, "template": "onepage"},
+        json={
+            "account_id": account_id, "job_posting_id": posting_id, "template": "onepage",
+            "name": "  Acme backend  ",
+        },
     )
 
     assert resp.status_code == 200
@@ -302,6 +305,7 @@ def test_generate_saves_result_into_resume_library(tmp_path, monkeypatch):
     assert row.template == "onepage"
     assert row.content_json == fake_data
     assert row.summary == "A tailored summary."
+    assert row.name == "Acme backend"
     assert Path(row.compiled_path).read_bytes() == b"%PDF-fake"
     db.close()
 
@@ -310,7 +314,7 @@ def test_generate_defaults_max_pages_by_template(monkeypatch):
     monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
     captured = {}
 
-    def _fake_fit(data, template, max_pages, account_id=None):
+    def _fake_fit(data, template, max_pages, account_id=None, **kwargs):
         captured["max_pages"] = max_pages
         return FitResult(tex="x", pdf_bytes=b"%PDF", page_count=max_pages, cuts_made=0)
 
@@ -379,3 +383,86 @@ def test_options_endpoint_returns_selections(tmp_path, monkeypatch):
     assert "skills" in data
     assert "experience" in data
 
+
+
+def _seed_skills_posting(tmp_path, required, skills):
+    import os
+
+    import app.core.db as db_module
+    from app.core.db import Account, JobPosting, Skill, get_db, init_db
+    from app.core.settings import get_settings
+
+    db_module.reset_engine()
+    os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
+    get_settings.cache_clear()
+    init_db()
+
+    db = get_db()
+    account = Account(first_name="Ada", last_name="Lovelace", github_username="octocat")
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    posting = JobPosting(
+        account_id=account.id, source="pasted", external_id="t", company="Acme",
+        title="Backend Engineer", raw_text_quarantined="Go and PostgreSQL",
+        content_hash="tiers", extracted_json={"skills_required": required},
+        extraction_status="extracted",
+    )
+    db.add(posting)
+    db.add_all([Skill(account_id=account.id, name=n) for n in skills])
+    db.commit()
+    ids = account.id, posting.id
+    db.close()
+    return ids
+
+
+def test_options_tiers_skills_against_the_posting(tmp_path, monkeypatch):
+    account_id, posting_id = _seed_skills_posting(
+        tmp_path, ["Python", "PostgreSQL", "Haskell"], ["python", "MySQL", "Cooking"]
+    )
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "app.resume_build.skill_match.suggest_related",
+        lambda required, have, exclude: {"MySQL": ["PostgreSQL"]},
+    )
+
+    data = _client().get(
+        f"/api/resume-build/options?account_id={account_id}&job_posting_id={posting_id}"
+    ).json()
+
+    tiers = {s["name"]: (s["tier"], s["recommended"]) for s in data["skills"]}
+    assert tiers == {
+        "python": ("exact", True),
+        "MySQL": ("related", False),
+        "Cooking": ("other", False),
+    }
+    assert data["required_skills"] == ["Python", "PostgreSQL", "Haskell"]
+    assert data["missing_required"] == ["Haskell"]
+
+
+def test_skill_review_only_judges_skills_the_account_has(tmp_path, monkeypatch):
+    from app.resume_build.skill_match import Verdict
+
+    account_id, posting_id = _seed_skills_posting(tmp_path, ["PostgreSQL"], ["MySQL"])
+    seen = {}
+
+    def _fake_review(account_id, job_title, required, suggestions):
+        seen["suggestions"] = suggestions
+        return {"MySQL": Verdict(True, "Same kind of database.")}
+
+    monkeypatch.setattr("app.resume_build.skill_match.review_related", _fake_review)
+
+    resp = _client().post(
+        "/api/resume-build/skill-review",
+        json={
+            "account_id": account_id, "job_posting_id": posting_id,
+            "skills": [
+                {"name": "MySQL", "suggested_for": ["PostgreSQL"]},
+                {"name": "Kubernetes", "suggested_for": []},
+            ],
+        },
+    )
+
+    assert resp.status_code == 200
+    assert seen["suggestions"] == {"MySQL": ["PostgreSQL"]}
+    assert resp.json() == [{"name": "MySQL", "keep": True, "reason": "Same kind of database."}]

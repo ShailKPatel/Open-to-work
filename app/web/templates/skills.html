@@ -36,16 +36,8 @@
       <p x-show="addError" class="otw-error text-xs mt-3" x-text="addError"></p>
     </div>
 
-    <div x-cloak x-show="!loading && groups.length > 0" class="mt-8 flex items-center gap-4 flex-wrap">
-      <input
-        x-ref="search"
-        x-model="query"
-        type="search"
-        placeholder="Search skills or projects"
-        aria-label="Search skills or projects"
-        class="otw-input flex-1 min-w-[12rem]"
-        @keydown.escape="query = ''"
-      />
+    <div x-cloak x-show="!loading && activeGroups.length > 0" class="mt-8 flex items-center gap-4 flex-wrap">
+      {{ ui.search("query", "Search skills", class="flex-1 min-w-[12rem]") }}
       <label class="flex items-center gap-2 text-sm text-[color:var(--muted)] shrink-0 cursor-pointer">
         <input type="checkbox" x-model="starredOnly" class="otw-checkbox" />
         Starred only
@@ -53,11 +45,11 @@
       <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="countLabel"></span>
     </div>
 
-    <div x-cloak x-show="!loading && groups.length === 0" class="mt-16 text-center">
+    <div x-cloak x-show="!loading && activeGroups.length === 0" class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">No skills yet, add one, or link one from a project or experience entry.</p>
     </div>
 
-    <div x-cloak x-show="!loading && groups.length > 0 && filteredGroups.length === 0" class="mt-16 text-center">
+    <div x-cloak x-show="!loading && activeGroups.length > 0 && filteredGroups.length === 0" class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">No skills match that search.</p>
     </div>
 
@@ -82,7 +74,10 @@
               </button>
               <p class="font-display text-lg truncate" x-text="group.name"></p>
             </div>
-            {{ ui.bin_button("removeGroup(group)", label="Delete skill", disabled="Boolean(removeBusy[group.name])", size="sm") }}
+            <div class="flex items-center gap-1.5 shrink-0">
+              {{ ui.archive_button("setArchived(group, true)", label="Archive skill", disabled="Boolean(archiveBusy[group.name])", size="sm") }}
+              {{ ui.bin_button("removeGroup(group)", label="Delete skill", disabled="Boolean(removeBusy[group.name])", size="sm") }}
+            </div>
           </div>
 
           <!-- Where the skill comes from: each project or role by name,
@@ -119,6 +114,29 @@
       <span>Page <span x-text="page"></span> of <span x-text="totalPages"></span></span>
       <button @click="page = Math.min(totalPages, page + 1)" :disabled="page >= totalPages">Next →</button>
     </div>
+
+    <!-- Archived by hand (restorable here), or because every project and
+         role behind the skill is archived (restored with one of those). -->
+    {% call ui.archived_section("filteredArchived", "archivedOpen", "Kept here, but left out of resume building, the skill map, your skill count and job analytics.") %}
+      <div class="flex flex-wrap gap-2">
+        <template x-for="group in filteredArchived" :key="group.name">
+          <span class="text-xs border border-[color:var(--line)] px-2 py-1 text-[color:var(--muted)] flex items-center gap-2">
+            <span x-text="group.name"></span>
+            <button
+              x-show="group.archived_by === 'user'"
+              @click="setArchived(group, false)"
+              :disabled="Boolean(archiveBusy[group.name])"
+              class="text-[color:var(--ink)] hover:underline"
+            >Restore</button>
+            <span
+              x-show="group.archived_by === 'sources'"
+              class="italic"
+              :title="'Only shown by: ' + uniqueSources(group).map((s) => s.name).join(', ')"
+            >archived with its sources</span>
+          </span>
+        </template>
+      </div>
+    {% endcall %}
 
     <!-- Names the automatic review judged not to be skills. They stay out of
          future syncs; adding one back approves it for good. -->
@@ -250,33 +268,29 @@
         <template x-for="node in mapData.nodes" :key="node.name">
           <div
             @click.stop="selectMapNode(node)"
-            class="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer group"
-            :class="isNodeVisible(node) ? 'opacity-100 z-20' : 'opacity-15 z-0 pointer-events-none'"
+            @mouseenter="if (!isPanning) hoveredNode = node"
+            @mouseleave="hoveredNode = null"
+            class="absolute transform -translate-x-1/2 -translate-y-1/2 cursor-pointer"
+            :class="nodeLayerClass(node)"
             :style="'left: ' + node.x + 'px; top: ' + node.y + 'px;'"
           >
             <!-- Node Dot -->
             <div class="relative flex items-center justify-center">
               <div
-                class="w-2.5 h-2.5 rounded-full flex items-center justify-center group-hover:w-3.5 group-hover:h-3.5"
-                :style="'background-color: ' + node.cluster_color + ';'"
-              >
-                <span
-                  x-show="node.starred"
-                  class="absolute -inset-1 rounded-full border border-[color:var(--ink)]"
-                ></span>
-              </div>
-              <!-- Selection Ring -->
-              <div
-                x-show="selectedNode && selectedNode.name === node.name"
-                class="absolute -inset-2 rounded-full border border-[color:var(--ink)]"
+                class="w-2.5 h-2.5 rounded-full"
+                :style="'background-color: ' + (isNodeFocused(node) ? 'var(--map-focus)' : node.cluster_color) + ';'"
               ></div>
+              <span
+                x-show="node.starred"
+                class="absolute -inset-1 rounded-full border border-[color:var(--ink)]"
+              ></span>
             </div>
 
             <!-- Node Label -->
-            <div class="mt-1 text-center whitespace-nowrap">
+            <div class="mt-1 flex justify-center whitespace-nowrap">
               <span
-                class="text-[11px]"
-                :class="selectedNode && selectedNode.name === node.name ? 'text-[color:var(--ink)] font-semibold' : 'text-[color:var(--muted)] group-hover:text-[color:var(--ink)]'"
+                class="map-node-label text-[11px]"
+                :class="isNodeFocused(node) ? 'text-white font-semibold' : 'text-[color:var(--muted)]'"
                 x-text="node.name"
               ></span>
             </div>
@@ -355,6 +369,12 @@
 
 <style>
   .otw-skill-starred { border-color: color-mix(in srgb, #f59e0b 35%, var(--line)); }
+  /* The cluster palette is all greys, so the one hovered or selected
+     skill gets the only real colour on the map. */
+  :root { --map-focus: #ef4444; }
+  /* Halo in the map background colour keeps resting labels legible
+     where they cross another node's dot. */
+  .map-node-label { text-shadow: 0 0 3px #1c1c1f, 0 0 3px #1c1c1f, 0 0 6px #1c1c1f; }
 </style>
 
 <script>
@@ -377,6 +397,8 @@
       rejectedOpen: false,
       addBackBusy: {},
       removeBusy: {},
+      archiveBusy: {},
+      archivedOpen: false,
 
       // 2D Map State
       mapOpen: false,
@@ -391,6 +413,7 @@
       mapQuery: '',
       selectedClusterId: null,
       selectedNode: null,
+      hoveredNode: null,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -399,31 +422,28 @@
           window.location.href = '/';
           return;
         }
+        this.query = new URLSearchParams(window.location.search).get('q') || '';
         this.$watch('query', () => { this.page = 1; });
         this.$watch('starredOnly', () => { this.page = 1; });
         await this.load();
       },
 
+      get activeGroups() {
+        return this.groups.filter((g) => !g.archived);
+      },
+
       get filteredGroups() {
-        const q = this.query.trim().toLowerCase();
-        const pool = this.starredOnly ? this.groups.filter((g) => g.starred) : this.groups;
-        if (!q) return pool;
-        const ranked = [];
-        for (const group of pool) {
-          const name = group.name.toLowerCase();
-          let rank;
-          if (name.startsWith(q)) rank = 0;
-          else if (name.includes(q)) rank = 1;
-          else if (group.sources.some((s) => s.name.toLowerCase().includes(q))) rank = 2;
-          else continue;
-          ranked.push({ group, rank });
-        }
-        return ranked.sort((a, b) => a.rank - b.rank).map((r) => r.group);
+        const pool = this.starredOnly ? this.activeGroups.filter((g) => g.starred) : this.activeGroups;
+        return otwSearch(pool, this.query, (g) => [g.name]);
+      },
+
+      get filteredArchived() {
+        return otwSearch(this.groups.filter((g) => g.archived), this.query, (g) => [g.name]);
       },
 
       get countLabel() {
         const shown = this.filteredGroups.length;
-        const total = this.groups.length;
+        const total = this.activeGroups.length;
         return shown === total ? `${total} skills` : `${shown} of ${total}`;
       },
 
@@ -575,6 +595,19 @@
         return true;
       },
 
+      isNodeFocused(node) {
+        return (this.hoveredNode && this.hoveredNode.name === node.name)
+          || (this.selectedNode && this.selectedNode.name === node.name);
+      },
+
+      // Hovered sits above selected, which sits above everything else.
+      nodeLayerClass(node) {
+        if (!this.isNodeVisible(node)) return 'opacity-15 z-0 pointer-events-none';
+        if (this.hoveredNode && this.hoveredNode.name === node.name) return 'z-[60]';
+        if (this.selectedNode && this.selectedNode.name === node.name) return 'z-50';
+        return 'z-20';
+      },
+
       isClusterVisible(clusterId) {
         if (this.selectedClusterId !== null && this.selectedClusterId !== clusterId) {
           return false;
@@ -640,6 +673,28 @@
           }
         } finally {
           this.starBusy[group.name] = false;
+        }
+      },
+
+      async setArchived(group, archived) {
+        this.archiveBusy[group.name] = true;
+        try {
+          const res = await fetch('/api/skills/archive', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ account_id: Number(this.accountId), name: group.name, archived }),
+          });
+          if (res.ok) {
+            // Reloaded rather than flipped here: a restored skill whose
+            // projects and roles are all archived stays archived.
+            await this.load();
+            // The map leaves archived skills out; drop the cached layout so
+            // the next open fetches it again.
+            this.mapData = { clusters: [], nodes: [] };
+            if (this.mapOpen) await this.loadMap();
+          }
+        } finally {
+          this.archiveBusy[group.name] = false;
         }
       },
 

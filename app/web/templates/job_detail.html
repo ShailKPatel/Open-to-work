@@ -178,6 +178,20 @@
           </div>
         </section>
 
+        <section x-show="job.image_count > 0" class="mt-10">
+          <div class="otw-section-head">
+            <h2 class="font-display text-xl">Screenshots</h2>
+            <span class="otw-count" x-text="job.image_count === 1 ? '1 image' : job.image_count + ' images'"></span>
+          </div>
+          <div class="flex items-center gap-2 flex-wrap mt-3">
+            <template x-for="src in imageUrls()" :key="src">
+              <div class="otw-thumb otw-thumb-lg" @click="otwViewImage(src, 'Screenshot of the posting')">
+                <img :src="src" alt="Screenshot of the posting" loading="lazy" />
+              </div>
+            </template>
+          </div>
+        </section>
+
         <details class="mt-10 otw-raw">
           <summary class="font-display text-xl cursor-pointer">Full posting text</summary>
           <div class="otw-tile p-4 mt-3 text-sm whitespace-pre-wrap" style="max-height: 24rem; overflow-y: auto;" x-text="job.raw_text || ''"></div>
@@ -226,6 +240,7 @@
   .otw-raw summary::-webkit-details-marker { display: none; }
   .otw-raw summary::after { content: "+"; float: right; color: var(--muted); }
   .otw-raw[open] summary::after { content: "–"; }
+  .otw-thumb-lg { width: 7rem; height: 7rem; }
   @media (max-width: 640px) { .otw-facts { grid-template-columns: 1fr; } }
 </style>
 
@@ -293,6 +308,9 @@
         const rf = this.job && this.job.role_family;
         if (!rf || rf.canonical_name.toLowerCase() === (this.job.title || '').toLowerCase()) return '';
         return rf.canonical_name;
+      },
+      imageUrls() {
+        return Array.from({ length: this.job.image_count || 0 }, (_, i) => `/api/job-postings/${this.jobId}/images/${i}`);
       },
       hasSalary() { return this.job.salary_min_annual != null || this.job.salary_max_annual != null; },
 

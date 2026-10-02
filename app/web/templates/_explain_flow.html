@@ -345,18 +345,18 @@ data: {"stage": "done", "total_repos": 8,
   "summary": "Backend engineer focused on APIs ...",
   "experiences": [
     {"company": "Acme", "title": "Software Engineer",
-     "start_date": "2022-01-01", "end_date": ""}
+     "start_date": "Jan 2022", "end_date": ""}
   ]
 }</pre>
         </div>
         <div class="ex-shape">
           <p class="ex-kicker">Merge rule · existing role vs resume</p>
 <pre>existing  Acme · Software Engineer
-          start 2022-01-01   end null
+          start Jan 2022     end null
 resume    acme · software engineer    <em># same key</em>
-          start 2021-06-01   end 2024-03-01
-result    start 2022-01-01   <em># already set, kept</em>
-          end   2024-03-01   <em># was blank, filled</em></pre>
+          start Jun 2021     end Mar 2024
+result    start Jan 2022     <em># already set, kept</em>
+          end   Mar 2024     <em># was blank, filled</em></pre>
         </div>
       </div>
     </div>
@@ -368,7 +368,8 @@ result    start 2022-01-01   <em># already set, kept</em>
         <div>
           <h3 class="ex-h3">Job postings</h3>
           <p class="ex-lede">
-            Four ways in, one way through: duplicates are caught, the LLM pulls out the details,
+            One box takes any mix of text, links and screenshots (POST /compose) and routes each
+            piece down the matching path below: duplicates are caught, the LLM pulls out the details,
             and similar job titles are grouped together.
           </p>
           <div class="ex-meta">

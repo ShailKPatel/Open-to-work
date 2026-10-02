@@ -1,18 +1,19 @@
 {% extends "_base.html" %}
 {% import "_ui.html" as ui %}
-{% block title %}Links · Open to Work{% endblock %}
+{% block title %}Contact &amp; Links · Open to Work{% endblock %}
 {% block content %}
-{% set platforms = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("instagram", "Instagram"), ("website", "Website"), ("other", "Other")] %}
-<div x-data="contactApp()" x-init="init()" class="min-h-screen flex flex-col">
+{% set platforms = [("linkedin", "LinkedIn"), ("github", "GitHub"), ("instagram", "Instagram"), ("website", "Website"), ("other", "Custom")] %}
+{% set custom_names = ["Portfolio", "Certificates", "Blog", "X", "GitLab", "LeetCode", "Kaggle", "Stack Overflow", "Medium", "Behance", "Dribbble", "YouTube"] %}
+<div x-data="contactLinksApp()" x-init="init()" class="min-h-screen flex flex-col">
 
   {% set top_active = 'portfolio' %}
   {% include "_header.html" %}
 
   <main class="flex-1 px-10 pb-24 max-w-4xl mx-auto w-full">
-    {% set data_active = 'contact' %}
+    {% set data_active = 'contact_links' %}
     {% include "_portfolio_subnav.html" %}
 
-    <h1 class="font-display text-4xl mt-8">Links</h1>
+    <h1 class="font-display text-4xl mt-8">Contact &amp; Links</h1>
     <p class="text-sm text-[color:var(--muted)] mt-2">How you appear at the top of every resume.</p>
 
     <div class="otw-tile p-6 mt-8">
@@ -58,8 +59,14 @@
       </div>
     </div>
 
+    <!-- Search narrows the three lists below. It matches the saved
+         values, not what is being typed, so a row being edited stays put. -->
+    <div x-cloak x-show="!loading && emails.length + phones.length + links.length > 0" class="mt-12">
+      {{ ui.search("query", "Search emails, phones and links") }}
+    </div>
+
     <!-- Email addresses -->
-    <div class="mt-12">
+    <div class="mt-10">
       <div class="otw-section-head">
         <div class="flex items-center gap-3">
           <span class="otw-icon-badge" x-html="icon('mail')"></span>
@@ -68,11 +75,11 @@
             <p class="text-xs text-[color:var(--muted)] mt-0.5">The primary one goes on resumes by default; you can pick another per resume.</p>
           </div>
         </div>
-        <span class="otw-count" x-text="emails.length + ' saved'"></span>
+        <span class="otw-count" x-text="countLabel(shownEmails, emails)"></span>
       </div>
 
       <div x-cloak class="mt-4 space-y-2">
-        <template x-for="e in emails" :key="e.id">
+        <template x-for="e in shownEmails" :key="e.id">
           <div class="otw-tile px-4 py-3 flex items-center gap-3 flex-wrap">
             <span x-html="icon('mail')" class="otw-icon-badge"></span>
             <input x-model="e.email" type="email" placeholder="email@example.com" class="otw-input text-sm flex-1 min-w-[12rem]" />
@@ -117,11 +124,11 @@
             <p class="text-xs text-[color:var(--muted)] mt-0.5">The primary one goes on resumes by default; you can pick another per resume.</p>
           </div>
         </div>
-        <span class="otw-count" x-text="phones.length + ' saved'"></span>
+        <span class="otw-count" x-text="countLabel(shownPhones, phones)"></span>
       </div>
 
       <div x-cloak class="mt-4 space-y-2">
-        <template x-for="p in phones" :key="p.id">
+        <template x-for="p in shownPhones" :key="p.id">
           <div class="otw-tile px-4 py-3 flex items-center gap-3 flex-wrap">
             <span x-html="icon('phone')" class="otw-icon-badge"></span>
             <input x-model="p.phone" placeholder="+1 (555) 000-0000" class="otw-input text-sm flex-1 min-w-[12rem]" />
@@ -161,19 +168,19 @@
         <div class="flex items-center gap-3">
           <span class="otw-icon-badge" x-html="icon('other')"></span>
           <div>
-            <h2 class="font-display text-xl">Social links</h2>
-            <p class="text-xs text-[color:var(--muted)] mt-0.5">LinkedIn, GitHub, a personal site, whatever is relevant. "Other" takes a label.</p>
+            <h2 class="font-display text-xl">Links</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-0.5">LinkedIn, GitHub, a personal site, whatever is relevant. Pick "Custom" to name it yourself: Portfolio, Certificates, anything.</p>
           </div>
         </div>
-        <span class="otw-count" x-text="links.length + ' saved'"></span>
+        <span class="otw-count" x-text="countLabel(shownLinks, links)"></span>
       </div>
 
       <div x-cloak class="mt-4 space-y-2">
-        <template x-for="link in links" :key="link.id">
+        <template x-for="link in shownLinks" :key="link.id">
           <div class="otw-tile px-4 py-3 flex items-center gap-3 flex-wrap">
-            <span x-html="icon(link.platform)" class="otw-icon-badge"></span>
+            <span x-html="icon(linkIcon(link))" class="otw-icon-badge"></span>
             {{ ui.select("link.platform", platforms, size="sm", class="w-28", label="Platform") }}
-            <input x-show="link.platform === 'other'" x-model="link.label" placeholder="Label" class="otw-input text-sm w-28" />
+            <input x-show="link.platform === 'other'" x-model="link.label" list="otw-link-names" placeholder="Name, e.g. Portfolio" class="otw-input text-sm w-40" />
             <input x-model="link.url" placeholder="https://…" class="otw-input text-sm flex-1 min-w-[10rem]" />
             <a
               x-show="link.url"
@@ -182,23 +189,27 @@
               rel="noopener"
               class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] underline shrink-0"
             >Open ↗</a>
-            <button @click="saveLink(link)" :disabled="!linkDirty(link) || Boolean(linkBusy[link.id])" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Save</button>
+            <button @click="saveLink(link)" :disabled="!linkDirty(link) || !linkComplete(link) || Boolean(linkBusy[link.id])" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">Save</button>
             {{ ui.bin_button("removeLink(link)", label="Delete link", disabled="Boolean(linkBusy[link.id])", size="sm") }}
           </div>
         </template>
       </div>
 
       <div class="otw-add-row mt-3 flex items-center gap-3 flex-wrap">
-        <span x-html="icon(newLink.platform)" class="otw-icon-badge"></span>
+        <span x-html="icon(linkIcon(newLink))" class="otw-icon-badge"></span>
         {{ ui.select("newLink.platform", platforms, size="sm", class="w-28", label="Platform") }}
-        <input x-show="newLink.platform === 'other'" x-model="newLink.label" placeholder="Label" class="otw-input text-sm w-28" />
+        <input x-show="newLink.platform === 'other'" x-model="newLink.label" list="otw-link-names" placeholder="Name, e.g. Portfolio" class="otw-input text-sm w-40" />
         <input x-model="newLink.url" placeholder="https://…" class="otw-input text-sm flex-1 min-w-[10rem]" />
-        <button @click="addLink" :disabled="!newLink.url.trim() || addingLink" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
+        <button @click="addLink" :disabled="!linkComplete(newLink) || addingLink" class="otw-btn-accent text-xs px-3 py-1.5 shrink-0">
           <span x-show="!addingLink">Add</span>
           <span x-show="addingLink" class="otw-working">Adding…</span>
         </button>
       </div>
       <p x-show="linkAddError" class="otw-error text-xs mt-2" x-text="linkAddError"></p>
+      <!-- Suggestions for a custom link's name; any other name works too. -->
+      <datalist id="otw-link-names">
+        {% for name in custom_names %}<option value="{{ name }}"></option>{% endfor %}
+      </datalist>
     </div>
   </main>
 </div>
@@ -210,7 +221,7 @@
 </style>
 
 <script>
-  function contactApp() {
+  function contactLinksApp() {
     return {
       accountId: null,
       accountName: '',
@@ -241,6 +252,7 @@
       addingLink: false,
       linkAddError: '',
       loading: true,
+      query: '',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -249,6 +261,7 @@
           window.location.href = '/';
           return;
         }
+        this.query = new URLSearchParams(window.location.search).get('q') || '';
         await this.load();
       },
 
@@ -278,6 +291,25 @@
         }
       },
 
+      get shownEmails() {
+        return otwSearch(this.emails, this.query, (e) => [(this.originalEmails[e.id] || e).email]);
+      },
+
+      get shownPhones() {
+        return otwSearch(this.phones, this.query, (p) => [(this.originalPhones[p.id] || p).phone]);
+      },
+
+      get shownLinks() {
+        return otwSearch(this.links, this.query, (l) => {
+          const saved = this.originalLinks[l.id] || l;
+          return [saved.label, saved.platform, saved.url];
+        });
+      },
+
+      countLabel(shown, all) {
+        return shown.length === all.length ? `${all.length} saved` : `${shown.length} of ${all.length}`;
+      },
+
       get fullName() {
         return [this.contact.first_name, this.contact.last_name].filter(Boolean).join(' ');
       },
@@ -300,10 +332,28 @@
           github: '<path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>',
           instagram: '<rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" y1="6.5" x2="17.5" y2="6.5"/>',
           website: '<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
+          portfolio: '<rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+          certificate: '<circle cx="12" cy="8" r="7"/><polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"/>',
+          blog: '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
           other: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
         };
         const body = paths[kind] || paths.other;
         return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+      },
+
+      // Custom links pick an icon from their name when it is a common one,
+      // so "Portfolio" or "Certificates" don't all look like a plain link.
+      linkIcon(link) {
+        if (link.platform !== 'other') return link.platform;
+        const name = (link.label || '').trim().toLowerCase();
+        if (name.startsWith('portfolio')) return 'portfolio';
+        if (name.startsWith('certif')) return 'certificate';
+        if (name === 'blog' || name === 'medium') return 'blog';
+        return 'other';
+      },
+
+      linkComplete(link) {
+        return Boolean(link.url.trim()) && (link.platform !== 'other' || Boolean((link.label || '').trim()));
       },
 
       emailDirty(e) {

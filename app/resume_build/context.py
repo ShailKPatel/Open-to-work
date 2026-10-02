@@ -25,13 +25,21 @@ it with whatever the orchestrator produces for the rest.
 
 from __future__ import annotations
 
-import datetime as dt
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.db import Account, Education, Experience, ExperiencePoint, SocialLink
+from app.core.db import (
+    Account,
+    Education,
+    Experience,
+    ExperiencePoint,
+    Repository,
+    SkillArchive,
+    SocialLink,
+)
+from app.profile.month_year import newest_first, parse_quiet
 
 _MONTH_ABBR = {
     1: "Jan.", 2: "Feb.", 3: "Mar.", 4: "Apr.", 5: "May", 6: "Jun.",
@@ -45,20 +53,31 @@ _PLATFORM_ICONS = {
     "website": r"\faGlobe",
 }
 _DEFAULT_SOCIAL_ICON = r"\faLink"
+# Custom ("other") links are named by the user, so match the common names
+# by prefix: "Portfolio", "Certificates", "Certifications", "Blog".
+_CUSTOM_LABEL_ICONS = (
+    ("portfolio", r"\faBriefcase"),
+    ("certif", r"\faCertificate"),
+    ("blog", r"\faBlog"),
+)
 
 
-def _format_month_year(d: dt.date) -> str:
-    return f"{_MONTH_ABBR[d.month]} {d.year}"
+def _format_month_year(value: str | None) -> str:
+    """Stored "Mar 2026" printed as "Mar. 2026", "2026" as itself; an
+    unreadable value is printed as stored rather than dropped."""
+    parsed = parse_quiet(value)
+    if parsed is None:
+        return (value or "").strip()
+    year, month = parsed
+    return str(year) if month is None else f"{_MONTH_ABBR[month]} {year}"
 
 
-def _date_range(start: dt.date | None, end: dt.date | None) -> str:
-    if start is None and end is None:
-        return ""
-    if start is None:
-        return _format_month_year(end)  # type: ignore[arg-type]
+def _date_range(start: str | None, end: str | None) -> str:
     start_text = _format_month_year(start)
-    end_text = "present" if end is None else _format_month_year(end)
-    return f"{start_text} -- {end_text}"
+    end_text = _format_month_year(end)
+    if not start_text:
+        return end_text
+    return f"{start_text} -- {end_text or 'present'}"
 
 
 def build_header_context(
@@ -112,6 +131,11 @@ def build_header_context(
     for link in social_links:
         platform = (link.platform or "").strip().lower()
         icon = _PLATFORM_ICONS.get(platform, _DEFAULT_SOCIAL_ICON)
+        if platform == "other" and link.label:
+            name = link.label.strip().lower()
+            icon = next(
+                (i for prefix, i in _CUSTOM_LABEL_ICONS if name.startswith(prefix)), icon
+            )
         display = link.label if platform == "other" and link.label else link.url
         social_items.append({"icon": icon, "text": display, "href": link.url})
 
@@ -123,8 +147,44 @@ def build_header_context(
 
 
 
+def excluded_sources(db: Session, account_id: int) -> tuple[set[int], set[int]]:
+    """Ids of this account's projects and roles marked exclude_from_resume:
+    (repository ids, experience ids). Resume building drops anything that
+    comes only from these, so a search hit or skill backed by nothing else
+    never reaches the model.
+    """
+    repo_ids = set(
+        db.execute(
+            select(Repository.id).where(
+                Repository.account_id == account_id, Repository.exclude_from_resume.is_(True)
+            )
+        ).scalars()
+    )
+    experience_ids = set(
+        db.execute(
+            select(Experience.id).where(
+                Experience.account_id == account_id, Experience.exclude_from_resume.is_(True)
+            )
+        ).scalars()
+    )
+    return repo_ids, experience_ids
+
+
+def archived_skill_keys(db: Session, account_id: int) -> set[str]:
+    """Casefolded names of the skills this account archived by hand
+    (SkillArchive). A skill archived only because all of its sources are
+    is covered by excluded_sources instead.
+    """
+    return set(
+        db.execute(
+            select(SkillArchive.name_key).where(SkillArchive.account_id == account_id)
+        ).scalars()
+    )
+
+
 def build_experience_context(db: Session, account_id: int) -> list[dict[str, Any]]:
-    """Every Experience row for this account, newest first (current/
+    """Every Experience row for this account not marked
+    exclude_from_resume, newest first (current/
     undated roles sort first, matching the ordering already used
     elsewhere, e.g. app/api/experience.py's list endpoint), each with
     every one of its ExperiencePoint rows in insertion order. All of it,
@@ -132,12 +192,15 @@ def build_experience_context(db: Session, account_id: int) -> list[dict[str, Any
     so the orchestrator can scope a per-role semantic search back to this
     exact role (see module docstring); the template itself never reads it.
     """
-    roles = list(
-        db.execute(
-            select(Experience)
-            .where(Experience.account_id == account_id)
-            .order_by(Experience.start_date.desc().nulls_last())
-        ).scalars()
+    roles = newest_first(
+        list(
+            db.execute(
+                select(Experience).where(
+                    Experience.account_id == account_id,
+                    Experience.exclude_from_resume.is_(False),
+                )
+            ).scalars()
+        )
     )
     if not roles:
         return []
@@ -167,23 +230,32 @@ def build_experience_context(db: Session, account_id: int) -> list[dict[str, Any
 
 
 def build_education_context(db: Session, account_id: int) -> list[dict[str, Any]]:
-    """Every Education row for this account, newest first, unconditionally:
-    same compulsory, non-picked posture as build_experience_context above.
-    Shape matches the template's `education` block exactly: institution,
-    degree, date_range.
+    """Every Education row for this account not marked exclude_from_resume,
+    newest first: same compulsory, non-picked posture as
+    build_experience_context above.
+    Shape matches the template's `education` block: institution, degree,
+    date_range, grade (None when unset) and details (empty when unset;
+    the template skips both then, so they take no space), plus "id" so a
+    caller can honor the account holder's own choice to leave an entry
+    off one resume (the template never reads it).
     """
-    rows = list(
-        db.execute(
-            select(Education)
-            .where(Education.account_id == account_id)
-            .order_by(Education.start_date.desc().nulls_last())
-        ).scalars()
+    rows = newest_first(
+        list(
+            db.execute(
+                select(Education).where(
+                    Education.account_id == account_id, Education.exclude_from_resume.is_(False)
+                )
+            ).scalars()
+        )
     )
     return [
         {
+            "id": row.id,
             "institution": row.institution,
             "degree": row.degree,
             "date_range": _date_range(row.start_date, row.end_date),
+            "grade": row.grade,
+            "details": list(row.details or []),
         }
         for row in rows
     ]

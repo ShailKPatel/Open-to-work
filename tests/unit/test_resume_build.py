@@ -8,7 +8,6 @@ this pins that down as a permanent regression check, not a one-time
 manual review.
 """
 
-import datetime as dt
 import re
 from pathlib import Path
 
@@ -33,26 +32,43 @@ from app.resume_build.latex import escape_latex, escape_latex_url, render_resume
 TEMPLATES_DIR = Path(__file__).parent.parent.parent / "app/resume_build/templates"
 TEMPLATE_NAMES = ["onepage.tex.j2", "twopage.tex.j2"]
 
-# Real values from the personal resume the template was built from, must
-# never appear in the template file itself. Specific, not
-# generic ("no email-shaped string"), so this test actually breaks if any
-# of these ever gets pasted back in.
-_FORBIDDEN_STRINGS = [
-    "Shail",
-    "Patel",
-    "shailkpatel",
-    "shailpatel.connect",
-    "9023020937",
-    "Ahmedabad",
-    "RestaurantPilot",
-    "GET MY SPACE",
-    "PredictGrad",
-    "predictgrad",
-    "Beyond The Marks",
-    "beyondthemarks",
-    "LJ University",
-    "zenodo.19686376",
-]
+# Every word a template may contain outside its Jinja placeholders and
+# LaTeX comments: section headings, package names, option keys. Anything
+# else is text someone typed into the template instead of a placeholder,
+# which is how a name, a city or a project title would get in. An
+# allowlist rather than a list of known personal values, because a list of
+# the values would itself publish them.
+_TEMPLATE_WORDS = {
+    "Education", "Experience", "LaTeX", "LastPage", "Projects", "RGB",
+    "Resume", "Skills", "Summary", "Technologies", "adjustwidth", "amsmath",
+    "array", "black", "bookmark", "bottom", "calc", "changepage", "cm",
+    "colorlinks", "customFooterStyle", "document", "dvipsnames", "empty",
+    "enumitem", "eso", "fontawesome", "footskip", "geometry",
+    "glyphtounicode", "graphicx", "header", "highlights", "hyperref",
+    "iftex", "ifthen", "ignoreheadfoot", "inputenc", "itemize", "itemsep",
+    "lastpage", "left", "leftmargin", "letterpaper", "linkcolor", "lmodern",
+    "needspace", "of", "onecolentry", "paracol", "parsep", "partopsep",
+    "pdfauthor", "pdfcreator", "pdftitle", "pic", "primaryColor", "pscoord",
+    "pt", "right", "secnumdepth", "tabularx", "titlesec", "top", "topsep",
+    "true", "twocolentry", "urlcolor", "utf", "xcolor",
+}
+
+# The one URL the templates may carry, the credit for the styling they
+# are based on.
+_ALLOWED_URLS = {"github.com/rendercv/rendercv"}
+
+# Optional extra check against values only the account holder knows: one
+# string per line in a file that never leaves the machine (data/ is
+# gitignored). Skipped when the file is not there, as in CI.
+_PRIVATE_STRINGS_FILE = Path(__file__).parent.parent.parent / "data/private_strings.txt"
+
+
+def _template_body(text: str) -> str:
+    """The template with its LaTeX comments, Jinja placeholders and LaTeX
+    command names removed: what is left is literal text."""
+    text = re.sub(r"(?<!\\)%.*", "", text)
+    text = re.sub(r"\\(?:VAR|BLOCK)\{[^}]*\}", "", text)
+    return re.sub(r"\\[A-Za-z@]+", "", text)
 
 
 def _reset_db(tmp_path: Path):
@@ -70,8 +86,27 @@ def _reset_db(tmp_path: Path):
 @pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
 def test_template_contains_no_personal_data(template_name):
     text = (TEMPLATES_DIR / template_name).read_text()
-    for forbidden in _FORBIDDEN_STRINGS:
-        assert forbidden not in text, f"personal data leaked into {template_name}: {forbidden!r}"
+    body = _template_body(text)
+
+    unknown = set(re.findall(r"[A-Za-z]{2,}", body)) - _TEMPLATE_WORDS
+    assert not unknown, f"literal text in {template_name}, use a placeholder: {sorted(unknown)}"
+
+    # Comments are free prose, so they are checked for the shapes personal
+    # data takes rather than word by word.
+    assert not re.search(r"\d{7,}", text), f"phone-like number in {template_name}"
+    assert not re.search(r"[\w.+-]+@[\w-]+\.[\w.]+", text), f"email in {template_name}"
+    urls = set(re.findall(r"(?:https?://)?((?:[\w-]+\.)+[a-z]{2,}/[\w./-]*[\w/])", text))
+    assert urls <= _ALLOWED_URLS, f"unexpected URL in {template_name}: {urls - _ALLOWED_URLS}"
+
+
+@pytest.mark.skipif(not _PRIVATE_STRINGS_FILE.exists(), reason="no local private strings file")
+@pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
+def test_template_contains_no_private_strings(template_name):
+    text = (TEMPLATES_DIR / template_name).read_text().casefold()
+    for line in _PRIVATE_STRINGS_FILE.read_text().splitlines():
+        value = line.strip()
+        if value:
+            assert value.casefold() not in text, f"private value leaked into {template_name}"
 
 
 def test_escape_latex_handles_every_special_char():
@@ -190,7 +225,22 @@ def test_build_header_context_other_platform_uses_label(tmp_path):
     ctx = build_header_context(account, social_links=[link])
 
     assert ctx["social_items"][0]["text"] == "Portfolio"
-    assert ctx["social_items"][0]["icon"] == r"\faLink"
+    assert ctx["social_items"][0]["icon"] == r"\faBriefcase"
+
+
+def test_build_header_context_custom_label_icons(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account(github_username="")
+    links = [
+        SocialLink(account_id=account.id, platform="other", url="https://a.example", label=label)
+        for label in ("Certifications", "Blog", "LeetCode")
+    ]
+
+    ctx = build_header_context(account, social_links=links)
+
+    assert [i["icon"] for i in ctx["social_items"]] == [
+        r"\faCertificate", r"\faBlog", r"\faLink",
+    ]
 
 
 def test_build_experience_context_orders_roles_and_points(tmp_path):
@@ -199,11 +249,11 @@ def test_build_experience_context_orders_roles_and_points(tmp_path):
     db = get_db()
     older = Experience(
         account_id=account.id, title="Engineer I", company="Old Co",
-        start_date=dt.date(2020, 1, 1), end_date=dt.date(2021, 1, 1),
+        start_date="Jan 2020", end_date="Jan 2021",
     )
     current = Experience(
         account_id=account.id, title="Engineer II", company="New Co",
-        start_date=dt.date(2022, 6, 1), end_date=None,
+        start_date="Jun 2022", end_date=None,
     )
     db.add_all([older, current])
     db.commit()
@@ -257,11 +307,11 @@ def test_build_education_context_orders_newest_first(tmp_path):
         [
             Education(
                 account_id=account.id, institution="Old College", degree="AA",
-                start_date=dt.date(2015, 1, 1), end_date=dt.date(2017, 1, 1),
+                start_date="Jan 2015", end_date="Jan 2017",
             ),
             Education(
                 account_id=account.id, institution="New University", degree="B.Sc",
-                start_date=dt.date(2018, 1, 1), end_date=dt.date(2022, 1, 1),
+                start_date="Jan 2018", end_date="Jan 2022",
             ),
         ]
     )
@@ -280,6 +330,87 @@ def test_build_education_context_empty_when_none(tmp_path):
     account = _make_account()
 
     assert build_education_context(get_db(), account.id) == []
+
+
+def test_build_education_context_carries_grade_and_details(tmp_path):
+    _reset_db(tmp_path)
+    account = _make_account()
+    db = get_db()
+    db.add_all(
+        [
+            Education(
+                account_id=account.id, institution="New University", degree="B.Sc",
+                start_date="Jan 2018", grade="CGPA 8.9/10",
+                details=["Ranked 1st in university"],
+            ),
+            Education(
+                account_id=account.id, institution="Old College", degree="AA",
+                start_date="Jan 2015",
+            ),
+        ]
+    )
+    db.commit()
+    db.close()
+
+    result = build_education_context(get_db(), account.id)
+
+    assert result[0]["grade"] == "CGPA 8.9/10"
+    assert result[0]["details"] == ["Ranked 1st in university"]
+    assert result[1]["grade"] is None
+    assert result[1]["details"] == []
+
+
+def _education_render_data(education):
+    return {
+        "full_name": "Jane Doe",
+        "contact_items": [],
+        "social_items": [],
+        "summary": None,
+        "experience": [],
+        "projects": [],
+        "education": education,
+        "technologies": [],
+        "skills": [],
+    }
+
+
+@pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
+def test_render_resume_shows_education_grade_and_details(template_name):
+    rendered = render_resume(
+        template_name,
+        _education_render_data(
+            [
+                {
+                    "institution": "State University", "degree": "B.Sc",
+                    "date_range": "2018 -- 2022", "grade": "GPA 3.9/4 & honors",
+                    "details": ["Coursework: Algorithms, 100% attendance"],
+                }
+            ]
+        ),
+    )
+
+    education = rendered.split(r"\section{Education}", 1)[1]
+    assert r"\textbar\kern 0.20 cm GPA 3.9/4 \& honors" in education
+    assert r"\item Coursework: Algorithms, 100\% attendance" in education
+
+
+@pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
+def test_render_resume_education_without_extras_adds_nothing(template_name):
+    rendered = render_resume(
+        template_name,
+        _education_render_data(
+            [
+                {
+                    "institution": "State University", "degree": "B.Sc",
+                    "date_range": "2018 -- 2022", "grade": None, "details": [],
+                }
+            ]
+        ),
+    )
+
+    education = rendered.split(r"\section{Education}", 1)[1]
+    assert r"\textbar" not in education
+    assert r"\begin{highlights}" not in education
 
 
 @pytest.mark.parametrize("template_name", TEMPLATE_NAMES)

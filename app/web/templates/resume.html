@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Resume · Open to Work{% endblock %}
 {% block content %}
 <div x-data="resumeApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -34,8 +35,17 @@
       <p class="text-[color:var(--muted)]">No resumes yet, upload one above to get started.</p>
     </div>
 
-    <div x-cloak class="mt-8 space-y-5">
-      <template x-for="resume in resumes" :key="resume.id">
+    <div x-cloak x-show="!loading && resumes.length > 0" class="mt-8 flex items-center gap-4">
+      {{ ui.search("query", "Search resumes", class="flex-1 min-w-0") }}
+      <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="countLabel"></span>
+    </div>
+
+    <div x-cloak x-show="!loading && resumes.length > 0 && filteredResumes.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No resumes match that search.</p>
+    </div>
+
+    <div x-cloak class="mt-6 space-y-5">
+      <template x-for="resume in filteredResumes" :key="resume.id">
         <div class="otw-tile p-6">
           <div class="flex items-start justify-between gap-4 flex-wrap">
             <div class="otw-monogram text-xs tracking-wider" x-text="fileExt(resume.filename)"></div>
@@ -48,19 +58,24 @@
                 :placeholder="resume.filename"
                 title="Click to name this version"
               />
-              <p class="text-xs text-[color:var(--muted)] mt-1">
+              <p x-show="!resume.build_incomplete" class="text-xs text-[color:var(--muted)] mt-1">
                 <a :href="'/api/resume/' + resume.id + '/file'" target="_blank" class="hover:underline break-all" x-text="resume.filename"></a>
               </p>
             </div>
             <div class="flex items-center gap-2 shrink-0">
               <span x-show="statusLabel(resume)" class="otw-pill mr-1" :class="statusClass(resume)" :title="resume.extraction_error || ''" x-text="statusLabel(resume)"></span>
-              <button @click="openViewer(resume)" title="View" aria-label="View" class="otw-icon-btn">
+              <button x-show="resume.build_incomplete" @click="retryBuild(resume)" :disabled="Boolean(retrying[resume.id])" class="otw-btn-accent text-xs px-3 py-1.5">
+                <span x-show="!retrying[resume.id]">Retry</span>
+                <span x-show="retrying[resume.id]" class="otw-working">Retrying…</span>
+              </button>
+              <button x-show="!resume.build_incomplete" @click="openViewer(resume)" title="View" aria-label="View" class="otw-icon-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
-              <button @click="openAiEdit(resume)" title="Edit with AI" aria-label="Edit with AI" class="otw-icon-btn">
+              <button x-show="!resume.build_incomplete" @click="openAiEdit(resume)" title="Edit with AI" aria-label="Edit with AI" class="otw-icon-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
               </button>
               <button
+                x-show="!resume.build_incomplete"
                 @click="reprocess(resume)"
                 :disabled="Boolean(reprocessing[resume.id])"
                 title="Reprocess"
@@ -76,6 +91,32 @@
           </div>
           <p x-show="resume.extraction_error" x-text="resume.extraction_error" class="mt-2 text-xs otw-error"></p>
 
+          <!-- A generated resume whose build stopped partway: what is done,
+               what is left, and Retry, which picks up from there. -->
+          <div x-show="resume.build_incomplete" class="mt-5">
+            <p class="text-sm">
+              This build stopped before it finished<span x-show="resume.build_stopped_at">, at
+              <span class="font-medium" x-text="(resume.build_stopped_at || '').toLowerCase()"></span></span>.
+              What was done is kept; Retry carries on from there.
+            </p>
+            <p x-show="resume.build_error && !retrying[resume.id]" x-text="resume.build_error" class="mt-2 text-xs otw-error"></p>
+            <p x-show="resume.build_attempts > 1 && !retrying[resume.id]" class="mt-1 text-xs text-[color:var(--muted)]" x-text="`Stopped ${resume.build_attempts} times so far.`"></p>
+            <p x-show="retrying[resume.id]" class="mt-2 text-xs text-[color:var(--muted)] otw-working" x-text="retryStage[resume.id] || 'Starting'"></p>
+            <p x-show="retryError[resume.id]" x-text="retryError[resume.id]" class="mt-2 text-xs otw-error"></p>
+            <ul class="mt-4 space-y-1.5">
+              <template x-for="(step, i) in resume.build_progress" :key="i">
+                <li class="flex items-baseline gap-2.5 text-sm">
+                  <svg x-show="step.done" class="w-3.5 h-3.5 shrink-0 self-center" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  <svg x-show="!step.done" class="w-3.5 h-3.5 shrink-0 self-center text-[color:var(--muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/></svg>
+                  <span :class="step.done ? '' : 'text-[color:var(--muted)]'" x-text="step.label"></span>
+                  <span x-show="step.note" class="text-xs text-[color:var(--muted)]" x-text="step.note"></span>
+                  <span x-show="!step.done" class="text-xs text-[color:var(--muted)]">left</span>
+                </li>
+              </template>
+            </ul>
+          </div>
+
+          <div x-show="!resume.build_incomplete">
           <div class="mt-5">
             <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Good for</label>
             <div class="flex flex-wrap items-center gap-2 mt-2">
@@ -116,7 +157,7 @@
             <div>
               <div class="flex items-baseline justify-between gap-3">
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Contact</label>
-                <a href="/portfolio/contact" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Links →</a>
+                <a href="/portfolio/contact-links" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Contact &amp; Links →</a>
               </div>
               <p x-show="!hasContact(resume)" class="text-sm text-[color:var(--muted)] mt-2">None found in this file. Reprocess to read it again.</p>
               <dl x-show="hasContact(resume)" class="mt-2 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
@@ -202,7 +243,7 @@
               <ul class="mt-2 space-y-1.5">
                 <template x-for="(edu, i) in resume.education" :key="i">
                   <li class="flex items-baseline justify-between gap-3 flex-wrap">
-                    <p class="text-sm"><span class="font-medium" x-text="edu.degree"></span>, <span x-text="edu.institution"></span></p>
+                    <p class="text-sm"><span class="font-medium" x-text="edu.degree"></span>, <span x-text="edu.institution"></span><span x-show="edu.grade" class="text-[color:var(--muted)]" x-text="' · ' + edu.grade"></span></p>
                     <span class="text-xs text-[color:var(--muted)]" x-text="dateRange(edu.start_date, edu.end_date)"></span>
                   </li>
                 </template>
@@ -251,6 +292,7 @@
                 </button>
               </div>
             </div>
+          </div>
           </div>
         </div>
       </template>
@@ -392,6 +434,9 @@
       savingSummary: {},
       savingNotes: {},
       reprocessing: {},
+      retrying: {},
+      retryStage: {},
+      retryError: {},
       deleting: {},
       viewing: null,
       viewTab: 'original',
@@ -401,6 +446,7 @@
       aiMessage: '',
       aiWorking: false,
       aiError: '',
+      query: '',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -409,6 +455,66 @@
           window.location.href = '/';
           return;
         }
+        this.query = new URLSearchParams(window.location.search).get('q') || '';
+        await this.load();
+        this.attachRetries();
+      },
+
+      // A retry started earlier, here or from the build page, keeps
+      // running server-side; coming back to this page follows it again.
+      async attachRetries() {
+        try {
+          const res = await fetch(`/api/resume-build/builds?account_id=${this.accountId}`);
+          if (!res.ok) return;
+          for (const build of await res.json()) {
+            if (build.retry_of && build.running) {
+              this.retrying[build.retry_of] = true;
+              this.watchRetry(build.retry_of, build);
+            }
+          }
+        } catch (e) {
+          // nothing to follow; Retry still works
+        }
+      },
+
+      async retryBuild(resume) {
+        this.retrying[resume.id] = true;
+        this.retryStage[resume.id] = 'Starting';
+        this.retryError[resume.id] = '';
+        try {
+          const res = await fetch(`/api/resume-build/retry/${resume.id}`, { method: 'POST' });
+          const build = await res.json();
+          if (!res.ok) {
+            this.retryError[resume.id] = build.detail || 'Could not start the retry.';
+            this.retrying[resume.id] = false;
+            return;
+          }
+          this.watchRetry(resume.id, build);
+        } catch (e) {
+          this.retryError[resume.id] = 'Could not reach the server.';
+          this.retrying[resume.id] = false;
+        }
+      },
+
+      async watchRetry(resumeId, build) {
+        if (build.running) {
+          this.retryStage[resumeId] = build.stage;
+          setTimeout(async () => {
+            const res = await fetch(`/api/resume-build/builds/${build.id}`).catch(() => null);
+            if (res && res.status === 404) {
+              this.retrying[resumeId] = false;
+              this.retryError[resumeId] = 'The app restarted before the retry finished. Retry again.';
+            } else if (res && res.ok) {
+              this.watchRetry(resumeId, await res.json());
+            } else {
+              this.watchRetry(resumeId, build);
+            }
+          }, 2000);
+          return;
+        }
+        this.retrying[resumeId] = false;
+        // Seen here, so the header reminder has nothing left to say about it.
+        fetch(`/api/resume-build/builds/${build.id}/dismiss`, { method: 'POST' }).catch(() => {});
         await this.load();
       },
 
@@ -425,6 +531,22 @@
         } finally {
           this.loading = false;
         }
+      },
+
+      // Matches what is saved, not the inline edits in progress, so a card
+      // never disappears from under the cursor while it is being edited.
+      get filteredResumes() {
+        return otwSearch(this.resumes, this.query, (r) => [
+          r.name || r.filename, r.filename, r.target_roles, r.tags, r.summary, r.notes,
+          (r.experiences || []).map((x) => [x.title, x.company, x.location]),
+          (r.education || []).map((x) => [x.institution, x.degree, x.location]),
+        ].flat());
+      },
+
+      get countLabel() {
+        const shown = this.filteredResumes.length;
+        const total = this.resumes.length;
+        return shown === total ? `${total} resume${total !== 1 ? 's' : ''}` : `${shown} of ${total}`;
       },
 
       toggleDetails(resume) {
@@ -450,6 +572,7 @@
       // Analyzed is the default and gets no badge; anything short of
       // that (not run yet, or cut off partway) reads as Pending.
       statusLabel(resume) {
+        if (resume.build_incomplete) return 'Incomplete';
         if (resume.extraction_status === 'extracted') return '';
         if (resume.extraction_status === 'unsupported_type') return 'Not auto-analyzable';
         return 'Pending';
@@ -465,13 +588,7 @@
       },
 
       dateRange(start, end) {
-        const fmt = (iso) => {
-          const d = new Date(iso + 'T00:00:00');
-          return d.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
-        };
-        if (!start && !end) return '';
-        if (!start) return fmt(end);
-        return `${fmt(start)} \u2013 ${end ? fmt(end) : 'Present'}`;
+        return otwDates.range(start, end);
       },
 
       hasContact(resume) {
@@ -514,6 +631,7 @@
           const data = await res.json();
           if (!res.ok) {
             this.uploadError = data.detail || 'Could not upload that.';
+            event.target.value = '';
             return;
           }
           this.uploadName = '';

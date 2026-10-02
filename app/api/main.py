@@ -36,6 +36,7 @@ from app.core.embeddings import EMBEDDING_MODEL
 from app.core.key_refresh import start_key_refresh
 from app.core.settings import get_settings
 from app.ingest.github import background as github_background
+from app.ingest.github.auto_sync import start_auto_sync
 from app.ingest.github.cancellation import request_cancel
 from app.ingest.github.sync import SyncSummary, sync_account
 
@@ -60,6 +61,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # limit resets; the timers for that live in memory, so they are set
     # again here from what the database remembers.
     github_background.restore_after_restart()
+    # Synced sources are synced again once they go stale (a week), so new
+    # repos and README changes reach the profile without a click.
+    if get_settings().github_auto_sync_on_start:
+        start_auto_sync()
     yield
 
 
@@ -178,11 +183,19 @@ def skills_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "skills.html")
 
 
-@app.get("/portfolio/contact", response_class=HTMLResponse)
-def contact_page(request: Request) -> HTMLResponse:
-    """Contact info + social links. Data from GET /api/accounts/{id}/contact
+@app.get("/portfolio/contact-links", response_class=HTMLResponse)
+def contact_links_page(request: Request) -> HTMLResponse:
+    """Contact info + links. Data from GET /api/accounts/{id}/contact
     and GET /api/accounts/{id}/social-links (app/api/contact.py)."""
-    return templates.TemplateResponse(request, "contact.html")
+    return templates.TemplateResponse(request, "contact_links.html")
+
+
+@app.get("/portfolio/contact", include_in_schema=False)
+def old_contact_page(request: Request) -> RedirectResponse:
+    """Old home of the contact page, now /portfolio/contact-links. Keeps its
+    query string, so ?q= search links still land on the filtered list."""
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(f"/portfolio/contact-links{query}", status_code=307)
 
 
 @app.get("/monitor", response_class=HTMLResponse)

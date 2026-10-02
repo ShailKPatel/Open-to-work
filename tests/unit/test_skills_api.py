@@ -317,3 +317,53 @@ def test_get_skills_map_with_skills(tmp_path, monkeypatch):
         assert "cluster_id" in node
         assert "cluster_color" in node
 
+
+
+def test_archive_skill_flags_group_and_restores(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+    client.post("/api/skills", json={"account_id": account_id, "name": "QR codes"})
+    client.post("/api/skills", json={"account_id": account_id, "name": "Python"})
+    archive = {"account_id": account_id, "name": " qr CODES ", "archived": True}
+
+    assert client.post("/api/skills/archive", json=archive).status_code == 200
+    assert client.post("/api/skills/archive", json=archive).status_code == 200
+    body = client.get(f"/api/skills?account_id={account_id}").json()
+    assert {g["name"]: (g["archived"], g["archived_by"]) for g in body} == {
+        "QR codes": (True, "user"),
+        "Python": (False, None),
+    }
+
+    client.post("/api/skills/archive", json={**archive, "archived": False})
+    body = client.get(f"/api/skills?account_id={account_id}").json()
+    assert all(not g["archived"] for g in body)
+
+
+def test_skill_backed_only_by_archived_projects_is_archived(tmp_path, monkeypatch):
+    """A skill whose every source is an archived project is archived with
+    it; one with any live source, or a manual row, stays active."""
+    from app.api.skills import account_skill_names
+
+    _reset_db(tmp_path)
+    _mock_embed(monkeypatch)
+    account_id = _make_account()
+    client = _client()
+    hidden = _make_repo(account_id, exclude_from_resume=True)
+    live = _make_repo(account_id, github_id=2, name="live", full_name="octocat/live")
+    client.post(f"/api/projects/{hidden}/skills", json={"skill": "QR codes"})
+    client.post(f"/api/projects/{hidden}/skills", json={"skill": "Python"})
+    client.post(f"/api/projects/{live}/skills", json={"skill": "Python"})
+
+    body = client.get(f"/api/skills?account_id={account_id}").json()
+    assert {g["name"]: g["archived_by"] for g in body} == {"QR codes": "sources", "Python": None}
+    assert set(account_skill_names(account_id)) == {"python"}
+
+
+def test_archive_skill_rejects_blank_name(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    resp = _client().post(
+        "/api/skills/archive", json={"account_id": account_id, "name": " ", "archived": True}
+    )
+    assert resp.status_code == 422

@@ -16,14 +16,20 @@ skill review (app/profile/skill_review.py) rejects it first. No fuzzy
 matching, casefold-equal is equal, the same rule this app already uses
 everywhere skills get deduplicated.
 
-Experience: matched on (company, title), both casefolded and trimmed, NOT
-on dates. Two resumes (or a resume and a hand-entered role) describing
-"Engineer at Acme" are the same line item even if one states different
-start/end dates or none at all; a promotion at the same company is a
-different title, so a legitimately different, second row. A matching
-existing row gets its location/start_date/end_date filled in from the resume ONLY
-where that field was previously null, so a date entered by hand (or by an
-earlier resume) never gets silently overwritten; a new
+Experience: matched on (company, title), NOT on dates, each folded by
+_org_key/_title_key: casefolded, punctuation and spacing ignored, and
+the company's parenthetical note and legal suffix dropped, since one
+extraction reads "RestaurantPilot.ai" where the next reads
+"RestaurantPilot.ai (Restaurant Tech)", or "Acme Inc." for "Acme". Two
+resumes (or a resume and a hand-entered role) describing "Engineer at
+Acme" are the same line item even if one states different start/end
+dates or none at all; a promotion at the same company is a different
+title, so a legitimately different, second row. A role left off resumes
+(exclude_from_resume) still matches, so a resume naming it again adds
+points to it instead of bringing it back as a new row. A matching
+existing row gets its location/start_date/end_date filled in from the
+resume ONLY where that field was previously null, so a date entered by
+hand (or by an earlier resume) never gets silently overwritten; a new
 (company, title) pair becomes a new Experience row. Skills the resume
 ties to a role become that row's experience evidence (evidence_type
 "resume"), skipping names it already has or the skill review rejects.
@@ -32,8 +38,10 @@ added as freestanding; a freestanding skill an earlier resume added is
 removed once a role's evidence carries the same name.
 
 Education: same shape as Experience, matched on (institution, degree),
-casefolded and trimmed, not on dates. A matching row only gets its
-location/start_date/end_date filled where previously null; a new
+folded the same way as (company, title), not on dates. A matching row only gets its
+location/start_date/end_date/grade filled where previously null, and its
+details only when it has none yet (a list the account holder edited is
+never merged into); a new
 (institution, degree) pair becomes a new Education row.
 
 Every experience, bullet point, experience skill, education entry and
@@ -42,7 +50,9 @@ ResumeProfileLink row, so what a resume contributed can be read back
 later without re-extracting it.
 
 Contact: every extracted email, phone and link that the account doesn't
-already have is added; one it already has is skipped, never edited.
+already have is added; one it already has is skipped, never edited,
+except that a saved link with no name (a bare "website") takes the name
+the resume gives the same URL, e.g. "Portfolio".
 Emails match casefolded; phones match on their digits alone, ignoring a
 country-code prefix present on only one side; links match on the URL
 with scheme, "www.", query/fragment and trailing slash stripped,
@@ -216,16 +226,37 @@ def _retire_resume_only_skills(db: Session, account_id: int, names: set[str]) ->
         db.delete(row)
 
 
+_PARENTHETICAL = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+_NON_ALNUM = re.compile(r"[^0-9a-z]+")
+_LEGAL_SUFFIXES = (
+    "private limited", "pvt ltd", "pvt", "ltd", "limited", "llc", "llp",
+    "inc", "incorporated", "corp", "corporation", "co", "gmbh", "plc",
+)
+
+
+def _org_key(company: str) -> str:
+    """Folded company name for role matching: no parenthetical note, no
+    trailing legal suffix, letters and digits only."""
+    words = _NON_ALNUM.sub(" ", _PARENTHETICAL.sub(" ", company).casefold()).split()
+    text = " ".join(words)
+    for suffix in _LEGAL_SUFFIXES:
+        if text.endswith(" " + suffix):
+            text = text[: -len(suffix) - 1]
+            break
+    return text.replace(" ", "")
+
+
+def _title_key(title: str) -> str:
+    return _NON_ALNUM.sub("", title.casefold())
+
+
 def _merge_experiences(
     db: Session, account_id: int, claims: list[ExperienceClaim], links: _LinkRecorder
 ) -> tuple[int, int, int]:
     existing_rows = list(
         db.execute(select(Experience).where(Experience.account_id == account_id)).scalars()
     )
-    by_key = {
-        (row.company.strip().casefold(), row.title.strip().casefold()): row
-        for row in existing_rows
-    }
+    by_key = {(_org_key(row.company), _title_key(row.title)): row for row in existing_rows}
 
     added = 0
     enriched = 0
@@ -239,7 +270,7 @@ def _merge_experiences(
     )
 
     for claim in claims:
-        key = (claim.company.casefold(), claim.title.casefold())
+        key = (_org_key(claim.company), _title_key(claim.title))
         existing = by_key.get(key)
         target_row: Experience
 
@@ -359,7 +390,7 @@ def _merge_education(
     db: Session, account_id: int, claims: list[EducationClaim], links: _LinkRecorder
 ) -> tuple[int, int]:
     by_key = {
-        (row.institution.strip().casefold(), row.degree.strip().casefold()): row
+        (_org_key(row.institution), _title_key(row.degree)): row
         for row in db.execute(
             select(Education).where(Education.account_id == account_id)
         ).scalars()
@@ -368,7 +399,7 @@ def _merge_education(
     added = 0
     enriched = 0
     for claim in claims:
-        key = (claim.institution.casefold(), claim.degree.casefold())
+        key = (_org_key(claim.institution), _title_key(claim.degree))
         existing = by_key.get(key)
         if existing is None:
             row = Education(
@@ -378,6 +409,8 @@ def _merge_education(
                 location=claim.location,
                 start_date=claim.start_date,
                 end_date=claim.end_date,
+                grade=claim.grade,
+                details=list(claim.details),
             )
             db.add(row)
             db.flush()
@@ -388,11 +421,14 @@ def _merge_education(
 
         links.record("education", existing.id, created=False)
         changed = False
-        for attr in ("location", "start_date", "end_date"):
+        for attr in ("location", "start_date", "end_date", "grade"):
             value = getattr(claim, attr)
             if getattr(existing, attr) is None and value is not None:
                 setattr(existing, attr, value)
                 changed = True
+        if not existing.details and claim.details:
+            existing.details = list(claim.details)
+            changed = True
         if changed:
             enriched += 1
 
@@ -420,6 +456,10 @@ def _link_key(url: str) -> str:
     parts = urlsplit(raw if "://" in raw else f"https://{raw}")
     host = parts.netloc.casefold().removeprefix("www.")
     return f"{host}{parts.path.rstrip('/')}".casefold()
+
+
+def _unnamed(link: SocialLink) -> bool:
+    return link.platform in ("website", "other") and not (link.label or "").strip()
 
 
 def _merge_contact(db: Session, account_id: int, claim: ContactClaim) -> tuple[int, int, int, bool]:
@@ -463,15 +503,25 @@ def _merge_contact(db: Session, account_id: int, claim: ContactClaim) -> tuple[i
         known_phones.append(digits)
         phones_added += 1
 
-    known_links = {
-        _link_key(url)
-        for (url,) in db.execute(select(SocialLink.url).where(SocialLink.account_id == account_id))
+    saved_links = {
+        _link_key(row.url): row
+        for row in db.execute(
+            select(SocialLink).where(SocialLink.account_id == account_id)
+        ).scalars()
     }
+    known_links = set(saved_links)
     if account.github_username:
         known_links.add(f"github.com/{account.github_username.strip().casefold()}")
     links_added = 0
+    links_named = False
     for link in claim.links:
         key = _link_key(link.url)
+        saved = saved_links.get(key)
+        if saved is not None and link.label and _unnamed(saved):
+            # Saved before links could be named ("website", no label):
+            # take the name the resume gives it. A named link is left alone.
+            saved.platform, saved.label = "other", link.label
+            links_named = True
         if not key or key in known_links:
             continue
         db.add(
@@ -487,7 +537,7 @@ def _merge_contact(db: Session, account_id: int, claim: ContactClaim) -> tuple[i
         account.contact_location = claim.location
         location_filled = True
 
-    if emails_added or phones_added or links_added or location_filled:
+    if emails_added or phones_added or links_added or links_named or location_filled:
         db.commit()
     return emails_added, phones_added, links_added, location_filled
 

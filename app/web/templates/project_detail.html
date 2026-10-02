@@ -1,5 +1,10 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Project · Open to Work{% endblock %}
+{% block head %}
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+{% endblock %}
 {% block content %}
 <div x-data="projectDetailApp()" x-init="init()" class="min-h-screen flex flex-col">
 
@@ -36,7 +41,20 @@
             class="text-2xl leading-none pt-2 shrink-0"
             :class="draft.starred ? 'text-[color:var(--accent)]' : 'text-[color:var(--muted)] hover:text-[color:var(--ink)]'"
           ><span x-text="draft.starred ? '★' : '☆'"></span></button>
+          {{ ui.bin_button("removeProject()", label="Delete project", class="mt-2 shrink-0") }}
         </div>
+
+        <label class="otw-tile p-4 mt-5 flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" class="otw-checkbox mt-0.5" x-model="draft.exclude_from_resume" />
+          <span class="text-sm">
+            Archive
+            <span class="block text-xs text-[color:var(--muted)] mt-1">
+              Moves it to Archived on your Projects page: resume building never sees it, it
+              is left out of your project count, and a skill only this project shows is
+              archived with it. Good for small utilities. Kept across GitHub syncs.
+            </span>
+          </span>
+        </label>
 
         <!-- Links: the repo URL first, then any extra links, then +. Each
              one reads as a plain link; editing is tucked behind a hover. -->
@@ -235,11 +253,11 @@
         <section class="mt-12">
           <h2 class="otw-section-title">README</h2>
           <p x-show="!project.has_readme" class="text-sm text-[color:var(--muted)] mt-3">No README.</p>
-          <pre
+          <div
             x-show="project.has_readme"
             class="otw-readme mt-3"
-            x-text="project.readme_preview"
-          ></pre>
+            x-html="readmeHtml()"
+          ></div>
         </section>
       </div>
     </template>
@@ -266,9 +284,22 @@
 
 <script>
   function projectDetailApp() {
-    const editableFields = ['name', 'full_name', 'url', 'description', 'primary_language', 'is_fork', 'starred'];
+    const editableFields = ['name', 'full_name', 'url', 'description', 'primary_language', 'is_fork', 'starred', 'exclude_from_resume'];
 
     return {
+      // README text comes from the repo, so it is untrusted: render it as
+      // Markdown, then sanitize before it reaches x-html. Falls back to
+      // escaped plain text if either library failed to load.
+      readmeHtml() {
+        const text = (this.project && this.project.readme_preview) || '';
+        if (window.marked && window.DOMPurify) {
+          return DOMPurify.sanitize(marked.parse(text, { gfm: true, breaks: false }));
+        }
+        const pre = document.createElement('pre');
+        pre.textContent = text;
+        return pre.outerHTML;
+      },
+
       accountId: null,
       accountName: '',
       repoId: null,
@@ -414,6 +445,15 @@
         } finally {
           this.saving = false;
         }
+      },
+
+      async removeProject() {
+        const body = this.project.is_manual
+          ? 'Its skills and links go with it. This cannot be undone.'
+          : 'Its skills and links go with it. The next GitHub sync fetches this repo again; to keep it but hide it from resume building, archive it instead.';
+        if (!(await otwConfirm({ title: `Delete "${this.project.name}"?`, body }))) return;
+        const res = await fetch(`/api/projects/${this.repoId}`, { method: 'DELETE' });
+        if (res.ok) window.location.href = '/portfolio/projects';
       },
 
       async saveSkill(id) {
@@ -574,7 +614,31 @@
   .otw-chip-new { border-style: dashed; padding-right: 0.75rem; }
   .otw-chip-new input::placeholder { color: var(--muted); }
 
-  .otw-readme { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: var(--muted); border-left: 1px solid var(--line); padding-left: 1rem; }
+  .otw-readme { font-size: 0.92rem; line-height: 1.65; word-break: break-word; color: var(--ink); border-left: 1px solid var(--line); padding-left: 1.25rem; }
+  .otw-readme > :first-child { margin-top: 0; }
+  .otw-readme h1, .otw-readme h2, .otw-readme h3, .otw-readme h4, .otw-readme h5, .otw-readme h6 { font-weight: 600; line-height: 1.25; margin: 1.5em 0 0.6em; }
+  .otw-readme h1 { font-size: 1.9em; padding-bottom: 0.3em; border-bottom: 1px solid var(--line); }
+  .otw-readme h2 { font-size: 1.45em; padding-bottom: 0.3em; border-bottom: 1px solid var(--line); }
+  .otw-readme h3 { font-size: 1.2em; }
+  .otw-readme h4 { font-size: 1em; }
+  .otw-readme h5, .otw-readme h6 { font-size: 0.9em; color: var(--muted); }
+  .otw-readme p, .otw-readme ul, .otw-readme ol, .otw-readme blockquote, .otw-readme pre, .otw-readme table { margin: 0 0 1em; }
+  .otw-readme ul { list-style: disc; padding-left: 1.75em; }
+  .otw-readme ol { list-style: decimal; padding-left: 1.75em; }
+  .otw-readme li + li { margin-top: 0.25em; }
+  .otw-readme li > ul, .otw-readme li > ol { margin: 0.25em 0 0; }
+  .otw-readme a { text-decoration: underline; text-underline-offset: 3px; }
+  .otw-readme strong { font-weight: 600; }
+  .otw-readme em { font-style: italic; }
+  .otw-readme code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; background: var(--surface); padding: 0.15em 0.35em; border-radius: 4px; }
+  .otw-readme pre { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 0.9em 1em; overflow-x: auto; }
+  .otw-readme pre code { background: none; padding: 0; font-size: 0.82em; line-height: 1.5; }
+  .otw-readme blockquote { border-left: 3px solid var(--line); padding-left: 1em; color: var(--muted); }
+  .otw-readme hr { border: none; border-top: 1px solid var(--line); margin: 1.5em 0; }
+  .otw-readme img { max-width: 100%; display: inline-block; }
+  .otw-readme table { border-collapse: collapse; display: block; overflow-x: auto; }
+  .otw-readme th, .otw-readme td { border: 1px solid var(--line); padding: 0.35em 0.75em; }
+  .otw-readme th { font-weight: 600; }
 
   .otw-savebar { position: fixed; left: 50%; bottom: 1.5rem; transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0.75rem 0.6rem 1.25rem; background: var(--surface); border: 1px solid var(--line-strong); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
 </style>

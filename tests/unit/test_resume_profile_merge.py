@@ -1,4 +1,3 @@
-import datetime as dt
 from pathlib import Path
 
 from sqlalchemy import select
@@ -154,7 +153,7 @@ def test_new_experience_gets_added(tmp_path):
     claim = ExperienceClaim(
         company="Acme Corp",
         title="Software Engineer",
-        start_date=dt.date(2020, 1, 1),
+        start_date="Jan 2020",
         end_date=None,
         location="Berlin, Germany",
     )
@@ -167,7 +166,7 @@ def test_new_experience_gets_added(tmp_path):
     assert rows[0].company == "Acme Corp"
     assert rows[0].title == "Software Engineer"
     assert rows[0].location == "Berlin, Germany"
-    assert rows[0].start_date == dt.date(2020, 1, 1)
+    assert rows[0].start_date == "Jan 2020"
     assert rows[0].end_date is None
     db.close()
 
@@ -182,8 +181,8 @@ def test_matching_company_and_title_is_not_duplicated(tmp_path):
     claim = ExperienceClaim(
         company="Acme Corp",  # different casing, same company
         title="Engineer",  # different casing, same title
-        start_date=dt.date(2020, 1, 1),
-        end_date=dt.date(2021, 1, 1),
+        start_date="Jan 2020",
+        end_date="Jan 2021",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim]))
 
@@ -208,8 +207,8 @@ def test_matching_experience_gets_dates_enriched_only_when_missing(tmp_path):
     claim = ExperienceClaim(
         company="Acme",
         title="Engineer",
-        start_date=dt.date(2019, 6, 1),
-        end_date=dt.date(2022, 3, 1),
+        start_date="Jun 2019",
+        end_date="Mar 2022",
         location="Remote",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim]))
@@ -218,8 +217,8 @@ def test_matching_experience_gets_dates_enriched_only_when_missing(tmp_path):
     assert summary.experiences_enriched == 1
     refreshed = db.get(Experience, existing_id)
     assert refreshed.location == "Remote"
-    assert refreshed.start_date == dt.date(2019, 6, 1)
-    assert refreshed.end_date == dt.date(2022, 3, 1)
+    assert refreshed.start_date == "Jun 2019"
+    assert refreshed.end_date == "Mar 2022"
     db.close()
 
 
@@ -231,7 +230,7 @@ def test_matching_experience_never_overwrites_an_existing_date(tmp_path):
         account_id=account_id,
         title="Engineer",
         company="Acme",
-        start_date=dt.date(2018, 1, 1),  # already set, by hand or an earlier resume
+        start_date="Jan 2018",  # already set, by hand or an earlier resume
         end_date=None,
     )
     db.add(existing)
@@ -242,15 +241,15 @@ def test_matching_experience_never_overwrites_an_existing_date(tmp_path):
     claim = ExperienceClaim(
         company="Acme",
         title="Engineer",
-        start_date=dt.date(2020, 1, 1),
-        end_date=dt.date(2021, 1, 1),
+        start_date="Jan 2020",
+        end_date="Jan 2021",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim]))
 
     assert summary.experiences_enriched == 1  # end_date was empty, got filled
     refreshed = db.get(Experience, existing_id)
-    assert refreshed.start_date == dt.date(2018, 1, 1)  # untouched
-    assert refreshed.end_date == dt.date(2021, 1, 1)  # filled in
+    assert refreshed.start_date == "Jan 2018"  # untouched
+    assert refreshed.end_date == "Jan 2021"  # filled in
     db.close()
 
 
@@ -459,8 +458,8 @@ def test_new_education_gets_added(tmp_path):
     claim = EducationClaim(
         institution="Nirma University",
         degree="B.Tech in Computer Science",
-        location="Ahmedabad",
-        start_date=dt.date(2022, 8, 1),
+        location="Springfield",
+        start_date="Aug 2022",
         end_date=None,
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(education=[claim, claim]))
@@ -470,8 +469,8 @@ def test_new_education_gets_added(tmp_path):
     assert len(rows) == 1
     assert rows[0].institution == "Nirma University"
     assert rows[0].degree == "B.Tech in Computer Science"
-    assert rows[0].location == "Ahmedabad"
-    assert rows[0].start_date == dt.date(2022, 8, 1)
+    assert rows[0].location == "Springfield"
+    assert rows[0].start_date == "Aug 2022"
     assert rows[0].end_date is None
     db.close()
 
@@ -485,7 +484,7 @@ def test_matching_education_only_fills_missing_fields(tmp_path):
         institution="nirma university",
         degree="b.tech in computer science",
         location=None,
-        start_date=dt.date(2021, 1, 1),  # set by hand, must survive
+        start_date="Jan 2021",  # set by hand, must survive
         end_date=None,
     )
     db.add(existing)
@@ -496,19 +495,51 @@ def test_matching_education_only_fills_missing_fields(tmp_path):
     claim = EducationClaim(
         institution="Nirma University",
         degree="B.Tech in Computer Science",
-        location="Ahmedabad",
-        start_date=dt.date(2022, 8, 1),
-        end_date=dt.date(2026, 5, 1),
+        location="Springfield",
+        start_date="Aug 2022",
+        end_date="May 2026",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(education=[claim]))
 
     assert summary.education_added == 0
     assert summary.education_enriched == 1
     refreshed = db.get(Education, existing_id)
-    assert refreshed.location == "Ahmedabad"
-    assert refreshed.start_date == dt.date(2021, 1, 1)  # untouched
-    assert refreshed.end_date == dt.date(2026, 5, 1)
+    assert refreshed.location == "Springfield"
+    assert refreshed.start_date == "Jan 2021"  # untouched
+    assert refreshed.end_date == "May 2026"
     assert len(db.execute(select(Education)).scalars().all()) == 1
+    db.close()
+
+
+def test_education_grade_and_details_fill_only_when_empty(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    db = get_db()
+    kept = Education(
+        account_id=account_id, institution="MIT", degree="BS Physics",
+        grade="GPA 4.0", details=["Typed by hand"],
+    )
+    bare = Education(account_id=account_id, institution="MIT", degree="MS Physics")
+    db.add_all([kept, bare])
+    db.commit()
+    kept_id, bare_id = kept.id, bare.id
+
+    claims = [
+        EducationClaim(
+            institution="MIT", degree=degree, location=None, start_date=None,
+            end_date=None, grade="GPA 3.5", details=["From the resume"],
+        )
+        for degree in ("BS Physics", "MS Physics", "PhD Physics")
+    ]
+    merge_resume_into_profile(db, account_id, _extraction(education=claims))
+
+    assert db.get(Education, kept_id).grade == "GPA 4.0"
+    assert db.get(Education, kept_id).details == ["Typed by hand"]
+    assert db.get(Education, bare_id).grade == "GPA 3.5"
+    assert db.get(Education, bare_id).details == ["From the resume"]
+    new = db.execute(select(Education).where(Education.degree == "PhD Physics")).scalar_one()
+    assert new.grade == "GPA 3.5"
+    assert new.details == ["From the resume"]
     db.close()
 
 
@@ -613,4 +644,164 @@ def test_new_contact_email_does_not_steal_primary(tmp_path):
         select(ContactEmail).where(ContactEmail.email == "new@example.com")
     ).scalar_one()
     assert new_row.is_primary is False
+    db.close()
+
+
+def test_contact_names_an_unnamed_saved_link(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    db = get_db()
+    db.add(SocialLink(account_id=account_id, platform="website", url="https://ada.dev/"))
+    db.add(
+        SocialLink(account_id=account_id, platform="other", url="https://ada.blog", label="Notes")
+    )
+    db.commit()
+
+    contact = ContactClaim(
+        links=[
+            LinkClaim(platform="other", url="https://ada.dev", label="Portfolio"),
+            LinkClaim(platform="other", url="https://ada.blog", label="Blog"),
+            LinkClaim(platform="other", url="https://credly.com/ada", label="Certificates"),
+        ],
+    )
+    summary = merge_resume_into_profile(db, account_id, _extraction(contact=contact))
+
+    assert summary.links_added == 1
+    links = db.execute(select(SocialLink).order_by(SocialLink.id)).scalars().all()
+    assert [(link.platform, link.label) for link in links] == [
+        ("other", "Portfolio"),  # unnamed site takes the resume's name
+        ("other", "Notes"),  # a name set by hand is kept
+        ("other", "Certificates"),
+    ]
+    db.close()
+
+
+def test_role_matches_despite_company_descriptor_and_suffix(tmp_path, monkeypatch):
+    """One extraction reads the bare company, the next adds a descriptor
+    in parentheses or a legal suffix: still the same role, enriched, not
+    a second row."""
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "app.retrieval.index.embed", lambda texts: [[1.0, 0.0, 0.0] for _ in texts]
+    )
+    account_id = _make_account()
+    db = get_db()
+
+    first = ExperienceClaim(
+        company="RestaurantPilot.ai",
+        title="Founding Machine Learning Engineer",
+        start_date="Nov 2025",
+        end_date=None,
+    )
+    merge_resume_into_profile(db, account_id, _extraction(experiences=[first]))
+
+    again = [
+        ExperienceClaim(
+            company="RestaurantPilot.ai (Restaurant Tech)",
+            title="Founding Machine-Learning Engineer",
+            start_date="Nov 2025",
+            end_date=None,
+            location="Seattle, USA (Remote)",
+            points=["Built the forecasting service"],
+        ),
+        ExperienceClaim(
+            company="restaurantpilot.ai, Inc.",
+            title="founding machine learning engineer",
+            start_date=None,
+            end_date=None,
+        ),
+    ]
+    summary = merge_resume_into_profile(db, account_id, _extraction(experiences=again))
+
+    assert summary.experiences_added == 0
+    assert summary.experiences_enriched == 1
+    (row,) = db.execute(select(Experience).where(Experience.account_id == account_id)).scalars()
+    assert row.company == "RestaurantPilot.ai"
+    assert row.location == "Seattle, USA (Remote)"
+    points = db.execute(select(ExperiencePoint).where(ExperiencePoint.experience_id == row.id))
+    assert [p.text for p in points.scalars()] == ["Built the forecasting service"]
+    db.close()
+
+
+def test_role_left_off_resumes_still_absorbs_a_resume_naming_it(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "app.retrieval.index.embed", lambda texts: [[1.0, 0.0, 0.0] for _ in texts]
+    )
+    account_id = _make_account()
+    db = get_db()
+    db.add(
+        Experience(
+            account_id=account_id, title="Engineer", company="Acme", exclude_from_resume=True
+        )
+    )
+    db.commit()
+
+    claim = ExperienceClaim(
+        company="Acme", title="Engineer", start_date=None, end_date=None, points=["Did a thing"]
+    )
+    summary = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim]))
+
+    assert summary.experiences_added == 0
+    assert summary.experience_points_added == 1
+    (row,) = db.execute(select(Experience).where(Experience.account_id == account_id)).scalars()
+    assert row.exclude_from_resume is True
+    db.close()
+
+
+def test_different_companies_sharing_a_prefix_stay_apart(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    db = get_db()
+
+    claims = [
+        ExperienceClaim(company="Meta", title="Engineer", start_date=None, end_date=None),
+        ExperienceClaim(company="Metaflow", title="Engineer", start_date=None, end_date=None),
+    ]
+    summary = merge_resume_into_profile(db, account_id, _extraction(experiences=claims))
+
+    assert summary.experiences_added == 2
+    db.close()
+
+
+def test_education_matches_despite_punctuation_and_descriptor(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    db = get_db()
+
+    merge_resume_into_profile(
+        db,
+        account_id,
+        _extraction(
+            education=[
+                EducationClaim(
+                    institution="Nirma University",
+                    degree="B.Tech in Computer Science",
+                    location=None,
+                    start_date=None,
+                    end_date=None,
+                )
+            ]
+        ),
+    )
+    summary = merge_resume_into_profile(
+        db,
+        account_id,
+        _extraction(
+            education=[
+                EducationClaim(
+                    institution="Nirma University (Ahmedabad)",
+                    degree="BTech in Computer Science",
+                    location=None,
+                    start_date="Jul 2020",
+                    end_date=None,
+                )
+            ]
+        ),
+    )
+
+    assert summary.education_added == 0
+    assert summary.education_enriched == 1
+    rows = db.execute(select(Education).where(Education.account_id == account_id)).scalars()
+    assert len(list(rows)) == 1
     db.close()

@@ -17,6 +17,7 @@ def _reset_db(tmp_path: Path):
     vectorstore_module.get_client.cache_clear()
     os.environ["DATABASE_URL"] = f"sqlite:///{tmp_path}/test.db"
     os.environ["QDRANT_URL"] = ":memory:"
+    os.environ["JOB_SCREENSHOT_STORAGE_DIR"] = str(tmp_path / "job_screenshots")
     get_settings.cache_clear()
     init_db()
 
@@ -149,6 +150,39 @@ def test_delete_posting(tmp_path):
     resp = client.delete(f"/api/job-postings/{created['id']}")
     assert resp.status_code == 200
     assert client.get(f"/api/job-postings/{created['id']}").status_code == 404
+
+
+def test_delete_posting_cleans_up_what_points_at_it(tmp_path):
+    from app.core.db import Detection, Resume
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+    created = client.post(
+        "/api/job-postings", json={"account_id": account_id, "raw_text": "Delete me too"}
+    ).json()
+
+    db = get_db()
+    db.add(Detection(posting_id=created["id"], kind="injection", span="0:5", snippet="x"))
+    resume = Resume(
+        account_id=account_id,
+        filename="tailored.pdf",
+        mime_type="application/pdf",
+        job_posting_id=created["id"],
+    )
+    db.add(resume)
+    db.commit()
+    resume_id = resume.id
+    db.close()
+
+    assert client.delete(f"/api/job-postings/{created['id']}").status_code == 200
+
+    db = get_db()
+    assert db.query(Detection).filter_by(posting_id=created["id"]).count() == 0
+    kept = db.get(Resume, resume_id)
+    assert kept is not None
+    assert kept.job_posting_id is None
+    db.close()
 
 
 def test_delete_unknown_posting_404(tmp_path):
@@ -533,3 +567,249 @@ def test_list_filters_by_min_salary(tmp_path, monkeypatch):
     ).json()
 
     assert [r["id"] for r in rows] == [ids["high"]]
+
+
+def _fake_screenshot_result(transcription="Backend Engineer at Acme. Python required."):
+    from app.profile.job_extract import JobExtraction, RequiredSkill
+    from app.profile.job_screenshot_extract import ScreenshotExtraction
+
+    return ScreenshotExtraction(
+        raw_text_transcribed=transcription,
+        extraction=JobExtraction(
+            company="Acme", title="Backend Engineer", location="Remote",
+            salary_range="", employment_type="", seniority="", experience_required="",
+            skills_required=[RequiredSkill(skill="Python", level="")],
+            other_requirements=[], role_summary="",
+        ),
+    )
+
+
+def test_compose_text_only_is_a_paste(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id), "text": "Backend engineer, Python, Postgres."},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "pasted"
+    assert body["raw_text"] == "Backend engineer, Python, Postgres."
+    assert body["warnings"] == []
+
+
+def test_compose_link_only_without_opening_asks_for_more(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    called = []
+    monkeypatch.setattr("app.api.job_postings.fetch_job_url", lambda url: called.append(url))
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id), "text": "https://acme.example/jobs/1"},
+    )
+
+    assert resp.status_code == 422
+    assert "Open the link for me" in resp.json()["detail"]
+    assert called == []
+
+
+def test_compose_opens_link_found_in_text(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    monkeypatch.setattr(
+        "app.api.job_postings.fetch_job_url",
+        lambda url: ("Page title", "We need a backend engineer with Python."),
+    )
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={
+            "account_id": str(account_id),
+            "text": "see https://acme.example/jobs/1.",
+            "open_links": "true",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["apply_url"] == "https://acme.example/jobs/1"
+    # Typed text plus a page is a mix, and the page is labeled in the record.
+    assert body["source"] == "mixed"
+    assert "Page at https://acme.example/jobs/1:" in body["raw_text"]
+    assert "We need a backend engineer with Python." in body["raw_text"]
+
+
+def test_compose_uses_signed_in_source_for_matching_domain(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    from app.core.db import AuthSource
+
+    db = get_db()
+    source = AuthSource(
+        account_id=account_id, label="Spare", site_domain="www.wellfound.com",
+        login_url="https://wellfound.com/login", username_selector="#u",
+        password_selector="#p", submit_selector="#s", encrypted_credentials="x",
+        masked_username="s***", acknowledged_risk=True, enabled=True,
+    )
+    db.add(source)
+    db.commit()
+    source_id = source.id
+    db.close()
+
+    used = []
+
+    def _auth(sid, url):
+        used.append(sid)
+        return "", "Full posting text behind the login wall."
+
+    monkeypatch.setattr("app.api.job_postings.fetch_job_url_authenticated", _auth)
+    monkeypatch.setattr(
+        "app.api.job_postings.fetch_job_url",
+        lambda url: (_ for _ in ()).throw(AssertionError("public fetch used")),
+    )
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={
+            "account_id": str(account_id),
+            "links": "https://jobs.wellfound.com/role/123",
+            "open_links": "true",
+        },
+    )
+
+    assert resp.status_code == 200
+    assert used == [source_id]
+    assert resp.json()["source"] == "authenticated"
+
+
+def test_compose_screenshots_with_text_and_a_failing_link(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    from app.ingest.jobs.url_fetch import JobUrlFetchError
+
+    def _fail(url):
+        raise JobUrlFetchError("needs login")
+
+    seen = {}
+
+    def _read(images, context_text="", account_id=None):
+        seen["count"] = len(images)
+        seen["context"] = context_text
+        return _fake_screenshot_result()
+
+    monkeypatch.setattr("app.api.job_postings.fetch_job_url", _fail)
+    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_images", _read)
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={
+            "account_id": str(account_id),
+            "text": "Referred by a friend, salary 20 LPA. https://acme.example/jobs/9",
+            "open_links": "true",
+        },
+        files=[
+            ("files", ("one.png", b"png-1", "image/png")),
+            ("files", ("two.png", b"png-2", "image/png")),
+        ],
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert seen["count"] == 2
+    assert "salary 20 LPA" in seen["context"]
+    assert body["source"] == "mixed"
+    assert body["company"] == "Acme"
+    assert body["apply_url"] == "https://acme.example/jobs/9"
+    assert "Python required." in body["raw_text"]
+    assert len(body["warnings"]) == 1 and "needs login" in body["warnings"][0]
+    assert Path(body["screenshot_path"]).exists()
+    assert body["image_count"] == 2
+
+    client = _client()
+    first = client.get(f"/api/job-postings/{body['id']}/images/0")
+    second = client.get(f"/api/job-postings/{body['id']}/images/1")
+    assert first.status_code == 200 and first.content == b"png-1"
+    assert second.status_code == 200 and second.content == b"png-2"
+    assert client.get(f"/api/job-postings/{body['id']}/images/2").status_code == 404
+
+
+def test_compose_keeps_images_the_model_could_not_read(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    from app.profile.job_screenshot_extract import ScreenshotExtractionError
+
+    def _fail(images, context_text="", account_id=None):
+        raise ScreenshotExtractionError("model unavailable")
+
+    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_images", _fail)
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id), "text": "Backend engineer, Python."},
+        files=[("files", ("one.png", b"png-1", "image/png"))],
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "pasted"
+    assert body["image_count"] == 1
+    assert "model unavailable" in body["warnings"][0]
+
+
+def test_delete_posting_removes_its_images(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    monkeypatch.setattr(
+        "app.api.job_postings.extract_job_posting_from_images",
+        lambda images, context_text="", account_id=None: _fake_screenshot_result(),
+    )
+    client = _client()
+    body = client.post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id)},
+        files=[("files", ("one.png", b"png-1", "image/png"))],
+    ).json()
+    stored = Path(body["screenshot_path"])
+    assert stored.exists()
+
+    assert client.delete(f"/api/job-postings/{body['id']}").status_code == 200
+    assert not stored.exists()
+
+
+def test_compose_rejects_non_image_attachment(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id), "text": "Some posting"},
+        files=[("files", ("doc.pdf", b"%PDF", "application/pdf"))],
+    )
+
+    assert resp.status_code == 422
+
+
+def test_compose_nothing_usable_reports_the_link_failure(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    from app.ingest.jobs.url_fetch import JobUrlFetchError
+
+    def _fail(url):
+        raise JobUrlFetchError("returned HTTP 403")
+
+    monkeypatch.setattr("app.api.job_postings.fetch_job_url", _fail)
+
+    resp = _client().post(
+        "/api/job-postings/compose",
+        data={
+            "account_id": str(account_id),
+            "links": "https://acme.example/jobs/2",
+            "open_links": "true",
+        },
+    )
+
+    assert resp.status_code == 422
+    assert "HTTP 403" in resp.json()["detail"]

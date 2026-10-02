@@ -29,7 +29,7 @@ _PAGES = [
     "/portfolio/experience",
     "/portfolio/education",
     "/portfolio/skills",
-    "/portfolio/contact",
+    "/portfolio/contact-links",
     "/portfolio/resume",
     "/portfolio/resume/build",
     "/jobs",

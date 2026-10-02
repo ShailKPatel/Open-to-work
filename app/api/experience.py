@@ -23,8 +23,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
+from app.api.education import clean_date
 from app.core.db import Experience, ExperiencePoint, ExperienceSkillEvidence
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
+from app.profile.month_year import newest_first
 from app.profile.resume_profile_merge import unlink_profile_rows
 from app.profile.skill_review import approve
 
@@ -45,9 +47,10 @@ class ExperienceSummary(BaseModel):
     title: str
     company: str
     location: str | None
-    start_date: dt.date | None
-    end_date: dt.date | None
+    start_date: str | None
+    end_date: str | None
     skill_count: int
+    exclude_from_resume: bool
 
     @classmethod
     def from_experience(cls, exp: Experience, skill_count: int) -> ExperienceSummary:
@@ -59,6 +62,7 @@ class ExperienceSummary(BaseModel):
             start_date=exp.start_date,
             end_date=exp.end_date,
             skill_count=skill_count,
+            exclude_from_resume=exp.exclude_from_resume,
         )
 
 
@@ -77,8 +81,9 @@ class ExperienceDetail(BaseModel):
     title: str
     company: str
     location: str | None
-    start_date: dt.date | None
-    end_date: dt.date | None
+    start_date: str | None
+    end_date: str | None
+    exclude_from_resume: bool
     created_at: dt.datetime
     updated_at: dt.datetime
     skills: list[SkillEvidenceItem]
@@ -95,6 +100,7 @@ class ExperienceDetail(BaseModel):
             location=exp.location,
             start_date=exp.start_date,
             end_date=exp.end_date,
+            exclude_from_resume=exp.exclude_from_resume,
             created_at=exp.created_at,
             updated_at=exp.updated_at,
             skills=skills,
@@ -147,12 +153,8 @@ def _detail_for(db: Session, exp: Experience) -> ExperienceDetail:
 
 @router.get("", response_model=list[ExperienceSummary])
 def list_experience(account_id: int, *, db: DbSession) -> list[ExperienceSummary]:
-    rows = list(
-        db.execute(
-            select(Experience)
-            .where(Experience.account_id == account_id)
-            .order_by(Experience.start_date.desc().nulls_last())
-        ).scalars()
+    rows = newest_first(
+        list(db.execute(select(Experience).where(Experience.account_id == account_id)).scalars())
     )
     counts = _skill_counts(db, [r.id for r in rows])
     return [ExperienceSummary.from_experience(r, counts.get(r.id, 0)) for r in rows]
@@ -163,8 +165,8 @@ class ExperienceCreate(BaseModel):
     title: str
     company: str
     location: str | None = None
-    start_date: dt.date | None = None
-    end_date: dt.date | None = None
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 @router.post("", response_model=ExperienceDetail)
@@ -181,8 +183,8 @@ def create_experience(body: ExperienceCreate, *, db: DbSession) -> ExperienceDet
         title=title,
         company=company,
         location=(body.location or None),
-        start_date=body.start_date,
-        end_date=body.end_date,
+        start_date=clean_date("start_date", body.start_date),
+        end_date=clean_date("end_date", body.end_date),
     )
     db.add(exp)
     db.commit()
@@ -202,8 +204,9 @@ class ExperienceUpdate(BaseModel):
     title: str | None = None
     company: str | None = None
     location: str | None = None
-    start_date: dt.date | None = None
-    end_date: dt.date | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    exclude_from_resume: bool | None = None
 
 
 @router.patch("/{experience_id}", response_model=ExperienceDetail)
@@ -219,6 +222,11 @@ def update_experience(
             fields[key] = fields[key].strip()
             if not fields[key]:
                 raise HTTPException(status_code=422, detail=f"{key} is required")
+    for key in ("start_date", "end_date"):
+        if key in fields:
+            fields[key] = clean_date(key, fields[key])
+    if fields.get("exclude_from_resume", False) is None:
+        del fields["exclude_from_resume"]
 
     exp = db.get(Experience, experience_id)
     if exp is None:

@@ -18,6 +18,7 @@ import mimetypes
 from pathlib import Path
 
 from fastapi import UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import Account, Resume
@@ -34,17 +35,13 @@ from app.profile.resume_extract import (
 logger = logging.getLogger(__name__)
 
 
-def _iso(value: dt.date | None) -> str | None:
-    return value.isoformat() if value else None
-
-
 def _experience_dict(claim: ExperienceClaim) -> dict:
     return {
         "company": claim.company,
         "title": claim.title,
         "location": claim.location,
-        "start_date": _iso(claim.start_date),
-        "end_date": _iso(claim.end_date),
+        "start_date": claim.start_date,
+        "end_date": claim.end_date,
         "points": list(claim.points),
     }
 
@@ -54,8 +51,10 @@ def _education_dict(claim: EducationClaim) -> dict:
         "institution": claim.institution,
         "degree": claim.degree,
         "location": claim.location,
-        "start_date": _iso(claim.start_date),
-        "end_date": _iso(claim.end_date),
+        "start_date": claim.start_date,
+        "end_date": claim.end_date,
+        "grade": claim.grade,
+        "details": list(claim.details),
     }
 
 
@@ -70,6 +69,31 @@ def _contact_dict(claim: ContactClaim) -> dict:
             for link in claim.links
         ],
     }
+
+
+class DuplicateResumeError(Exception):
+    """The uploaded file is byte-for-byte one this account already has."""
+
+    def __init__(self, existing: Resume) -> None:
+        super().__init__(f"same file as resume id={existing.id}")
+        self.existing = existing
+
+
+def find_same_file(db: Session, account_id: int, data: bytes) -> Resume | None:
+    """This account's stored resume whose file holds exactly `data`, if
+    any. Only same-size files are read back, so an upload costs at most a
+    read of the one or two files it could possibly equal.
+    """
+    candidates = db.execute(
+        select(Resume).where(Resume.account_id == account_id, Resume.file_size == len(data))
+    ).scalars()
+    for row in candidates:
+        try:
+            if row.stored_path and Path(row.stored_path).read_bytes() == data:
+                return row
+        except OSError:
+            continue
+    return None
 
 
 def ingest_resume(
@@ -91,11 +115,18 @@ def ingest_resume(
     unset when not given rather than defaulting to the filename, the UI
     falls back to filename for display on its own.
 
+    Raises DuplicateResumeError, before anything is saved, when the file
+    is identical to one already in this account's library: a second copy
+    would only repeat the same extraction and profile merge.
+
     Caller owns opening/closing `db` (same convention as every other
     router in this app).
     """
     safe_name = Path(upload.filename or "resume").name
     data = upload.file.read()
+    existing = find_same_file(db, account_id, data)
+    if existing is not None:
+        raise DuplicateResumeError(existing)
     mime_type = (
         upload.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
     )

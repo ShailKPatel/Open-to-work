@@ -20,7 +20,12 @@
       <a href="/monitor" class="otw-topnav-link {{ 'active' if top_active == 'monitor' }}">Monitor</a>
       <a href="/explanation" class="otw-topnav-link {{ 'active' if top_active == 'explanation' }}">How it works</a>
     </nav>
-    <a href="/settings" class="otw-settings-btn {{ 'active' if top_active == 'settings' }}">Settings</a>
+    <a href="/settings" class="otw-settings-btn {{ 'active' if top_active == 'settings' }}" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+        <circle cx="12" cy="12" r="3"/>
+      </svg>
+    </a>
   </div>
 </header>
 
@@ -34,11 +39,14 @@
      buttons start either now instead. Hidden on /monitor/sync, which
      shows all of it in full, and the extraction card on the projects
      page, which has its own. The x on a running card only hides it; the
-     work carries on, and a "finished" card shows up when it ends. -->
+     work carries on, and a "finished" card shows up when it ends.
+     Resume builds (app/resume_build/background.py) get the same cards,
+     plus a desktop notification when one ends, except on the build page
+     for that job while it is in view, which shows the result itself. -->
 <div
   x-data="backgroundWorkReminder()"
   x-init="init()"
-  x-show="visibleRuns.length || showExtraction || finished.length"
+  x-show="visibleRuns.length || showExtraction || finished.length || visibleBuilds.length"
   x-cloak
   class="fixed bottom-4 right-4 left-4 sm:left-auto sm:w-80 z-50 space-y-2"
 >
@@ -81,6 +89,27 @@
       <a href="/monitor/sync" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Open sync</a>
     </div>
   </div>
+
+  <template x-for="build in visibleBuilds" :key="build.id">
+    <div class="otw-tile p-4 text-xs shadow-lg">
+      <div class="flex items-start justify-between gap-3">
+        <p class="text-sm text-[color:var(--ink)]" :class="build.running && 'otw-working'" x-text="otwWork.buildTitle(build)"></p>
+        <button @click="build.running ? hideBuild(build) : dismissBuild(build)" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] shrink-0"
+          :aria-label="build.running ? 'Hide, keeps running' : 'Dismiss'" :title="build.running ? 'Hide. It keeps running.' : 'Dismiss'">×</button>
+      </div>
+      <p class="mt-1 text-[color:var(--muted)] truncate" x-text="build.label"></p>
+      <div x-show="build.running" class="mt-3 h-[2px] w-full bg-[color:var(--line)] overflow-hidden">
+        <div class="h-full bg-[color:var(--ink)] transition-all duration-300 ease-out" :style="`width: ${otwWork.buildPct(build)}%`"></div>
+      </div>
+      <div x-show="!build.running" class="mt-3 h-[2px] w-full" :class="build.state === 'done' ? 'bg-[color:var(--ink)]' : 'bg-[color:var(--line)]'"></div>
+      <p class="mt-2 text-[color:var(--muted)]" x-text="otwWork.buildNote(build)"></p>
+      <div x-show="!build.running" class="mt-3 flex items-center gap-3">
+        <a x-show="build.has_pdf" :href="`/api/resume-build/builds/${build.id}/pdf`" target="_blank" class="otw-btn-accent text-xs px-3 py-1.5">Open PDF</a>
+        <a :href="otwWork.buildHref(build)" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]"
+          x-text="build.state === 'done' ? 'See the result' : 'Back to the build'"></a>
+      </div>
+    </div>
+  </template>
 
   <template x-for="note in finished" :key="note.key">
     <div class="otw-tile p-4 text-xs shadow-lg">
@@ -174,6 +203,30 @@
       if (!ex) return 'Continue';
       return ex.waiting ? 'Continue' : 'Retry failed';
     },
+
+    // Resume builds have no counter to show, so the bar steps by stage.
+    buildPct(build) {
+      const steps = ['Tailoring the content to the job', 'Fitting the resume to the page count', 'Saving to the resume library'];
+      return Math.round(((steps.indexOf(build.stage) + 1) / (steps.length + 1)) * 100) || 5;
+    },
+    buildTitle(build) {
+      if (build.running) return 'Building a resume';
+      if (build.state === 'done') return 'Resume ready';
+      return 'Resume build failed';
+    },
+    buildNote(build) {
+      if (build.running) return `${build.stage}. Running in the background. Keep using the site.`;
+      if (build.state !== 'done' && build.incomplete_resume_id) {
+        return `${build.detail || 'The build stopped.'} What was done is saved as an incomplete resume; retry it from the build page or the resume library.`;
+      }
+      if (build.state !== 'done') return build.detail || 'Start it again from the build page.';
+      if (build.match_pct === null || build.match_pct === undefined) return 'Saved to your resume library.';
+      return `${build.match_pct}% match for this job. Saved to your resume library.`;
+    },
+    buildHref(build) {
+      const id = build.id ? `&build_id=${build.id}` : '';
+      return `/portfolio/resume/build?job_posting_id=${build.job_posting_id}${id}`;
+    },
   };
 
   function backgroundWorkReminder() {
@@ -181,10 +234,12 @@
       runs: [],
       extraction: null,
       extractionDismissed: '',
-      // Work seen running, so its end can be announced: {runs: {id: label}, extraction}.
-      watch: { runs: {}, extraction: false },
-      // Running cards hidden with the x: {runs: [id], extraction}.
-      hidden: { runs: [], extraction: false },
+      builds: [],
+      // Work seen running, so its end can be announced:
+      // {runs: {id: label}, extraction, builds: {id: {label, job_posting_id}}}.
+      watch: { runs: {}, extraction: false, builds: {} },
+      // Running cards hidden with the x: {runs: [id], extraction, builds: [id]}.
+      hidden: { runs: [], extraction: false, builds: [] },
       // "Finished" cards waiting to be read.
       finished: [],
       busy: {},
@@ -193,6 +248,18 @@
 
       get onSyncPage() {
         return window.location.pathname === '/monitor/sync';
+      },
+
+      // The build page for a job shows that job's build itself.
+      onBuildPage(build) {
+        if (window.location.pathname !== '/portfolio/resume/build') return false;
+        return new URLSearchParams(window.location.search).get('job_posting_id') === String(build.job_posting_id);
+      },
+
+      get visibleBuilds() {
+        return this.builds.filter(
+          (b) => !this.onBuildPage(b) && !(b.running && this.hidden.builds.includes(b.id))
+        );
       },
 
       get visibleRuns() {
@@ -244,11 +311,20 @@
         } catch (e) {
           // server unreachable for a moment; try again on the next tick
         }
+        try {
+          const builds = await fetch(`/api/resume-build/builds?account_id=${accountId}`);
+          if (builds.ok) {
+            this.builds = await builds.json();
+            await this.noteBuilds();
+          }
+        } catch (e) {
+          // same as above
+        }
         this.now = Date.now();
         // Fast while something is moving or about to resume, slow otherwise.
         const soon = this.runs.some(
           (r) => r.running || (r.resume_at && new Date(r.resume_at) - this.now < 120000)
-        ) || this.extraction?.running;
+        ) || this.extraction?.running || this.builds.some((b) => b.running);
         clearTimeout(this.timer);
         this.timer = setTimeout(() => this.poll(), soon ? 3000 : 30000);
       },
@@ -315,14 +391,80 @@
           }
         }
 
-        this.watch = { runs, extraction: watchingExtraction };
+        this.watch = { ...this.watch, runs, extraction: watchingExtraction };
         this.save('watch', this.watch);
         // Hidden only lasts while the work goes on; a stop brings the card back.
         this.hidden = {
+          ...this.hidden,
           runs: this.hidden.runs.filter((id) => runs[id] !== undefined),
           extraction: this.hidden.extraction && watchingExtraction,
         };
         this.save('hidden', this.hidden);
+      },
+
+      // A watched build that stopped running gets a desktop notification.
+      // One that dropped out of the list was either dismissed (seen on its
+      // build page) or lost to a restart; asking for it by id tells which.
+      async noteBuilds() {
+        const listed = new Map(this.builds.map((b) => [b.id, b]));
+        const builds = {};
+        for (const [id, info] of Object.entries(this.watch.builds || {})) {
+          let build = listed.get(id);
+          if (!build) {
+            const res = await fetch(`/api/resume-build/builds/${id}`).catch(() => null);
+            if (res && res.status === 404) {
+              this.addFinished({
+                key: `build${id}`,
+                title: 'Resume build stopped',
+                detail: `The app restarted before ${info.label} finished.`,
+                href: otwWork.buildHref({ job_posting_id: info.job_posting_id }),
+                link: 'Start it again',
+              });
+              continue;
+            }
+            build = res && res.ok ? await res.json() : null;
+          }
+          if (!build || build.running) {
+            builds[id] = info;
+          } else {
+            this.notifyBuild(build);
+          }
+        }
+        for (const b of this.builds) {
+          if (b.running) builds[b.id] = { label: b.label, job_posting_id: b.job_posting_id };
+        }
+        this.watch = { ...this.watch, builds };
+        this.save('watch', this.watch);
+        this.hidden = { ...this.hidden, builds: (this.hidden.builds || []).filter((id) => builds[id]) };
+        this.save('hidden', this.hidden);
+      },
+
+      notifyBuild(build) {
+        if (!('Notification' in window) || Notification.permission !== 'granted') return;
+        if (this.onBuildPage(build) && !document.hidden) return;
+        try {
+          // The tag makes every open tab's notification for one build the same one.
+          const note = new Notification(otwWork.buildTitle(build), {
+            body: `${build.label}\n${otwWork.buildNote(build)}`,
+            tag: `otw-build-${build.id}`,
+          });
+          note.onclick = () => {
+            window.focus();
+            window.location.href = otwWork.buildHref(build);
+          };
+        } catch (e) {
+          // some browsers only allow notifications from a service worker; the card still shows
+        }
+      },
+
+      hideBuild(build) {
+        this.hidden = { ...this.hidden, builds: [...(this.hidden.builds || []), build.id] };
+        this.save('hidden', this.hidden);
+      },
+
+      async dismissBuild(build) {
+        this.builds = this.builds.filter((b) => b.id !== build.id);
+        await fetch(`/api/resume-build/builds/${build.id}/dismiss`, { method: 'POST' }).catch(() => {});
       },
 
       addFinished(note) {

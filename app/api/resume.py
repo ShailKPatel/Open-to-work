@@ -42,7 +42,8 @@ from app.core.llm import (
     LLMRateLimitedError,
 )
 from app.core.settings import get_settings
-from app.profile.resume_ingest import ingest_resume, run_extraction
+from app.profile.resume_ingest import DuplicateResumeError, ingest_resume, run_extraction
+from app.resume_build.checkpoint import progress_steps
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
 from app.resume_build.orchestrator import build_resume_data_from_seed, edit_resume_content
 from app.resume_build.pagefit import PageFitNotAchievedError, fit_to_page_limit
@@ -91,9 +92,18 @@ class ResumeItem(BaseModel):
     has_original_file: bool
     has_ai_edited_version: bool
     compiled_at: dt.datetime | None
+    # A generated resume whose build stopped partway: what it had done,
+    # step by step (app/resume_build/checkpoint.py), where it stopped and
+    # why. POST /api/resume-build/retry/{id} picks it up from there.
+    build_incomplete: bool = False
+    build_progress: list[dict] = []
+    build_stopped_at: str | None = None
+    build_error: str | None = None
+    build_attempts: int = 0
 
     @classmethod
     def from_row(cls, row: Resume) -> ResumeItem:
+        state = row.build_state_json or None
         return cls(
             id=row.id,
             account_id=row.account_id,
@@ -117,6 +127,11 @@ class ResumeItem(BaseModel):
             has_original_file=bool(row.stored_path),
             has_ai_edited_version=bool(row.compiled_path),
             compiled_at=row.compiled_at,
+            build_incomplete=state is not None,
+            build_progress=progress_steps(state),
+            build_stopped_at=(state or {}).get("stopped_at"),
+            build_error=(state or {}).get("error"),
+            build_attempts=int((state or {}).get("attempts") or 0),
         )
 
 
@@ -133,6 +148,25 @@ def list_resumes(account_id: int, *, db: DbSession) -> list[ResumeItem]:
 class ResumeSearchHit(BaseModel):
     resume: ResumeItem
     score: float
+    # Share of the posting's required skills this resume covers (exact
+    # match full credit, close match half, see app/resume_build/
+    # skill_match.py). None when the posting has no extracted skills.
+    match_pct: int | None = None
+    matched: list[str] = []
+    related: list[str] = []
+    missing: list[str] = []
+
+
+def _resume_skills(row: Resume) -> list[str]:
+    """Skills a resume shows: its extracted tags, plus a generated
+    resume's own skills list (the same thing, kept in two places)."""
+    seen: dict[str, str] = {}
+    content = row.content_json or {}
+    for name in [*(row.tags_json or []), *(content.get("skills") or [])]:
+        text = str(name).strip()
+        if text:
+            seen.setdefault(text.casefold(), text)
+    return list(seen.values())
 
 
 @router.get("/search", response_model=list[ResumeSearchHit])
@@ -142,30 +176,65 @@ def search_resumes_for_posting(
     db: DbSession,
 ) -> list[ResumeSearchHit]:
     """"Closest existing resume to this job" for /portfolio/resume/build's
-    suggestion panel: semantic search over this account's resume library
-    (app/retrieval/search.py's search_resumes(), account-scoped) against the
-    posting's own text, hydrated back into full ResumeItem rows. Empty
-    list, not an error, when nothing's indexed yet (new account, or
-    Qdrant not reachable; search_resumes() degrades to []).
+    suggestion panel. When the posting has extracted required skills,
+    every resume in the library is scored by how many of them it covers
+    (match_pct) and ranked by that, semantic similarity of the posting's
+    text to the resume breaking ties. Without extracted skills there is
+    no percentage to give, so it falls back to semantic search alone
+    (app/retrieval/search.py's search_resumes(), account-scoped). Empty
+    list, not an error, when the library is empty.
     """
+    from app.profile.job_extract import parse_skills_required
+    from app.resume_build.skill_match import coverage_pct, match_requirements
     from app.retrieval.search import search_resumes
 
     posting = db.get(JobPosting, job_posting_id)
     if posting is None:
         raise HTTPException(status_code=404, detail=f"no job posting with id={job_posting_id}")
 
-    hits = search_resumes(posting.raw_text_quarantined, account_id, top_k=top_k)
-    rows_by_id = {
-        r.id: r
-        for r in db.execute(
-            select(Resume).where(Resume.id.in_([h.id for h in hits]))
-        ).scalars()
-    }
-    return [
-        ResumeSearchHit(resume=ResumeItem.from_row(rows_by_id[h.id]), score=h.score)
-        for h in hits
-        if h.id in rows_by_id
+    required = [
+        item["skill"]
+        for item in parse_skills_required((posting.extracted_json or {}).get("skills_required", []))
     ]
+    # An unfinished build has no content to match yet.
+    rows = list(
+        db.execute(
+            select(Resume).where(
+                Resume.account_id == account_id, Resume.build_state_json.is_(None)
+            )
+        ).scalars()
+    )
+    if not rows:
+        return []
+    try:
+        semantic = {
+            h.id: h.score
+            for h in search_resumes(posting.raw_text_quarantined, account_id, top_k=len(rows))
+        }
+    except Exception:
+        logger.exception("resume semantic search failed; ranking by skills only")
+        semantic = {}
+
+    hits: list[ResumeSearchHit] = []
+    for row in rows:
+        if required:
+            matches = match_requirements(required, _resume_skills(row))
+            hit = ResumeSearchHit(
+                resume=ResumeItem.from_row(row),
+                score=semantic.get(row.id, 0.0),
+                match_pct=coverage_pct(matches),
+                matched=[m.required for m in matches if m.kind == "exact"],
+                related=[m.required for m in matches if m.kind == "related"],
+                missing=[m.required for m in matches if m.kind == "missing"],
+            )
+        elif row.id in semantic:
+            hit = ResumeSearchHit(resume=ResumeItem.from_row(row), score=semantic[row.id])
+        else:
+            continue
+        hits.append(hit)
+
+    hits.sort(key=lambda h: (h.match_pct or 0, h.score), reverse=True)
+    return hits[:top_k]
 
 
 @router.post("", response_model=ResumeItem)
@@ -183,7 +252,15 @@ def upload_resume(
     account = db.get(Account, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
-    row = ingest_resume(db, account_id, file, name=name, notes=notes)
+    try:
+        row = ingest_resume(db, account_id, file, name=name, notes=notes)
+    except DuplicateResumeError as e:
+        label = e.existing.name or e.existing.filename
+        raise HTTPException(
+            status_code=409,
+            detail=f'This file is already in your library as "{label}". '
+            "Use Reprocess on it to read it again.",
+        ) from e
     return ResumeItem.from_row(row)
 
 
@@ -470,6 +547,10 @@ def edit_resume(resume_id: int, body: ResumeEditRequest, *, db: DbSession) -> Re
     row = db.get(Resume, resume_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
+    if row.build_state_json:
+        raise HTTPException(
+            status_code=409, detail="this resume's build has not finished; retry it first"
+        )
 
     job_text = _job_text_for_edit(row, db)
     template = row.template or "onepage"

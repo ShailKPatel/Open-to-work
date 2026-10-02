@@ -169,6 +169,11 @@ class Repository(Base):
     )
     # caching: skip refetch of readme/manifests/stats when unchanged
     pushed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Git blob SHA of the stored README. A push that leaves the README
+    # alone keeps the same SHA in the root listing, so the sync knows the
+    # extraction source is unchanged without downloading or re-reading it,
+    # and skips the LLM reprocess.
+    readme_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
@@ -212,6 +217,12 @@ class Repository(Base):
     # (people list their stack there) and is shown on the portfolio
     # overview instead. Set by app/ingest/github/sync.py on every upsert.
     is_profile_readme: Mapped[bool] = mapped_column(default=False)
+
+    # Kept on the Projects page but left out of resume building entirely:
+    # no candidate list, no picker, no skill suggestion drawn only from it.
+    # For a small utility repo that is real work but not resume material.
+    # Sync never touches it, so it survives every re-fetch.
+    exclude_from_resume: Mapped[bool] = mapped_column(default=False)
 
 
 class ProjectLink(Base):
@@ -331,8 +342,13 @@ class Experience(Base):
     title: Mapped[str] = mapped_column(String)
     company: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
-    start_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    end_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    # "Mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
+    start_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    end_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Same meaning as Repository.exclude_from_resume: the role stays in the
+    # profile (and a resume naming it again still matches it, rather than
+    # adding a copy), but resume building never sees it or its points.
+    exclude_from_resume: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -402,10 +418,16 @@ class Education(Base):
     same one-source-of-truth reasoning as Experience.end_date.
 
     Included in a generated resume the same way Experience is: full,
-    unconditional, every row, sequential, never picked or trimmed by the
-    LLM (app/resume_build/context.py's build_education_context). A
-    person's own degree history isn't something semantic search gets to
-    curate any more than a job history is.
+    unconditional, every row not marked exclude_from_resume, sequential,
+    never picked or trimmed by the LLM (app/resume_build/context.py's
+    build_education_context). A person's own degree history isn't
+    something semantic search gets to curate any more than a job history is.
+
+    grade and details are optional extras some people want on a resume
+    and others leave off: grade is one line such as "CGPA 8.9/10" shown
+    beside the degree, details is a list of lines (coursework, rank,
+    honors, thesis) shown as bullets under it. Left empty, neither takes
+    any space in the rendered resume.
     """
 
     __tablename__ = "education"
@@ -415,8 +437,14 @@ class Education(Base):
     institution: Mapped[str] = mapped_column(String)
     degree: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
-    start_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    end_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    # "Mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
+    start_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    end_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    grade: Mapped[str | None] = mapped_column(String, nullable=True)
+    details: Mapped[list] = mapped_column(JSON, default=list)
+    # Same meaning as Repository.exclude_from_resume: archived, kept on the
+    # Education page but never on a resume or in the portfolio counts.
+    exclude_from_resume: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -500,6 +528,25 @@ class SkillStar(Base):
 
     __table_args__ = (
         UniqueConstraint("account_id", "name_key", name="uq_skill_stars_account_name_key"),
+    )
+
+
+class SkillArchive(Base):
+    """An archived skill: kept on the Skills page under Archived, but left
+    out of resume building, the skill map, the portfolio counts and job
+    analytics' "have it" check. Keyed by account + casefolded name for the
+    same reason as SkillStar, which this mirrors.
+    """
+
+    __tablename__ = "skill_archives"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    name_key: Mapped[str] = mapped_column(String)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "name_key", name="uq_skill_archives_account_name_key"),
     )
 
 
@@ -603,7 +650,8 @@ class Resume(Base):
     # What this particular file says about work history and schooling, as
     # extracted: list of {company, title, start_date, end_date, points} and
     # {institution, degree, location, start_date, end_date} dicts, dates as
-    # ISO strings or null. A read-only snapshot of this one version; the
+    # "Mar 2026" / "2026" strings (app/profile/month_year.py) or
+    # null. A read-only snapshot of this one version; the
     # editable, deduplicated copies live in the Experience/Education tables
     # (app/profile/resume_profile_merge.py), so these are only rewritten by
     # a reprocess, never by PATCH /api/resume/{id}.
@@ -654,6 +702,18 @@ class Resume(Base):
     compiled_path: Mapped[str | None] = mapped_column(String, nullable=True)
     compiled_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # Set only on a generated resume whose build stopped partway (a model
+    # too busy to answer, a Tectonic timeout), cleared once a retry
+    # finishes it. Holds what app/api/resume_build.py needs to pick the
+    # build up where it stopped: the original request, the tailored
+    # content if that step had finished (reserve included), how far the
+    # page fit got, and the error. content_json stays null until the
+    # build finishes, so nothing that reads finished resumes sees this
+    # one's half-built content.
+    build_state_json: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
     )
 
 
@@ -719,7 +779,7 @@ class JobPosting(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
-    # "pasted" | "url" | "screenshot" | "authenticated"
+    # "pasted" | "url" | "screenshot" | "authenticated" | "mixed"
     source: Mapped[str] = mapped_column(String, index=True)
     external_id: Mapped[str] = mapped_column(String)
     company: Mapped[str] = mapped_column(String, index=True)
@@ -775,11 +835,15 @@ class JobPosting(Base):
         ForeignKey("role_families.id"), nullable=True
     )
 
-    # Set only for source == "screenshot": the uploaded image, kept on disk
-    # (same per-account storage convention as Resume.stored_path) so the
-    # original can be viewed later, distinct from raw_text_quarantined
-    # (the LLM's own transcription of it, used everywhere text is needed).
+    # Images attached when the posting was added, kept on disk (same
+    # per-account storage convention as Resume.stored_path) so the
+    # originals can be viewed later, distinct from raw_text_quarantined
+    # (the LLM's own transcription of them, used everywhere text is
+    # needed). screenshot_paths holds every image in the order given;
+    # screenshot_path is the first of them, and the only record on rows
+    # saved before screenshot_paths existed.
     screenshot_path: Mapped[str | None] = mapped_column(String, nullable=True)
+    screenshot_paths: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class Detection(Base):

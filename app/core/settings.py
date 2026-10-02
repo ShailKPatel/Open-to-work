@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # still run the same pass on demand.
     key_refresh_on_start: bool = True
 
+    # Re-syncs every GitHub source that hasn't been synced for a while, in
+    # a background thread (app/ingest/github/auto_sync.py). Turned off by
+    # tests, which must not call GitHub.
+    github_auto_sync_on_start: bool = True
+
     # Eval harness (app/evals/). Kept outside data/, which is gitignored,
     # so golden labels and result reports can be committed.
     evals_golden_dir: str = "./evals/golden"

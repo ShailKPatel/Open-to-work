@@ -557,3 +557,206 @@ def test_candidate_projects_skip_profile_readme(tmp_path, monkeypatch):
     db.close()
 
     assert [c["repo_id"] for c in candidates] == [project_id]
+
+
+# --- picking experience points, leaving entries off --------------------------
+
+
+def _add_points(account_id: int, texts: list[str]) -> int:
+    db = get_db()
+    role = db.query(Experience).filter_by(account_id=account_id).first()
+    for i, text in enumerate(texts, start=2):
+        db.add(ExperiencePoint(experience_id=role.id, text=text, order_index=i))
+    db.commit()
+    role_id = role.id
+    db.close()
+    return role_id
+
+
+def test_model_picks_experience_points_by_number(tmp_path, monkeypatch):
+    """The model returns numbers into the role's pool, never text: the
+    rendered point is the account's own wording, in the model's order,
+    and an invented role id or out-of-range number is ignored."""
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id = _seed(tmp_path)
+    role_id = _add_points(account_id, ["Organized the office party", "Cut build time in half"])
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    fake_response = MagicMock()
+    fake_response.parsed = {
+        "summary": "S", "projects": [], "skills": [],
+        "experience": [
+            {"role_id": role_id, "point_ids": [2, 99, 0]},
+            {"role_id": 424242, "point_ids": [0]},
+        ],
+    }
+    fake_complete = MagicMock(return_value=fake_response)
+    monkeypatch.setattr("app.resume_build.orchestrator.complete", fake_complete)
+
+    data = build_resume_data(account_id, posting_id, points_per_role=2)
+
+    assert data["experience"][0]["points"] == ["Cut build time in half", "Shipped a thing"]
+    prompt = "\n".join(m["content"] for m in fake_complete.call_args.args[1])
+    assert "[1] Organized the office party" in prompt
+    assert "at most 2 points" in prompt
+
+
+def test_role_the_model_skips_keeps_its_best_retrieval_points(tmp_path, monkeypatch):
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id = _seed(tmp_path)
+    _add_points(account_id, ["Second", "Third", "Fourth"])
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    fake_response = MagicMock()
+    fake_response.parsed = {"summary": "S", "projects": [], "skills": []}
+    monkeypatch.setattr(
+        "app.resume_build.orchestrator.complete", MagicMock(return_value=fake_response)
+    )
+
+    data = build_resume_data(account_id, posting_id, points_per_role=2)
+
+    assert data["experience"][0]["points"] == ["Shipped a thing", "Second"]
+
+
+def test_unticked_education_is_left_off(tmp_path, monkeypatch):
+    from app.core.db import Education
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id = _seed(tmp_path)
+    db = get_db()
+    kept = Education(account_id=account_id, institution="State University", degree="B.Sc")
+    dropped = Education(account_id=account_id, institution="Night School", degree="Cert")
+    db.add_all([kept, dropped])
+    db.commit()
+    kept_id = kept.id
+    db.close()
+
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    fake_response = MagicMock()
+    fake_response.parsed = {"summary": "S", "projects": [], "skills": []}
+    monkeypatch.setattr(
+        "app.resume_build.orchestrator.complete", MagicMock(return_value=fake_response)
+    )
+
+    data = build_resume_data(account_id, posting_id, selected_education_ids=[kept_id])
+
+    assert [e["institution"] for e in data["education"]] == ["State University"]
+
+
+def test_edit_keeps_entries_and_points_the_resume_already_showed(tmp_path, monkeypatch):
+    """An AI edit rebuilds experience and education from the account's
+    own data, but a role or degree left off the resume stays off, and the
+    roles it does show keep the points they showed."""
+    from app.core.db import Education
+
+    account_id, _ = _seed(tmp_path)
+    role_id = _add_points(account_id, ["Organized the office party"])
+    db = get_db()
+    other_role = Experience(account_id=account_id, title="Intern", company="Initech")
+    school = Education(account_id=account_id, institution="Night School", degree="Cert")
+    db.add_all([other_role, school])
+    db.commit()
+    db.close()
+
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    fake_response = MagicMock()
+    fake_response.parsed = {"summary": "New", "projects": [], "skills": []}
+    monkeypatch.setattr(
+        "app.resume_build.orchestrator.complete", MagicMock(return_value=fake_response)
+    )
+
+    current = {
+        "summary": "Old",
+        "experience": [{"id": role_id, "points": ["Organized the office party"]}],
+        "education": [],
+    }
+    data = edit_resume_content(account_id, "job text", current, "Shorter summary", "onepage")
+
+    assert [r["company"] for r in data["experience"]] == ["Acme"]
+    assert data["experience"][0]["points"] == ["Organized the office party"]
+    assert data["education"] == []
+
+
+def test_resume_building_never_sees_entries_left_off_resumes(tmp_path, monkeypatch):
+    """A project or role marked exclude_from_resume is not a candidate,
+    not in the experience section, and its evidence suggests no skill."""
+    from app.resume_build.context import build_experience_context
+    from app.resume_build.orchestrator import _candidate_projects, _candidate_skills
+    from app.retrieval.search import Hit
+
+    account_id, _ = _seed(tmp_path)
+    db = get_db()
+    project_id = db.query(Repository).filter_by(account_id=account_id).first().id
+    hidden = Repository(
+        account_id=account_id, github_id=2, name="qr-tool", full_name="janedoe/qr-tool",
+        url="https://github.com/janedoe/qr-tool", is_fork=False, exclude_from_resume=True,
+    )
+    hidden_role = Experience(
+        account_id=account_id, title="Intern", company="Side Gig", exclude_from_resume=True
+    )
+    db.add_all([hidden, hidden_role])
+    db.commit()
+
+    hits = [
+        Hit(id=1, score=0.95, payload={"repo_id": hidden.id, "skill": "QR codes"}),
+        Hit(id=2, score=0.9, payload={"experience_id": hidden_role.id, "skill": "Excel"}),
+        Hit(id=3, score=0.5, payload={"repo_id": project_id, "skill": "Python"}),
+    ]
+    monkeypatch.setattr(
+        "app.retrieval.search.search_skill_evidence",
+        lambda query_text, account_id, top_k=10, source_type=None: hits,
+    )
+
+    candidates = _candidate_projects(db, account_id, "Python", selected_project_ids=[hidden.id])
+    skills = _candidate_skills(db, account_id, "Python")
+    roles = build_experience_context(db, account_id)
+    db.close()
+
+    assert [c["repo_id"] for c in candidates] == [project_id]
+    assert skills == ["Python"]
+    assert [r["company"] for r in roles] == ["Acme"]
+
+
+def test_resume_building_never_sees_archived_education_or_skills(tmp_path, monkeypatch):
+    """An archived education entry is left out of the education section,
+    and a skill archived by hand is neither a candidate skill nor listed
+    under a candidate project, even when a live project backs it."""
+    from app.core.db import Education, SkillArchive, SkillEvidence
+    from app.resume_build.context import build_education_context
+    from app.resume_build.orchestrator import _candidate_projects, _candidate_skills
+    from app.retrieval.search import Hit
+
+    account_id, _ = _seed(tmp_path)
+    db = get_db()
+    project_id = db.query(Repository).filter_by(account_id=account_id).first().id
+    db.add_all([
+        Education(account_id=account_id, institution="State University", degree="B.Sc"),
+        Education(
+            account_id=account_id, institution="Night School", degree="Cert",
+            exclude_from_resume=True,
+        ),
+        SkillEvidence(
+            repo_id=project_id, skill="QR Codes", evidence_type="readme_described",
+            weight=1.0, confidence=1.0,
+        ),
+        SkillArchive(account_id=account_id, name_key="qr codes"),
+    ])
+    db.commit()
+
+    hits = [
+        Hit(id=1, score=0.95, payload={"repo_id": project_id, "skill": "QR Codes"}),
+        Hit(id=2, score=0.5, payload={"repo_id": project_id, "skill": "Python"}),
+    ]
+    monkeypatch.setattr(
+        "app.retrieval.search.search_skill_evidence",
+        lambda query_text, account_id, top_k=10, source_type=None: hits,
+    )
+
+    schools = build_education_context(db, account_id)
+    skills = _candidate_skills(db, account_id, "Python")
+    candidates = _candidate_projects(db, account_id, "Python")
+    db.close()
+
+    assert [e["institution"] for e in schools] == ["State University"]
+    assert skills == ["Python"]
+    assert "QR Codes" not in candidates[0]["skills"]

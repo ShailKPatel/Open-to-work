@@ -52,16 +52,18 @@ def _default_github_username_exists(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_background_startup_work(monkeypatch):
-    """The app lifespan starts two background threads: one builds missing
+    """The app lifespan starts three background threads: one builds missing
     skill-map layouts (app/api/skills.py's warm_skill_maps), which loads a
-    real embedding model, and one rechecks keys whose quota cooldown has
-    elapsed (app/core/key_refresh.py), which calls providers. Every test
-    that builds a TestClient would pay for both and hit the network, so
-    both are off unless a test asks for them."""
+    real embedding model, one rechecks keys whose quota cooldown has
+    elapsed (app/core/key_refresh.py), which calls providers, and one
+    re-syncs stale GitHub sources (app/ingest/github/auto_sync.py). Every
+    test that builds a TestClient would pay for all three and hit the
+    network, so they are off unless a test asks for them."""
     from app.core.settings import get_settings
 
     monkeypatch.setenv("SKILL_MAP_WARM_START", "0")
     monkeypatch.setenv("KEY_REFRESH_ON_START", "0")
+    monkeypatch.setenv("GITHUB_AUTO_SYNC_ON_START", "0")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

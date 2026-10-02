@@ -22,6 +22,12 @@
     disabled     Alpine expression that disables the button
     size         'sm' for dense rows and cards
     class        extra classes (positioning)
+
+  search(): the search box at the top of a list page, an input with a
+  leading magnifier. Escape clears it.
+    model        Alpine expression the query is bound to (as x-model)
+    placeholder  hint text, also the accessible name
+    class        extra classes on the wrapper (width, margins)
 #}
 
 {% macro select(model, options, placeholder=none, change=none, size='', class='', disabled=none, label=none) -%}
@@ -88,4 +94,50 @@
   class="otw-icon-btn otw-icon-btn-danger{% if size == 'sm' %} otw-icon-btn-sm{% endif %}{% if class %} {{ class }}{% endif %}"
   x-html="otwIcon('trash')"
 ></button>
+{%- endmacro %}
+
+{% macro archive_button(click, label='Archive', disabled=none, size='', class='') -%}
+<button
+  type="button"
+  @click="{{ click }}"
+  {% if disabled %}:disabled="{{ disabled }}"{% endif %}
+  title="{{ label }}"
+  aria-label="{{ label }}"
+  class="otw-icon-btn{% if size == 'sm' %} otw-icon-btn-sm{% endif %}{% if class %} {{ class }}{% endif %}"
+  x-html="otwIcon('archive')"
+></button>
+{%- endmacro %}
+
+{#
+  The collapsed "Archived (n)" list under a portfolio page. `items` is the
+  Alpine expression for the archived rows, `open` the boolean that folds
+  it; the caller's block renders the rows themselves.
+#}
+{% macro archived_section(items, open, note) -%}
+<div x-cloak x-show="!loading && {{ items }}.length > 0" class="mt-12">
+  <button type="button" @click="{{ open }} = !{{ open }}" class="text-sm text-[color:var(--muted)] hover:text-[color:var(--ink)]">
+    <span x-text="{{ open }} ? '▾' : '▸'"></span>
+    Archived (<span x-text="{{ items }}.length"></span>)
+  </button>
+  <div x-show="{{ open }}" class="mt-3">
+    <p class="text-xs text-[color:var(--muted)]">{{ note }}</p>
+    <div class="mt-3 grid gap-2">
+      {{ caller() }}
+    </div>
+  </div>
+</div>
+{%- endmacro %}
+
+{% macro search(model, placeholder='Search', class='') -%}
+<div class="otw-input-icon{% if class %} {{ class }}{% endif %}">
+  <span class="otw-icon" x-html="otwIcon('search')"></span>
+  <input
+    x-model="{{ model }}"
+    type="search"
+    placeholder="{{ placeholder }}"
+    aria-label="{{ placeholder }}"
+    class="otw-input"
+    @keydown.escape="{{ model }} = ''"
+  />
+</div>
 {%- endmacro %}

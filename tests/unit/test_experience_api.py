@@ -327,3 +327,46 @@ def test_delete_experience_cascades_points(tmp_path, monkeypatch):
 
     client_qdrant = vectorstore_module.get_client()
     assert client_qdrant.count(EXPERIENCE_POINTS_COLLECTION).count == 0
+
+
+def test_exclude_from_resume_round_trips_and_survives_other_edits(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+    created = client.post(
+        "/api/experience", json={"account_id": account_id, "title": "Eng", "company": "Acme"}
+    ).json()
+    assert created["exclude_from_resume"] is False
+
+    resp = client.patch(f"/api/experience/{created['id']}", json={"exclude_from_resume": True})
+    assert resp.status_code == 200
+    assert resp.json()["exclude_from_resume"] is True
+
+    client.patch(f"/api/experience/{created['id']}", json={"title": "Engineer"})
+    client.patch(f"/api/experience/{created['id']}", json={"exclude_from_resume": None})
+    (row,) = client.get(f"/api/experience?account_id={account_id}").json()
+    assert (row["title"], row["exclude_from_resume"]) == ("Engineer", True)
+
+
+def test_dates_stored_as_month_and_year_on_create_and_edit(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+
+    created = client.post(
+        "/api/experience",
+        json={
+            "account_id": account_id, "title": "Engineer", "company": "Acme",
+            "start_date": "2026-01-01", "end_date": "03/2028",
+        },
+    ).json()
+    assert (created["start_date"], created["end_date"]) == ("Jan 2026", "Mar 2028")
+
+    edited = client.patch(f"/api/experience/{created['id']}", json={"end_date": None}).json()
+    assert edited["end_date"] is None
+
+    bad = client.post(
+        "/api/experience",
+        json={"account_id": account_id, "title": "E", "company": "A", "start_date": "Foo 2020"},
+    )
+    assert bad.status_code == 422
