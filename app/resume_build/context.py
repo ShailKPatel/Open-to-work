@@ -26,6 +26,7 @@ it with whatever the orchestrator produces for the rest.
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -53,6 +54,7 @@ _PLATFORM_ICONS = {
     "website": r"\faGlobe",
 }
 _DEFAULT_SOCIAL_ICON = r"\faLink"
+_HANDLE_PLATFORMS = frozenset({"github", "linkedin", "instagram"})
 # Custom ("other") links are named by the user, so match the common names
 # by prefix: "Portfolio", "Certificates", "Certifications", "Blog".
 _CUSTOM_LABEL_ICONS = (
@@ -63,7 +65,7 @@ _CUSTOM_LABEL_ICONS = (
 
 
 def _format_month_year(value: str | None) -> str:
-    """Stored "Mar 2026" printed as "Mar. 2026", "2026" as itself; an
+    """Stored "mar 2026" printed as "Mar. 2026", "2026" as itself; an
     unreadable value is printed as stored rather than dropped."""
     parsed = parse_quiet(value)
     if parsed is None:
@@ -78,6 +80,32 @@ def _date_range(start: str | None, end: str | None) -> str:
     if not start_text:
         return end_text
     return f"{start_text} -- {end_text or 'present'}"
+
+
+def _absolute_url(url: str) -> str:
+    """A link saved as "linkedin.com/in/x" still needs a scheme to be
+    clickable in the PDF."""
+    url = url.strip()
+    if url and "://" not in url and not url.startswith("mailto:"):
+        return f"https://{url}"
+    return url
+
+
+def _link_display(platform: str, url: str) -> str:
+    """What the header prints for a link, the href stays the full URL.
+    Profile platforms (LinkedIn, GitHub, Instagram) print just the
+    handle; anything else prints the URL without its scheme, "www." or
+    trailing slash, e.g. "shailkpatel.github.io"."""
+    parts = urlsplit(url)
+    host = parts.netloc.lower().removeprefix("www.")
+    path = parts.path.strip("/")
+    if platform in _HANDLE_PLATFORMS and path:
+        segments = path.split("/")
+        # linkedin.com/in/<handle>, linkedin.com/company/<handle>
+        if platform == "linkedin" and len(segments) > 1 and segments[0] in ("in", "company"):
+            return segments[1]
+        return segments[0].lstrip("@")
+    return f"{host}/{path}" if path else host or url
 
 
 def build_header_context(
@@ -136,8 +164,12 @@ def build_header_context(
             icon = next(
                 (i for prefix, i in _CUSTOM_LABEL_ICONS if name.startswith(prefix)), icon
             )
-        display = link.label if platform == "other" and link.label else link.url
-        social_items.append({"icon": icon, "text": display, "href": link.url})
+        href = _absolute_url(link.url)
+        if platform == "other" and link.label:
+            display = link.label
+        else:
+            display = _link_display(platform, href)
+        social_items.append({"icon": icon, "text": display, "href": href})
 
     return {
         "full_name": f"{account.first_name} {account.last_name}".strip(),

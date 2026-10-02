@@ -360,7 +360,7 @@ def test_dates_stored_as_month_and_year_on_create_and_edit(tmp_path):
             "start_date": "2026-01-01", "end_date": "03/2028",
         },
     ).json()
-    assert (created["start_date"], created["end_date"]) == ("Jan 2026", "Mar 2028")
+    assert (created["start_date"], created["end_date"]) == ("jan 2026", "mar 2028")
 
     edited = client.patch(f"/api/experience/{created['id']}", json={"end_date": None}).json()
     assert edited["end_date"] is None

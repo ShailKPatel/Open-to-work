@@ -116,6 +116,12 @@ def test_escape_latex_handles_every_special_char():
     )
 
 
+def test_escape_latex_replaces_em_dashes_with_commas():
+    assert escape_latex("Built a tool \u2014 fast") == "Built a tool, fast"
+    assert escape_latex("A\u2014B, \u2014 C") == "A, B, C"
+    assert escape_latex("2019 -- 2020") == "2019 -- 2020"
+
+
 def test_escape_latex_url_only_touches_breaking_chars():
     assert escape_latex_url("https://example.com/a_b-c~d?x=1&y=2%3") == (
         r"https://example.com/a_b-c~d?x=1\&y=2\%3"
@@ -211,7 +217,28 @@ def test_build_header_context_maps_platform_to_icon(tmp_path):
     ctx = build_header_context(account, social_links=[link])
 
     assert ctx["social_items"] == [
-        {"icon": r"\faLinkedin", "text": "https://linkedin.com/in/jane", "href": "https://linkedin.com/in/jane"}
+        {"icon": r"\faLinkedin", "text": "jane", "href": "https://linkedin.com/in/jane"}
+    ]
+
+
+def test_build_header_context_shows_links_without_scheme(tmp_path):
+    """The href stays the full URL; the printed text drops the scheme,
+    "www." and trailing slash, and a link saved without a scheme still
+    gets one so it is clickable."""
+    _reset_db(tmp_path)
+    account = _make_account(github_username="")
+    links = [
+        SocialLink(account_id=account.id, platform="website", url="https://jane.github.io/"),
+        SocialLink(account_id=account.id, platform="website", url="www.jane.dev/blog"),
+        SocialLink(account_id=account.id, platform="linkedin", url="linkedin.com/in/jane-d/"),
+    ]
+
+    ctx = build_header_context(account, social_links=links)
+
+    assert [(i["text"], i["href"]) for i in ctx["social_items"]] == [
+        ("jane.github.io", "https://jane.github.io/"),
+        ("jane.dev/blog", "https://www.jane.dev/blog"),
+        ("jane-d", "https://linkedin.com/in/jane-d/"),
     ]
 
 
@@ -249,11 +276,11 @@ def test_build_experience_context_orders_roles_and_points(tmp_path):
     db = get_db()
     older = Experience(
         account_id=account.id, title="Engineer I", company="Old Co",
-        start_date="Jan 2020", end_date="Jan 2021",
+        start_date="jan 2020", end_date="jan 2021",
     )
     current = Experience(
         account_id=account.id, title="Engineer II", company="New Co",
-        start_date="Jun 2022", end_date=None,
+        start_date="jun 2022", end_date=None,
     )
     db.add_all([older, current])
     db.commit()
@@ -307,11 +334,11 @@ def test_build_education_context_orders_newest_first(tmp_path):
         [
             Education(
                 account_id=account.id, institution="Old College", degree="AA",
-                start_date="Jan 2015", end_date="Jan 2017",
+                start_date="jan 2015", end_date="jan 2017",
             ),
             Education(
                 account_id=account.id, institution="New University", degree="B.Sc",
-                start_date="Jan 2018", end_date="Jan 2022",
+                start_date="jan 2018", end_date="jan 2022",
             ),
         ]
     )
@@ -340,12 +367,12 @@ def test_build_education_context_carries_grade_and_details(tmp_path):
         [
             Education(
                 account_id=account.id, institution="New University", degree="B.Sc",
-                start_date="Jan 2018", grade="CGPA 8.9/10",
+                start_date="jan 2018", grade="CGPA 8.9/10",
                 details=["Ranked 1st in university"],
             ),
             Education(
                 account_id=account.id, institution="Old College", degree="AA",
-                start_date="Jan 2015",
+                start_date="jan 2015",
             ),
         ]
     )

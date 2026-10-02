@@ -9,7 +9,7 @@ grade and details are optional: blank strings are stored as nothing, so
 an entry without them renders on a resume exactly as one that never had
 them (see the Education model docstring).
 
-start_date/end_date are stored as "Mar 2026" (or "2026"), whatever form
+start_date/end_date are stored as "mar 2026" (or "2026"), whatever form
 they arrive in; see app/profile/month_year.py.
 
 exclude_from_resume archives an entry: it stays listed (the page shows it
@@ -82,7 +82,7 @@ def clean_date(field: str, value: str | None) -> str | None:
         return normalize(value)
     except ValueError:
         raise HTTPException(
-            status_code=422, detail=f"{field}: use a month and year like Mar 2026"
+            status_code=422, detail=f"{field}: use a month and year like mar 2026"
         ) from None
 
 

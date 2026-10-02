@@ -342,7 +342,7 @@ class Experience(Base):
     title: Mapped[str] = mapped_column(String)
     company: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
-    # "Mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
+    # "mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
     start_date: Mapped[str | None] = mapped_column(String, nullable=True)
     end_date: Mapped[str | None] = mapped_column(String, nullable=True)
     # Same meaning as Repository.exclude_from_resume: the role stays in the
@@ -437,7 +437,7 @@ class Education(Base):
     institution: Mapped[str] = mapped_column(String)
     degree: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
-    # "Mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
+    # "mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
     start_date: Mapped[str | None] = mapped_column(String, nullable=True)
     end_date: Mapped[str | None] = mapped_column(String, nullable=True)
     grade: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -650,7 +650,7 @@ class Resume(Base):
     # What this particular file says about work history and schooling, as
     # extracted: list of {company, title, start_date, end_date, points} and
     # {institution, degree, location, start_date, end_date} dicts, dates as
-    # "Mar 2026" / "2026" strings (app/profile/month_year.py) or
+    # "mar 2026" / "2026" strings (app/profile/month_year.py) or
     # null. A read-only snapshot of this one version; the
     # editable, deduplicated copies live in the Experience/Education tables
     # (app/profile/resume_profile_merge.py), so these are only rewritten by

@@ -59,7 +59,7 @@
                 title="Click to name this version"
               />
               <p x-show="!resume.build_incomplete" class="text-xs text-[color:var(--muted)] mt-1">
-                <a :href="'/api/resume/' + resume.id + '/file'" target="_blank" class="hover:underline break-all" x-text="resume.filename"></a>
+                <a :href="'/api/resume/' + resume.id + (resume.has_original_file ? '/file' : '/compiled-file')" target="_blank" class="hover:underline break-all" x-text="resume.filename"></a>
               </p>
             </div>
             <div class="flex items-center gap-2 shrink-0">

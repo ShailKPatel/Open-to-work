@@ -364,7 +364,11 @@ def _apply_cut(data: dict[str, Any], suggestion: dict[str, Any]) -> bool:
                 continue
             points = role.get("points", [])
             if point_text in points and len(points) > 1:
-                points.remove(point_text)
+                index = points.index(point_text)
+                del points[index]
+                sources = role.get("source_points")
+                if isinstance(sources, list) and index < len(sources):
+                    del sources[index]
                 return True
         return False
 
@@ -487,9 +491,16 @@ def _apply_addition(data: dict[str, Any], reserve: dict[str, Any]) -> bool:
         while points:
             point = points.pop(0)
             for role in data.get("experience", []):
-                if role["company"] == company and point not in role.get("points", []):
-                    role.setdefault("points", []).append(point)
-                    return True
+                if role["company"] != company:
+                    continue
+                shown = role.setdefault("points", [])
+                sources = role.get("source_points")
+                if point in (sources if isinstance(sources, list) else shown):
+                    continue
+                shown.append(point)
+                if isinstance(sources, list):
+                    sources.append(point)
+                return True
 
     skills_held: list[str] = reserve.get("skills") or []
     while skills_held:

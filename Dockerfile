@@ -46,6 +46,13 @@ RUN pip install --no-cache-dir -e ".[dev]"
 # Adds roughly 300MB to the image.
 RUN playwright install --with-deps chromium
 
+# Fill Tectonic's package cache now, so a resume build never downloads
+# LaTeX packages or fonts mid-compile (a cold fetch can outlast
+# compile.py's timeout). Only app/resume_build/ is copied first, so this
+# layer reruns when templates change, not on every code edit.
+COPY app/resume_build ./app/resume_build
+RUN python -m app.resume_build.warm_tectonic
+
 # Code changes invalidate only from here down; deps above stay cached.
 COPY app ./app
 

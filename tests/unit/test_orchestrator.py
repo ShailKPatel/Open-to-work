@@ -574,9 +574,9 @@ def _add_points(account_id: int, texts: list[str]) -> int:
 
 
 def test_model_picks_experience_points_by_number(tmp_path, monkeypatch):
-    """The model returns numbers into the role's pool, never text: the
-    rendered point is the account's own wording, in the model's order,
-    and an invented role id or out-of-range number is ignored."""
+    """The model picks by number into the role's pool, in its own order,
+    and an invented role id or out-of-range number is ignored. A point
+    returned without new wording keeps the account's own text."""
     from app.resume_build.orchestrator import build_resume_data
 
     account_id, posting_id = _seed(tmp_path)
@@ -586,8 +586,15 @@ def test_model_picks_experience_points_by_number(tmp_path, monkeypatch):
     fake_response.parsed = {
         "summary": "S", "projects": [], "skills": [],
         "experience": [
-            {"role_id": role_id, "point_ids": [2, 99, 0]},
-            {"role_id": 424242, "point_ids": [0]},
+            {
+                "role_id": role_id,
+                "points": [
+                    {"id": 2, "text": "Cut build time in half"},
+                    {"id": 99, "text": "Invented"},
+                    {"id": 0, "text": ""},
+                ],
+            },
+            {"role_id": 424242, "points": [{"id": 0, "text": "Invented"}]},
         ],
     }
     fake_complete = MagicMock(return_value=fake_response)
@@ -599,6 +606,43 @@ def test_model_picks_experience_points_by_number(tmp_path, monkeypatch):
     prompt = "\n".join(m["content"] for m in fake_complete.call_args.args[1])
     assert "[1] Organized the office party" in prompt
     assert "at most 2 points" in prompt
+
+
+def test_reworded_experience_point_is_kept_unless_it_adds_a_number(tmp_path, monkeypatch):
+    """A rewording is used as long as it states no number the original
+    does not; one that invents a metric falls back to the account's own
+    text. source_points keeps the real point behind each shown line, so
+    the reserve does not offer the same point again."""
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id = _seed(tmp_path)
+    role_id = _add_points(account_id, ["Organized the office party", "Cut build time in half"])
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    fake_response = MagicMock()
+    fake_response.parsed = {
+        "summary": "S", "projects": [], "skills": [],
+        "experience": [
+            {
+                "role_id": role_id,
+                "points": [
+                    {"id": 2, "text": "Halved CI build time"},
+                    {"id": 0, "text": "Shipped a thing used by 10000 people"},
+                ],
+            },
+        ],
+    }
+    monkeypatch.setattr(
+        "app.resume_build.orchestrator.complete", MagicMock(return_value=fake_response)
+    )
+
+    data = build_resume_data(account_id, posting_id, points_per_role=2)
+
+    role = data["experience"][0]
+    assert role["points"] == ["Halved CI build time", "Shipped a thing"]
+    assert role["source_points"] == ["Cut build time in half", "Shipped a thing"]
+    held = data["reserve"]["experience_points"].get(role["company"], [])
+    assert "Cut build time in half" not in held
+    assert "Organized the office party" in held
 
 
 def test_role_the_model_skips_keeps_its_best_retrieval_points(tmp_path, monkeypatch):

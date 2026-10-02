@@ -1,7 +1,7 @@
 """Month-and-year dates for Experience and Education.
 
 A role or a degree is dated to the month, never the day, so these dates
-are stored the way a resume prints them: "Mar 2026", or "2026" alone when
+are stored as a short lowercase month and the year: "mar 2026", or "2026" alone when
 only the year is known. normalize() is the one place every write path
 (manual add, edit, resume extraction, the startup migration) goes through,
 so the database only ever holds that form.
@@ -12,9 +12,9 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
-_MONTH_NAMES = {name.lower(): i for i, name in enumerate(MONTHS, start=1)}
+_MONTH_NAMES = {name: i for i, name in enumerate(MONTHS, start=1)}
 _MONTH_NAMES.update(
     {
         "january": 1, "february": 2, "march": 3, "april": 4, "june": 6, "july": 7,
@@ -64,8 +64,8 @@ def parse(value: object) -> tuple[int, int | None] | None:
 
 
 def normalize(value: object) -> str | None:
-    """ "Mar 2026" (or "2026") from a date, "2026-03-01", "2026-03",
-    "03/2026", "march 2026", "Mar. 2026" and the like. None for an empty
+    """ "mar 2026" (or "2026") from a date, "2026-03-01", "2026-03",
+    "03/2026", "March 2026", "Mar. 2026" and the like. None for an empty
     value. Raises ValueError for anything else.
     """
     parsed = parse(value)

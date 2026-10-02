@@ -92,7 +92,7 @@ def test_extracts_experiences_with_dates(monkeypatch):
     assert claim.company == "Acme Corp"
     assert claim.title == "Software Engineer"
     assert claim.location == "Berlin, Germany"
-    assert claim.start_date == "Jan 2020"
+    assert claim.start_date == "jan 2020"
     assert claim.end_date is None  # empty string means "still there" / unknown
     assert claim.points == ["Developed API services", "Implemented unit tests"]
     assert claim.skills == ["FastAPI", "pytest"]
@@ -143,7 +143,7 @@ def test_extracts_education_with_dates(monkeypatch):
     assert claim.institution == "Nirma University"
     assert claim.degree == "B.Tech in Computer Science"
     assert claim.location == "Springfield"
-    assert claim.start_date == "Aug 2022"
+    assert claim.start_date == "aug 2022"
     assert claim.end_date is None  # empty string means in progress / unknown
 
 

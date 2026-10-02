@@ -20,8 +20,9 @@ points, falling back to the role's full point list if the search comes
 back empty (infra hiccup, or points not yet indexed). The model then
 picks from each pool by number, up to a per-role limit set by the page
 count or by the account holder, in the same call that writes the rest.
-It only ever returns numbers: the text is the account's own, and a role
-the model gives nothing usable for keeps its best retrieval matches
+It may reword a picked point to fit the job; a rewording that states a
+number the original does not falls back to the account's own text, and a
+role the model gives nothing usable for keeps its best retrieval matches
 (_pick_experience_points()).
 
 Untrusted job text handling: the
@@ -45,6 +46,7 @@ row, never from what the model echoed back.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -133,9 +135,19 @@ _SCHEMA = {
                 "type": "object",
                 "properties": {
                     "role_id": {"type": "integer"},
-                    "point_ids": {"type": "array", "items": {"type": "integer"}},
+                    "points": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "text": {"type": "string"},
+                            },
+                            "required": ["id", "text"],
+                        },
+                    },
                 },
-                "required": ["role_id", "point_ids"],
+                "required": ["role_id", "points"],
             },
         },
     },
@@ -153,8 +165,14 @@ _SYSTEM_PROMPT = (
     "or outcome not present in what you were given. Only select project "
     "ids and skill names from the candidate lists provided, never invent "
     "new ones. For each experience role listed, choose which of its "
-    "numbered points to show by returning their numbers, most relevant to "
-    "the job first; you only pick points, never reword them. Write plain, "
+    "numbered points to show, most relevant to the job first. A role "
+    "does not need every point: leave out points that do not help for "
+    "this job, even when there is room. Return each chosen point's "
+    "number with its text. You may reword a point, and a project bullet, "
+    "freely to fit the job (tighten it, lead with what the job cares "
+    "about, use the posting's terms for the same thing) as long as it "
+    "stays materially the same claim: never add a number, tool, scope, "
+    "or outcome the original does not state. Write plain, "
     "factual, resume-register prose. Never use an "
     "em dash; use a period, comma, or colon instead. Return JSON matching "
     "the given schema, nothing else."
@@ -315,9 +333,28 @@ def _length_guidance(template: str, points_limit: int | None = None) -> str:
     if points_limit is not None:
         text += (
             f" For each experience role, pick at most {points_limit} points and at "
-            "least 1, fewer than the maximum when the rest do not match the job."
+            "least 1. That is a ceiling, not a target: pick fewer when the rest "
+            "do not match the job."
         )
     return text
+
+
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+# A reworded point may run somewhat longer than the original (a posting's
+# term for the same thing), not grow into a different bullet.
+_MAX_REWORD_GROWTH = 1.5
+
+
+def _is_faithful_reword(original: str, reworded: str) -> bool:
+    """The mechanical half of the grounding rule on a reworded experience
+    point: no number the original does not state (a metric is the claim
+    most worth inventing) and no runaway length. Anything else is left to
+    the prompt."""
+    if not reworded:
+        return False
+    if len(reworded) > _MAX_REWORD_GROWTH * len(original) + 20:
+        return False
+    return set(_NUMBER_RE.findall(reworded)) <= set(_NUMBER_RE.findall(original))
 
 
 def _pick_experience_points(
@@ -325,12 +362,17 @@ def _pick_experience_points(
 ) -> list[dict[str, Any]]:
     """Each role with the points the model chose, by number, from that
     role's pool. Grounded like projects and skills: a role id or point
-    number the model was not offered is ignored, and the text always comes
-    from the pool, never from the reply. A role the model left out or gave
-    nothing valid for keeps its best retrieval matches instead, so no role
-    ever renders with no points when it has some.
+    number the model was not offered is ignored. The model may reword a
+    point; a rewording that fails _is_faithful_reword() falls back to the
+    account's own text. A role the model left out or gave nothing valid
+    for keeps its best retrieval matches instead, so no role ever renders
+    with no points when it has some.
+
+    Each role also carries source_points, the account's own text of each
+    shown point in the same order, so the reserve and a later edit can
+    tell which real points a reworded line came from.
     """
-    chosen: dict[int, list[int]] = {}
+    chosen: dict[int, list[tuple[int, str]]] = {}
     for item in llm_picks if isinstance(llm_picks, list) else []:
         if not isinstance(item, dict):
             continue
@@ -338,24 +380,31 @@ def _pick_experience_points(
             role_id = int(item.get("role_id"))  # type: ignore[arg-type]
         except (TypeError, ValueError):
             continue
-        numbers = []
-        for raw in item.get("point_ids") or []:
-            try:
-                numbers.append(int(raw))
-            except (TypeError, ValueError):
+        picks = []
+        for raw in item.get("points") or []:
+            if not isinstance(raw, dict):
                 continue
-        chosen.setdefault(role_id, numbers)
+            try:
+                picks.append((int(raw["id"]), str(raw.get("text") or "").strip()))
+            except (KeyError, TypeError, ValueError):
+                continue
+        chosen.setdefault(role_id, picks)
 
     result = []
     for role in pool:
         points = role["points"]
-        picked: list[str] = []
-        for n in chosen.get(role["id"], []):
-            if 0 <= n < len(points) and points[n] not in picked:
-                picked.append(points[n])
-        if not picked:
-            picked = points[:limit]
-        result.append({**role, "points": picked[:limit]})
+        sources: list[str] = []
+        shown: list[str] = []
+        for n, text in chosen.get(role["id"], []):
+            if not 0 <= n < len(points) or points[n] in sources:
+                continue
+            sources.append(points[n])
+            shown.append(text if _is_faithful_reword(points[n], text) else points[n])
+        if not sources:
+            sources = shown = points[:limit]
+        result.append(
+            {**role, "points": shown[:limit], "source_points": sources[:limit]}
+        )
     return result
 
 
@@ -430,7 +479,9 @@ def _build_candidates_message(
     pooled = [role for role in experience_pool or [] if role["points"]]
     if pooled:
         lines.append("")
-        lines.append("EXPERIENCE ROLES (pick points by number, never reword them):")
+        lines.append(
+            "EXPERIENCE ROLES (pick points by number, reword only without changing the claim):"
+        )
         for role in pooled:
             lines.append(f"- role_id={role['id']} {role['title']!r} at {role['company']!r}:")
             for i, point in enumerate(role["points"]):
@@ -543,7 +594,7 @@ def _build_reserve(
 
     held_points: dict[str, list[str]] = {}
     for role in experience:
-        shown = role["points"]
+        shown = role.get("source_points", role["points"])
         dropped = [p for p in ctx.experience_all_points.get(role["id"], []) if p not in shown]
         if dropped:
             held_points[role["company"]] = dropped
@@ -817,19 +868,29 @@ def _keep_shown_points(
 ) -> list[dict[str, Any]]:
     """Each role keeps the points the edited resume already showed, as
     long as the role still has them, so an edit to the summary does not
-    quietly reshuffle which experience points appear. A role whose shown
-    points have all since been edited or deleted falls back to the fresh
-    retrieval pick."""
-    shown = {
-        e["id"]: e.get("points") or []
-        for e in current or []
-        if isinstance(e, dict) and "id" in e
-    }
+    quietly reshuffle which experience points appear. A reworded point is
+    kept, in its reworded form, while the real point it came from
+    (source_points) still exists. A role whose shown points have all since
+    been edited or deleted falls back to the fresh retrieval pick."""
+    shown: dict[int, list[tuple[str, str]]] = {}
+    for e in current or []:
+        if not isinstance(e, dict) or "id" not in e:
+            continue
+        points = e.get("points") or []
+        sources = e.get("source_points")
+        if not isinstance(sources, list) or len(sources) != len(points):
+            sources = points
+        shown[e["id"]] = list(zip(points, sources, strict=True))
     result = []
     for role in fresh:
         real = all_points.get(role["id"], [])
-        kept = [p for p in shown.get(role["id"], []) if p in real]
-        result.append({**role, "points": kept} if kept else role)
+        kept = [(p, src) for p, src in shown.get(role["id"], []) if src in real]
+        if kept:
+            result.append(
+                {**role, "points": [p for p, _ in kept], "source_points": [s for _, s in kept]}
+            )
+        else:
+            result.append(role)
     return result
 
 

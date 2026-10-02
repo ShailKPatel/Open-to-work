@@ -102,9 +102,9 @@ _SKILL_EVIDENCE: tuple[tuple[int, int, str, str, float, float], ...] = (
 
 # (experience_id, title, company, start, end)
 _EXPERIENCES: tuple[tuple[int, str, str, str, str | None], ...] = (
-    (9301, "Backend Engineer", "Northwind Data", "Mar 2022", "Jun 2024"),
-    (9302, "Platform Engineer", "Helix Systems", "Jul 2024", None),
-    (9303, "Software Engineer", "Cobalt Labs", "Aug 2020", "Feb 2022"),
+    (9301, "Backend Engineer", "Northwind Data", "mar 2022", "jun 2024"),
+    (9302, "Platform Engineer", "Helix Systems", "jul 2024", None),
+    (9303, "Software Engineer", "Cobalt Labs", "aug 2020", "feb 2022"),
 )
 
 # (point_id, experience_id, order_index, text). Unlike skill evidence,

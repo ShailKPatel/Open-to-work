@@ -153,7 +153,7 @@ def test_new_experience_gets_added(tmp_path):
     claim = ExperienceClaim(
         company="Acme Corp",
         title="Software Engineer",
-        start_date="Jan 2020",
+        start_date="jan 2020",
         end_date=None,
         location="Berlin, Germany",
     )
@@ -166,7 +166,7 @@ def test_new_experience_gets_added(tmp_path):
     assert rows[0].company == "Acme Corp"
     assert rows[0].title == "Software Engineer"
     assert rows[0].location == "Berlin, Germany"
-    assert rows[0].start_date == "Jan 2020"
+    assert rows[0].start_date == "jan 2020"
     assert rows[0].end_date is None
     db.close()
 
@@ -181,8 +181,8 @@ def test_matching_company_and_title_is_not_duplicated(tmp_path):
     claim = ExperienceClaim(
         company="Acme Corp",  # different casing, same company
         title="Engineer",  # different casing, same title
-        start_date="Jan 2020",
-        end_date="Jan 2021",
+        start_date="jan 2020",
+        end_date="jan 2021",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim]))
 
@@ -207,8 +207,8 @@ def test_matching_experience_gets_dates_enriched_only_when_missing(tmp_path):
     claim = ExperienceClaim(
         company="Acme",
         title="Engineer",
-        start_date="Jun 2019",
-        end_date="Mar 2022",
+        start_date="jun 2019",
+        end_date="mar 2022",
         location="Remote",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim]))
@@ -217,8 +217,8 @@ def test_matching_experience_gets_dates_enriched_only_when_missing(tmp_path):
     assert summary.experiences_enriched == 1
     refreshed = db.get(Experience, existing_id)
     assert refreshed.location == "Remote"
-    assert refreshed.start_date == "Jun 2019"
-    assert refreshed.end_date == "Mar 2022"
+    assert refreshed.start_date == "jun 2019"
+    assert refreshed.end_date == "mar 2022"
     db.close()
 
 
@@ -230,7 +230,7 @@ def test_matching_experience_never_overwrites_an_existing_date(tmp_path):
         account_id=account_id,
         title="Engineer",
         company="Acme",
-        start_date="Jan 2018",  # already set, by hand or an earlier resume
+        start_date="jan 2018",  # already set, by hand or an earlier resume
         end_date=None,
     )
     db.add(existing)
@@ -241,15 +241,15 @@ def test_matching_experience_never_overwrites_an_existing_date(tmp_path):
     claim = ExperienceClaim(
         company="Acme",
         title="Engineer",
-        start_date="Jan 2020",
-        end_date="Jan 2021",
+        start_date="jan 2020",
+        end_date="jan 2021",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(experiences=[claim]))
 
     assert summary.experiences_enriched == 1  # end_date was empty, got filled
     refreshed = db.get(Experience, existing_id)
-    assert refreshed.start_date == "Jan 2018"  # untouched
-    assert refreshed.end_date == "Jan 2021"  # filled in
+    assert refreshed.start_date == "jan 2018"  # untouched
+    assert refreshed.end_date == "jan 2021"  # filled in
     db.close()
 
 
@@ -459,7 +459,7 @@ def test_new_education_gets_added(tmp_path):
         institution="Nirma University",
         degree="B.Tech in Computer Science",
         location="Springfield",
-        start_date="Aug 2022",
+        start_date="aug 2022",
         end_date=None,
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(education=[claim, claim]))
@@ -470,7 +470,7 @@ def test_new_education_gets_added(tmp_path):
     assert rows[0].institution == "Nirma University"
     assert rows[0].degree == "B.Tech in Computer Science"
     assert rows[0].location == "Springfield"
-    assert rows[0].start_date == "Aug 2022"
+    assert rows[0].start_date == "aug 2022"
     assert rows[0].end_date is None
     db.close()
 
@@ -484,7 +484,7 @@ def test_matching_education_only_fills_missing_fields(tmp_path):
         institution="nirma university",
         degree="b.tech in computer science",
         location=None,
-        start_date="Jan 2021",  # set by hand, must survive
+        start_date="jan 2021",  # set by hand, must survive
         end_date=None,
     )
     db.add(existing)
@@ -496,8 +496,8 @@ def test_matching_education_only_fills_missing_fields(tmp_path):
         institution="Nirma University",
         degree="B.Tech in Computer Science",
         location="Springfield",
-        start_date="Aug 2022",
-        end_date="May 2026",
+        start_date="aug 2022",
+        end_date="may 2026",
     )
     summary = merge_resume_into_profile(db, account_id, _extraction(education=[claim]))
 
@@ -505,8 +505,8 @@ def test_matching_education_only_fills_missing_fields(tmp_path):
     assert summary.education_enriched == 1
     refreshed = db.get(Education, existing_id)
     assert refreshed.location == "Springfield"
-    assert refreshed.start_date == "Jan 2021"  # untouched
-    assert refreshed.end_date == "May 2026"
+    assert refreshed.start_date == "jan 2021"  # untouched
+    assert refreshed.end_date == "may 2026"
     assert len(db.execute(select(Education)).scalars().all()) == 1
     db.close()
 
@@ -690,7 +690,7 @@ def test_role_matches_despite_company_descriptor_and_suffix(tmp_path, monkeypatc
     first = ExperienceClaim(
         company="RestaurantPilot.ai",
         title="Founding Machine Learning Engineer",
-        start_date="Nov 2025",
+        start_date="nov 2025",
         end_date=None,
     )
     merge_resume_into_profile(db, account_id, _extraction(experiences=[first]))
@@ -699,7 +699,7 @@ def test_role_matches_despite_company_descriptor_and_suffix(tmp_path, monkeypatc
         ExperienceClaim(
             company="RestaurantPilot.ai (Restaurant Tech)",
             title="Founding Machine-Learning Engineer",
-            start_date="Nov 2025",
+            start_date="nov 2025",
             end_date=None,
             location="Seattle, USA (Remote)",
             points=["Built the forecasting service"],
@@ -793,7 +793,7 @@ def test_education_matches_despite_punctuation_and_descriptor(tmp_path):
                     institution="Nirma University (Ahmedabad)",
                     degree="BTech in Computer Science",
                     location=None,
-                    start_date="Jul 2020",
+                    start_date="jul 2020",
                     end_date=None,
                 )
             ]

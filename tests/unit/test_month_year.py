@@ -9,19 +9,19 @@ from app.profile.month_year import newest_first, normalize, normalize_or_none, s
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        (dt.date(2026, 3, 15), "Mar 2026"),
-        ("2026-03-01", "Mar 2026"),
-        ("2026-03", "Mar 2026"),
-        ("2026/3", "Mar 2026"),
-        ("03/2026", "Mar 2026"),
-        ("3-2026", "Mar 2026"),
-        ("Mar 2026", "Mar 2026"),
-        ("mar 2026", "Mar 2026"),
-        ("MAR 2026", "Mar 2026"),
-        ("March 2026", "Mar 2026"),
-        ("Mar. 2026", "Mar 2026"),
-        ("Sept 2021", "Sep 2021"),
-        ("December, 2020", "Dec 2020"),
+        (dt.date(2026, 3, 15), "mar 2026"),
+        ("2026-03-01", "mar 2026"),
+        ("2026-03", "mar 2026"),
+        ("2026/3", "mar 2026"),
+        ("03/2026", "mar 2026"),
+        ("3-2026", "mar 2026"),
+        ("Mar 2026", "mar 2026"),
+        ("mar 2026", "mar 2026"),
+        ("MAR 2026", "mar 2026"),
+        ("March 2026", "mar 2026"),
+        ("Mar. 2026", "mar 2026"),
+        ("Sept 2021", "sep 2021"),
+        ("December, 2020", "dec 2020"),
         ("  2021 ", "2021"),
         ("", None),
         (None, None),
@@ -39,8 +39,8 @@ def test_normalize_rejects_unreadable(raw):
 
 
 def test_sort_key_orders_by_month_with_blanks_first():
-    values = ["2021", "Mar 2026", None, "Jan 2026", "Dec 2021"]
-    assert sorted(values, key=sort_key) == [None, "2021", "Dec 2021", "Jan 2026", "Mar 2026"]
+    values = ["2021", "mar 2026", None, "jan 2026", "dec 2021"]
+    assert sorted(values, key=sort_key) == [None, "2021", "dec 2021", "jan 2026", "mar 2026"]
 
 
 def test_newest_first_puts_undated_last():
@@ -48,8 +48,8 @@ def test_newest_first_puts_undated_last():
         def __init__(self, start_date):
             self.start_date = start_date
 
-    rows = [Row(None), Row("Aug 2019"), Row("Feb 2024"), Row("2022")]
-    assert [r.start_date for r in newest_first(rows)] == ["Feb 2024", "2022", "Aug 2019", None]
+    rows = [Row(None), Row("aug 2019"), Row("feb 2024"), Row("2022")]
+    assert [r.start_date for r in newest_first(rows)] == ["feb 2024", "2022", "aug 2019", None]
 
 
 def test_migration_rewrites_iso_dates_and_resume_snapshots(tmp_path):
@@ -87,6 +87,6 @@ def test_migration_rewrites_iso_dates_and_resume_snapshots(tmp_path):
     with engine.connect() as conn:
         for table in ("experiences", "education"):
             rows = conn.execute(text(f"SELECT start_date, end_date FROM {table} ORDER BY id")).all()
-            assert [tuple(r) for r in rows] == [("Mar 2021", None), ("Jun 2020", "junk")]
+            assert [tuple(r) for r in rows] == [("mar 2021", None), ("jun 2020", "junk")]
         snapshot = conn.execute(text("SELECT experiences_json FROM resumes")).scalar()
-    assert json.loads(snapshot)[0]["start_date"] == "Aug 2022"
+    assert json.loads(snapshot)[0]["start_date"] == "aug 2022"

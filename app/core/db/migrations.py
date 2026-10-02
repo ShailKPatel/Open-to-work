@@ -492,11 +492,39 @@ def _migrate_education_extras_columns(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_month_year_date_column_types(engine: Engine) -> None:
+    """Retype experiences/education start_date and end_date from DATE to
+    VARCHAR on databases created before the month-and-year change. SQLite
+    gives a DATE column numeric affinity, so a year-only "2023" was stored
+    and read back as the integer 2023. SQLite cannot change a column's type
+    in place, so each one is copied into a new text column that takes its
+    name.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        for table in ("experiences", "education"):
+            types = {
+                row[1]: str(row[2]).upper()
+                for row in conn.execute(text(f"PRAGMA table_info({table})"))
+            }
+            for column in ("start_date", "end_date"):
+                if types.get(column) != "DATE":
+                    continue
+                tmp = f"{column}_text"
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {tmp} VARCHAR"))
+                conn.execute(text(f"UPDATE {table} SET {tmp} = CAST({column} AS TEXT)"))
+                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+                conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN {tmp} TO {column}"))
+        conn.commit()
+
+
 def _migrate_month_year_dates(engine: Engine) -> None:
     """Rewrite experiences/education start_date and end_date, and the
     dates inside each resume's experiences_json/education_json snapshot,
     from the ISO dates they were once stored as ("2026-03-01") to the
-    month-and-year form they are stored as now ("Mar 2026", see
+    month-and-year form they are stored as now ("mar 2026", see
     app/profile/month_year.py). Runs on every startup; a value already in
     that form normalizes to itself, so only old rows get written. An
     unreadable value is left alone rather than dropped.
@@ -574,4 +602,5 @@ def init_db() -> None:
     _migrate_exclude_from_resume_columns(engine)
     _migrate_resumes_build_state_column(engine)
     _migrate_education_extras_columns(engine)
+    _migrate_month_year_date_column_types(engine)
     _migrate_month_year_dates(engine)

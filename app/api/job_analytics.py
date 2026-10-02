@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import DbSession
 from app.api.skills import account_skill_names
 from app.core.db import JobPosting, RoleFamily
+from app.profile.experience_years import parse_experience
 from app.profile.job_extract import parse_skills_required, skill_key
 from app.profile.job_place import MODE_LABELS, REMOTE, UNKNOWN, cities, work_mode_kind
 
@@ -229,6 +230,9 @@ class _Fit:
     matched: list[str] = field(default_factory=list)
     missing: list[dict] = field(default_factory=list)
     pay: int | None = None
+    # Lower end of the stated range, same currency as pay; equal to pay
+    # when only one figure was given.
+    pay_low: int | None = None
 
     @property
     def share(self) -> float | None:
@@ -294,6 +298,10 @@ class RoleInsight(BaseModel):
     avg_match_pct: int
     best_match_pct: int
     median_pay: int | None
+    # Lowest and highest stated pay across the role's postings.
+    pay_low: int | None
+    pay_high: int | None
+    paid_count: int
     strong_count: int
     top_skills: list[SkillShare]
     missing_top: list[str]
@@ -334,6 +342,23 @@ class PlaceInsight(BaseModel):
     median_pay: int | None
 
 
+class PayPoint(BaseModel):
+    """One posting with pay in the dashboard currency, placed by the
+    experience it asks for, for the pay-against-experience chart."""
+
+    id: int
+    title: str
+    company: str
+    role: str
+    pay_low: int
+    pay_high: int
+    experience_text: str
+    # None when the posting says nothing about experience or seniority.
+    years_min: float | None
+    years_max: float | None
+    years_estimated: bool
+
+
 class Advice(BaseModel):
     kind: str
     headline: str
@@ -360,6 +385,36 @@ class Insights(BaseModel):
     strengths: list[SkillShare]
     work_modes: list[WorkModeShare]
     places: list[PlaceInsight]
+    pay_points: list[PayPoint]
+
+
+def _role_name(fit: _Fit) -> str:
+    return fit.role.canonical_name if fit.role else fit.posting.title
+
+
+def _pay_points(fits: list[_Fit]) -> list[PayPoint]:
+    out: list[PayPoint] = []
+    for f in fits:
+        if f.pay is None or f.pay_low is None:
+            continue
+        extracted = f.posting.extracted_json or {}
+        text = str(extracted.get("experience_required", "") or "")
+        years = parse_experience(text, str(extracted.get("seniority", "") or ""))
+        out.append(
+            PayPoint(
+                id=f.posting.id,
+                title=f.posting.title,
+                company=f.posting.company,
+                role=_role_name(f),
+                pay_low=f.pay_low,
+                pay_high=f.pay,
+                experience_text=text,
+                years_min=years.min if years else None,
+                years_max=years.max if years else None,
+                years_estimated=years.estimated if years else False,
+            )
+        )
+    return out
 
 
 def _posting_out(fit: _Fit) -> InsightPosting:
@@ -509,6 +564,7 @@ def insights(account_id: int, *, db: DbSession) -> Insights:
         best = p.salary_max_annual or p.salary_min_annual
         if best and p.salary_currency == currency:
             fit.pay = best
+            fit.pay_low = p.salary_min_annual or best
         fits.append(fit)
 
     scored = [f for f in fits if f.share is not None]
@@ -532,6 +588,7 @@ def insights(account_id: int, *, db: DbSession) -> Insights:
             for m in f.missing:
                 missing_counts[m["skill"]] += 1
         rates = [f.share or 0 for f in rows]
+        paid_rows = [f for f in rows if f.pay is not None]
         roles.append(
             RoleInsight(
                 id=role_id,
@@ -539,7 +596,10 @@ def insights(account_id: int, *, db: DbSession) -> Insights:
                 posting_count=len(rows),
                 avg_match_pct=_pct(sum(rates) / len(rates)),
                 best_match_pct=_pct(max(rates)),
-                median_pay=_median([f.pay for f in rows if f.pay is not None]),
+                median_pay=_median([f.pay for f in paid_rows if f.pay is not None]),
+                pay_low=min((f.pay_low for f in paid_rows if f.pay_low is not None), default=None),
+                pay_high=max((f.pay for f in paid_rows if f.pay is not None), default=None),
+                paid_count=len(paid_rows),
                 strong_count=sum(1 for r in rates if r >= _STRONG),
                 top_skills=_sorted_shares(role_shares)[:8],
                 missing_top=[skill for skill, _ in missing_counts.most_common(5)],
@@ -632,6 +692,7 @@ def insights(account_id: int, *, db: DbSession) -> Insights:
         strengths=strengths,
         work_modes=_work_modes(fits),
         places=places,
+        pay_points=_pay_points(scored),
     )
 
 

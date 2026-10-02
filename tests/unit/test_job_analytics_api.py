@@ -305,6 +305,15 @@ def test_insights_ranks_roles_jobs_and_skills(tmp_path):
 
     assert {s["skill"] for s in data["strengths"]} >= {"Python", "SQL"}
 
+    backend = next(r for r in data["roles"] if r["name"] == "Backend Engineer")
+    # The dollar posting stays out of the rupee range.
+    assert (backend["pay_low"], backend["pay_high"]) == (1_200_000, 1_600_000)
+    assert backend["paid_count"] == 3
+    points = {p["id"]: p for p in data["pay_points"]}
+    assert len(points) == 5 and ids["p6"] not in points
+    assert points[ids["p4"]]["role"] == "ML Engineer"
+    assert points[ids["p4"]]["years_min"] is None
+
 
 def test_insights_empty_account(tmp_path):
     _reset_db(tmp_path)

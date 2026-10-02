@@ -155,7 +155,7 @@ def test_upload_merges_tags_and_experience_into_profile(tmp_path, monkeypatch):
     assert len(experiences) == 1
     assert experiences[0].company == "Acme Corp"
     assert experiences[0].title == "Backend Engineer"
-    assert experiences[0].start_date == "Mar 2021"
+    assert experiences[0].start_date == "mar 2021"
     assert experiences[0].end_date is None
 
 
@@ -203,7 +203,7 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
             "company": "Acme Corp",
             "title": "Backend Engineer",
             "location": None,
-            "start_date": "Mar 2021",
+            "start_date": "mar 2021",
             "end_date": None,
             "points": ["Built the billing API"],
         }
@@ -213,8 +213,8 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
             "institution": "Nirma University",
             "degree": "B.Tech in Computer Science",
             "location": "Springfield",
-            "start_date": "Aug 2022",
-            "end_date": "May 2026",
+            "start_date": "aug 2022",
+            "end_date": "may 2026",
             "grade": None,
             "details": [],
         }
@@ -225,7 +225,7 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
     db.close()
     assert len(rows) == 1
     assert rows[0].institution == "Nirma University"
-    assert rows[0].end_date == "May 2026"
+    assert rows[0].end_date == "may 2026"
 
 
 def test_upload_unsupported_type_stores_file_without_tags(tmp_path):

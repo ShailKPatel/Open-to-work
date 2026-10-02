@@ -235,27 +235,27 @@ def test_dates_stored_as_month_and_year_on_create_and_edit(tmp_path):
             "end_date": "may 2024",
         },
     ).json()
-    assert (created["start_date"], created["end_date"]) == ("Aug 2020", "May 2024")
+    assert (created["start_date"], created["end_date"]) == ("aug 2020", "may 2024")
 
     edited = client.patch(
         f"/api/education/{created['id']}", json={"start_date": "September 2019"}
     ).json()
-    assert edited["start_date"] == "Sep 2019"
+    assert edited["start_date"] == "sep 2019"
 
     bad = client.patch(f"/api/education/{created['id']}", json={"end_date": "someday"})
     assert bad.status_code == 422
-    assert "Mar 2026" in bad.json()["detail"]
+    assert "mar 2026" in bad.json()["detail"]
 
 
 def test_list_is_newest_first_with_undated_last(tmp_path):
     _reset_db(tmp_path)
     account_id = _make_account()
     client = _client()
-    for start in (None, "Aug 2016", "Jul 2020"):
+    for start in (None, "aug 2016", "jul 2020"):
         client.post(
             "/api/education",
             json={"account_id": account_id, "institution": "U", "degree": "D", "start_date": start},
         )
 
     listed = client.get(f"/api/education?account_id={account_id}").json()
-    assert [r["start_date"] for r in listed] == ["Jul 2020", "Aug 2016", None]
+    assert [r["start_date"] for r in listed] == ["jul 2020", "aug 2016", None]

@@ -61,12 +61,28 @@ _URL_ESCAPE_CHARS = {"%": r"\%", "#": r"\#", "&": r"\&"}
 _URL_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _URL_ESCAPE_CHARS))
 
 
+# An em dash reads as a comma on a resume. Stripped here, at the one
+# place every piece of text passes through, rather than by asking the
+# model, since the account's own points and descriptions carry them too.
+# Any comma or space already beside it is absorbed so "a, \u2014 b" does
+# not become "a, , b".
+_EM_DASH_RE = re.compile(r"[\s,]*\u2014[\s,]*")
+
+
+def strip_em_dashes(text: str) -> str:
+    if "\u2014" not in text:
+        return text
+    return _EM_DASH_RE.sub(", ", text).strip(", ")
+
+
 def escape_latex(text: str) -> str:
     """Escapes a plain string for use as LaTeX body text (names, bullet
     points, company names, skill names, ...). Never apply this to a
     literal LaTeX command string the template itself constructs (e.g. an
-    icon macro like \\faGithub): only to actual data.
+    icon macro like \\faGithub): only to actual data. Em dashes are
+    replaced with commas (strip_em_dashes()).
     """
+    text = strip_em_dashes(text)
     return _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_SPECIAL_CHARS[m.group()], text)
 
 

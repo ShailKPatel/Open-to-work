@@ -685,7 +685,7 @@
     // previous month west of Greenwich.
     window.otwDates = (function () {
       var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      // Roles and degrees are stored as "Mar 2026", or "2026" when only the
+      // Roles and degrees are stored as "mar 2026", or "2026" when only the
       // year is known; ISO dates still parse. m is null for a bare year.
       function parts(value) {
         if (!value) return null;
@@ -703,7 +703,7 @@
       function month(value) {
         var p = parts(value);
         if (!p) return '';
-        return p.m === null ? String(p.y) : MONTHS[p.m] + ' ' + p.y;
+        return p.m === null ? String(p.y) : MONTHS[p.m].toLowerCase() + ' ' + p.y;
       }
       function isOngoing(start, end) {
         if (!end) return Boolean(start);
