@@ -111,6 +111,7 @@ def _process_repo(
     repo: Repository,
     now: dt.datetime,
     prefetched: dict[int, RepoFacts] | None = None,
+    batch: bool = True,
 ) -> bool:
     """Extracts one repo's skills and links, updating its status and evidence
     rows. Never raises; every outcome ends as a status, so the caller can
@@ -118,7 +119,8 @@ def _process_repo(
     limit or keys exhausted), since every later repo would fail the same way.
 
     prefetched holds what the batched pass already got; a repo it missed
-    gets its own call.
+    gets its own call. batch=False (a single Reprocess) leaves out the
+    note about stopping the remaining projects, since there are none.
 
     Commits before calling the LLM: complete() records the call in its own
     session, and SQLite would deadlock on a write lock this session still
@@ -165,6 +167,8 @@ def _process_repo(
             repo.skill_extraction_error = (
                 f"{e} Processing stopped here so the remaining projects don't fail "
                 "the same way; run it again later to continue."
+                if batch
+                else str(e)
             )
             facts = RepoFacts()
             stop_batch = True
@@ -180,6 +184,8 @@ def _process_repo(
                 repo.skill_extraction_error = (
                     f"{e} Processing stopped here so the remaining projects don't fail "
                     "the same way; run it again once a key is available to continue."
+                    if batch
+                    else str(e)
                 )[:_ERROR_MESSAGE_LIMIT]
                 stop_batch = True
             else:  # this repo's own problem, not the batch's
@@ -391,7 +397,7 @@ def reprocess_repo(repo_id: int, now: dt.datetime | None = None) -> Repository:
         repo = db.get(Repository, repo_id)
         if repo is None:
             raise ValueError(f"no repository with id={repo_id}")
-        _process_repo(db, repo, now)
+        _process_repo(db, repo, now, batch=False)
         db.commit()
         _index_repo_evidence(db, repo)
         db.commit()

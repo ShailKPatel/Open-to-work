@@ -235,6 +235,23 @@ def test_rate_limit_mid_batch_stops_and_leaves_rest_untouched(tmp_path, monkeypa
     assert c_reloaded.skill_extraction_status == "pending"  # untouched, not "failed"
 
 
+def test_reprocess_rate_limit_leaves_out_the_batch_note(tmp_path, monkeypatch):
+    """A single Reprocess has no remaining projects, so its error is the
+    provider message alone, without the batch's "processing stopped" note."""
+    _reset_db(tmp_path)
+
+    def busy(repo):
+        raise LLMRateLimitedError("The provider is too busy to answer right now.")
+
+    _stub_skills(monkeypatch, busy)
+    repo = _persist_repo(github_id=1, full_name="octocat/a")
+
+    reprocessed = reprocess_repo(repo.id, now=NOW)
+
+    assert reprocessed.skill_extraction_status == "rate_limited"
+    assert reprocessed.skill_extraction_error == "The provider is too busy to answer right now."
+
+
 def test_budget_exceeded_mid_batch_also_stops_the_batch(tmp_path, monkeypatch):
     _reset_db(tmp_path)
 
