@@ -638,6 +638,12 @@ class JobPosting(Base):
     screenshot_path: Mapped[str | None] = mapped_column(String, nullable=True)
     screenshot_paths: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
+    # What was handed in when saving, kept as given: the pasted text before
+    # any screenshot transcription was joined onto it, and every link found.
+    # Null on rows saved before these existed.
+    source_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_links: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
 
 class LLMCall(Base):
     __tablename__ = "llm_calls"

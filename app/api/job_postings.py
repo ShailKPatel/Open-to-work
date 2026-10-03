@@ -162,6 +162,8 @@ def _create_posting_from_text(
     location: str | None = None,
     apply_url: str | None = None,
     screenshot_paths: list[str] | None = None,
+    source_text: str | None = None,
+    source_links: list[str] | None = None,
     extraction: JobExtraction | None = None,
 ) -> JobPosting:
     """Shared core of the text-based ingestion paths: dedup by content
@@ -195,6 +197,8 @@ def _create_posting_from_text(
             content_hash=content_hash,
             screenshot_path=screenshot_paths[0] if screenshot_paths else None,
             screenshot_paths=screenshot_paths or None,
+            source_text=source_text or None,
+            source_links=source_links or None,
         )
         db.add(posting)
         db.commit()
@@ -301,13 +305,91 @@ class JobPostingSummary(BaseModel):
 
 class JobPostingDetail(JobPostingSummary):
     raw_text: str
+    # What was given when saving: the pasted text as typed and the links
+    # in it. Images are served by GET /{id}/images/{index}.
+    source_text: str
+    source_links: list[str]
+    # Everything extracted, as Markdown to paste into an LLM chat.
+    context_text: str
 
     @classmethod
     def from_posting(cls, p: JobPosting, role_family: RoleFamily | None = None) -> JobPostingDetail:
+        summary = JobPostingSummary.from_posting(p, role_family)
         return cls(
-            **JobPostingSummary.from_posting(p, role_family).model_dump(),
+            **summary.model_dump(),
             raw_text=p.raw_text_quarantined,
+            source_text=_source_text(p),
+            source_links=list(p.source_links or []),
+            context_text=_context_text(summary),
         )
+
+
+def _source_text(posting: JobPosting) -> str:
+    if posting.source_text is not None:
+        return posting.source_text
+    # Older rows: a pasted-only posting's text is exactly what was pasted,
+    # anything else had a transcription joined onto it.
+    return posting.raw_text_quarantined if posting.source == "pasted" else ""
+
+
+def _context_text(job: JobPostingSummary) -> str:
+    """The extracted fields as Markdown, laid out for an LLM to read.
+    Fields with nothing in them are left out rather than shown blank."""
+    def known(value: str | None) -> str:
+        value = (value or "").strip()
+        return "" if value == _UNSPECIFIED else value
+
+    title, company = known(job.title), known(job.company)
+    heading = " at ".join(part for part in (title, company) if part) or "Untitled"
+    lines = [f"# Job posting: {heading}", ""]
+
+    salary = ""
+    if job.salary_min_annual is not None or job.salary_max_annual is not None:
+        bounds = " to ".join(
+            f"{n:,}" for n in (job.salary_min_annual, job.salary_max_annual) if n is not None
+        )
+        if job.salary_min_annual is None:
+            bounds = f"up to {bounds}"
+        elif job.salary_max_annual is None:
+            bounds = f"from {bounds}"
+        currency = f" {job.salary_currency}" if job.salary_currency else ""
+        salary = f"{bounds}{currency} per year"
+    if job.salary_range:
+        salary = f"{salary} (as posted: {job.salary_range})" if salary else job.salary_range
+
+    applied = ""
+    if job.applied:
+        applied = f"Applied on {job.applied_at.isoformat()}" if job.applied_at else "Applied"
+        if job.applied_notes:
+            applied += f"; notes: {job.applied_notes}"
+
+    facts = [
+        ("Title", title),
+        ("Company", company),
+        ("Role family", job.role_family.canonical_name if job.role_family else ""),
+        ("Location", known(job.location)),
+        ("Work mode", job.work_mode),
+        ("Employment type", job.employment_type),
+        ("Seniority", job.seniority),
+        ("Experience required", job.experience_required),
+        ("Salary", salary),
+        ("Apply link", job.apply_url or ""),
+        ("Application status", applied),
+    ]
+    lines += [f"- {label}: {value.strip()}" for label, value in facts if value and value.strip()]
+
+    if job.role_summary:
+        lines += ["", "## Role summary", "", job.role_summary.strip()]
+    if job.skills_required:
+        lines += ["", "## Required skills", ""]
+        lines += [
+            f"- {s.skill} ({s.level})" if s.level else f"- {s.skill}"
+            for s in job.skills_required
+        ]
+    if job.other_requirements:
+        lines += ["", "## Other requirements", ""]
+        lines += [f"- {r}" for r in job.other_requirements]
+    return "\n".join(lines) + "\n"
 
 
 def _image_paths(posting: JobPosting) -> list[str]:
@@ -329,6 +411,8 @@ def create_posting(body: JobPostingCreate, *, db: DbSession) -> JobPostingDetail
         raw_text=body.raw_text,
         source="pasted",
         external_id=_content_hash(body.raw_text.strip()),
+        source_text=body.raw_text.strip(),
+        source_links=_find_urls(body.raw_text),
         company=body.company,
         title=body.title,
         location=body.location,
@@ -507,6 +591,8 @@ def compose_posting(
         external_id=apply_url or _content_hash(raw_text.strip()),
         apply_url=apply_url,
         screenshot_paths=screenshot_paths,
+        source_text=text.strip(),
+        source_links=urls,
         extraction=extraction,
     )
     return JobPostingComposed(
