@@ -48,6 +48,53 @@
           <a x-show="job.apply_url" :href="job.apply_url" target="_blank" rel="noopener" class="otw-btn-ghost text-sm px-4 py-2 inline-flex items-center gap-2">
             Apply <span class="otw-meta-item" x-html="otwIcon('arrow')"></span>
           </a>
+          <button type="button" class="otw-btn-ghost text-sm px-4 py-2" @click="copy('context', job.context_text)" title="Copy everything read from this posting, laid out for pasting into an AI chat" x-text="copied === 'context' ? 'Copied' : 'Copy context'"></button>
+          <button type="button" class="otw-btn-ghost text-sm px-4 py-2" @click="sourceOpen = true">View source</button>
+        </div>
+
+        <!-- What was handed in when saving: the pasted text, its links
+             and the screenshots, each easy to copy back out. -->
+        <div x-show="sourceOpen" x-cloak class="otw-modal-backdrop" @click.self="sourceOpen = false" @keydown.escape.window="sourceOpen = false">
+          <div class="otw-modal otw-source" role="dialog" aria-modal="true" aria-label="Source of this posting">
+            <div class="flex items-center justify-between gap-4">
+              <h3 class="font-display text-2xl">Source</h3>
+              <button type="button" class="otw-icon-btn" aria-label="Close" @click="sourceOpen = false">×</button>
+            </div>
+
+            <section x-show="job.source_text" class="mt-6">
+              <div class="flex items-center justify-between gap-2">
+                <span class="otw-fact-label">Pasted text</span>
+                <button type="button" class="otw-btn-ghost text-xs px-3 py-1" @click="copy('text', job.source_text)" x-text="copied === 'text' ? 'Copied' : 'Copy text'"></button>
+              </div>
+              <div class="otw-tile p-4 mt-2 text-sm whitespace-pre-wrap otw-source-text" x-text="job.source_text"></div>
+            </section>
+
+            <section x-show="job.source_links.length" class="mt-6">
+              <div class="flex items-center justify-between gap-2">
+                <span class="otw-fact-label" x-text="job.source_links.length === 1 ? 'Link' : 'Links'"></span>
+                <button type="button" class="otw-btn-ghost text-xs px-3 py-1" @click="copy('links', job.source_links.join('\n'))" x-text="copied === 'links' ? 'Copied' : (job.source_links.length === 1 ? 'Copy link' : 'Copy links')"></button>
+              </div>
+              <ul class="mt-2 text-sm space-y-1">
+                <template x-for="url in job.source_links" :key="url">
+                  <li><a :href="url" target="_blank" rel="noopener" class="hover:underline break-all" x-text="url"></a></li>
+                </template>
+              </ul>
+            </section>
+
+            <section x-show="job.image_count > 0" class="mt-6">
+              <span class="otw-fact-label" x-text="job.image_count === 1 ? 'Screenshot' : 'Screenshots'"></span>
+              <p class="text-xs text-[color:var(--muted)] mt-1">Right-click an image to copy or save it.</p>
+              <div class="mt-2 space-y-3">
+                <template x-for="(src, i) in imageUrls()" :key="src">
+                  <img :src="src" :alt="'Screenshot ' + (i + 1) + ' of the posting'" class="otw-source-img" />
+                </template>
+              </div>
+            </section>
+
+            <p x-show="!job.source_text && !job.source_links.length && !job.image_count" class="mt-6 text-sm text-[color:var(--muted)]">
+              This posting was saved before its source was kept. The full posting text is at the bottom of the page.
+            </p>
+          </div>
         </div>
 
         <!-- Resumes built for this posting, each linking back to its
@@ -271,6 +318,9 @@
   .otw-raw summary::after { content: "+"; float: right; color: var(--muted); }
   .otw-raw[open] summary::after { content: "–"; }
   .otw-thumb-lg { width: 7rem; height: 7rem; }
+  .otw-source { max-width: 48rem; max-height: 85vh; }
+  .otw-source-text { max-height: 20rem; overflow-y: auto; }
+  .otw-source-img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); }
   @media (max-width: 640px) { .otw-facts { grid-template-columns: 1fr; } }
   .otw-built-row { display: flex; align-items: center; gap: 1rem; padding: 0.85rem 1rem; background: #232327; border-color: rgba(242, 242, 240, 0.2); }
 </style>
@@ -291,6 +341,9 @@
       reprocessing: false,
       deleting: false,
       saveError: '',
+      sourceOpen: false,
+      copied: '',
+      copiedTimer: null,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -359,6 +412,30 @@
       },
       imageUrls() {
         return Array.from({ length: this.job.image_count || 0 }, (_, i) => `/api/job-postings/${this.jobId}/images/${i}`);
+      },
+      // Copies text and flips the clicked button to "Copied" for a moment.
+      // The textarea fallback covers pages served over plain http on a
+      // LAN address, where navigator.clipboard is not available.
+      async copy(key, text) {
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          const area = document.createElement('textarea');
+          area.value = text;
+          area.style.position = 'fixed';
+          area.style.opacity = '0';
+          document.body.appendChild(area);
+          area.select();
+          const ok = document.execCommand('copy');
+          area.remove();
+          if (!ok) {
+            this.saveError = 'Could not copy to the clipboard.';
+            return;
+          }
+        }
+        this.copied = key;
+        clearTimeout(this.copiedTimer);
+        this.copiedTimer = setTimeout(() => { this.copied = ''; }, 1800);
       },
       hasSalary() { return this.job.salary_min_annual != null || this.job.salary_max_annual != null; },
 

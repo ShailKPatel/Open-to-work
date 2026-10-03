@@ -582,6 +582,9 @@ def test_compose_screenshots_with_text_and_link(tmp_path, monkeypatch):
     assert body["company"] == "Acme"
     assert body["apply_url"] == "https://acme.example/jobs/9"
     assert "Python required." in body["raw_text"]
+    # The pasted text is kept apart from the transcription joined onto it.
+    assert body["source_text"] == "Referred by a friend, salary 20 LPA. https://acme.example/jobs/9"
+    assert body["source_links"] == ["https://acme.example/jobs/9"]
     assert body["warnings"] == []
     assert Path(body["screenshot_path"]).exists()
     assert body["image_count"] == 2
@@ -648,3 +651,44 @@ def test_compose_rejects_non_image_attachment(tmp_path):
     )
 
     assert resp.status_code == 422
+
+
+def test_detail_context_text_lists_extracted_fields_for_an_llm(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch, other_requirements=["Work permit"])
+    client = _client()
+
+    created = client.post(
+        "/api/job-postings",
+        json={"account_id": account_id, "raw_text": "We are hiring a backend engineer."},
+    ).json()
+    client.patch(f"/api/job-postings/{created['id']}", json={"applied": True})
+    context = client.get(f"/api/job-postings/{created['id']}").json()["context_text"]
+
+    assert context.startswith("# Job posting: Backend Engineer at Acme\n")
+    assert "- Company: Acme\n" in context
+    assert "- Seniority: Senior\n" in context
+    assert "- Salary: 120,000 to 150,000 USD per year (as posted: $120k-$150k)\n" in context
+    assert "- Application status: Applied on " in context
+    assert "## Role summary\n\nOwn the backend.\n" in context
+    assert "## Required skills\n\n- Python (senior)\n" in context
+    assert "## Other requirements\n\n- Work permit\n" in context
+    # Nothing stated, so no empty line for it.
+    assert "Work mode" not in context
+
+
+def test_pasted_posting_keeps_its_source_text_and_links(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+
+    body = _client().post(
+        "/api/job-postings",
+        json={
+            "account_id": account_id,
+            "raw_text": "  Backend role, see https://acme.example/j/1  ",
+        },
+    ).json()
+
+    assert body["source_text"] == "Backend role, see https://acme.example/j/1"
+    assert body["source_links"] == ["https://acme.example/j/1"]

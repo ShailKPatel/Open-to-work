@@ -242,6 +242,22 @@ def _migrate_job_postings_tracking_columns(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_job_postings_source_columns(engine: Engine) -> None:
+    """Add job_postings.source_text/source_links, same pattern as
+    _migrate_job_postings_tracking_columns above.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(job_postings)"))}
+        if "source_text" not in existing:
+            conn.execute(text("ALTER TABLE job_postings ADD COLUMN source_text TEXT"))
+        if "source_links" not in existing:
+            conn.execute(text("ALTER TABLE job_postings ADD COLUMN source_links JSON"))
+        conn.commit()
+
+
 def _migrate_job_postings_salary_columns(engine: Engine) -> None:
     """Add job_postings.salary_min_annual/salary_max_annual/salary_currency
     and fill them for rows extracted before they existed, from the
@@ -607,6 +623,7 @@ def init_db() -> None:
     _migrate_rate_limit_events_account_column(engine)
     _migrate_job_postings_tracking_columns(engine)
     _migrate_job_postings_salary_columns(engine)
+    _migrate_job_postings_source_columns(engine)
     _migrate_contact_items(engine)
     _migrate_api_keys_exhaustion_columns(engine)
     _migrate_skills_source_resume_column(engine)
