@@ -1,58 +1,27 @@
-"""Page-fit loop: land a resume on exactly the page count the user asked
-for, one page or two, never over it and never under it.
+"""Page-fit loop: lands a resume on exactly the page count asked for, one
+or two pages, never over and never under. Four levers, cheapest first:
 
-Three levers, applied in that order of preference, because they cost
-very different things:
+1. Typography. layout.py exposes a ladder of density rungs (margins,
+   spacing, type size). A rung costs one Tectonic run, no LLM call, and
+   loses nothing. Usually the only lever needed.
+2. Reserve content. The orchestrator passes along what the model did not
+   pick: other candidate projects, points and skills. When the resume is
+   too short even at the loosest rung, these are added back, largest
+   first. All of it is the account's own data, so no model call.
+3. Rewording, once, when the tightest rung still overflows by a line or
+   two. The model reads the PDF and proposes shorter wordings, each
+   checked by _is_faithful_shortening (shorter, keeps at least two fifths
+   of the original, no new numbers or words, no em dash) and dropped if
+   it fails.
+4. Cutting, last and one item at a time: a skill, then a project point,
+   then an experience point if the role keeps at least one. Roles and
+   their company, title and dates are never cut. One model call returns
+   an ordered plan, applied entry by entry with a recompile between each.
 
-1. Typography. app/resume_build/layout.py turns the templates' geometry
-   (margins, section spacing, bullet spacing, type size, leading) into
-   parameters and exposes a ladder of density rungs. Re-rendering one
-   rung tighter or one rung looser changes roughly a third of a page of
-   capacity across the full ladder, costs one Tectonic run, costs no LLM
-   tokens at all, and loses nothing the account holder actually wrote.
-   This is the first thing tried in both directions, and usually the
-   only thing needed.
-
-2. Content the account already has but the resume is not showing. The
-   orchestrator hands over a `reserve` alongside the resume data: the
-   candidate projects the model did not pick, the per-role experience
-   points the retrieval step narrowed away, the candidate skills that
-   did not make the cut. When the content is too thin to reach the
-   target even at the loosest rung, these get added back, largest first
-   so the count converges quickly. Nothing here is invented, it is all
-   the account's own already-grounded data, which is why this step needs
-   no LLM call and carries no hallucination risk.
-
-3. Cutting real content. Only when the tightest rung still overflows.
-   This is the one lever that loses something, so it runs last and one
-   cut at a time, always the smallest kind available, in a fixed
-   priority order the model is told to follow: a skill first (cheapest,
-   most flexible), then one project bullet point (dropping the whole
-   project only if that empties it), then one experience bullet point
-   last and only if a role would still keep at least one. An experience
-   role itself is never removable, and neither is its company, title or
-   dates, since job history is compulsory.
-
-One look at the PDF, several cuts: the model returns an ordered plan
-(weakest item first) and this module applies it one entry at a time,
-re-compiling between each, only going back for a new plan when the plan
-runs out. Cuts are still applied one at a time for the same reason as
-before, since each one may be the one that fits; what changed is that a
-resume needing three of them costs one call with the PDF attached instead
-of three.
-
-Why the model sees the compiled PDF rather than a character count:
-overflow is a layout fact, not a text-length fact. One long word or one
-extra bullet can push a whole section onto a second page while a much
-longer summary does not. Only a look at the actual rendered page tells
-which cut would help versus which would trim words for no layout benefit
-at all.
-
-Picking the *loosest* rung that still fits, rather than the first one
-that fits, is what stops a resume from falling below its target. For a
-one-page target it means the page is filled rather than half empty; for
-a two-page target it means the second page carries as much as it can
-instead of trailing off after three lines.
+The model sees the compiled PDF rather than a character count because
+overflow is a layout fact: one long word can push a section onto a new
+page while a longer summary does not. The loosest rung that still fits
+is chosen, so pages come out full rather than half empty.
 """
 
 from __future__ import annotations
@@ -60,6 +29,8 @@ from __future__ import annotations
 import copy
 import io
 import json
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -110,6 +81,53 @@ _CUT_SCHEMA = {
     },
     "required": ["cut_type"],
 }
+
+_REWRITE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rewrites": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "enum": ["summary", "project_point", "experience_point"],
+                    },
+                    "owner": {"type": "string"},
+                    "original": {"type": "string"},
+                    "shorter": {"type": "string"},
+                },
+                "required": ["target", "original", "shorter"],
+            },
+        }
+    },
+    "required": ["rewrites"],
+}
+
+_MAX_REWRITES = 6
+
+# Shortest a rewording may be, as a share of the original. Below this it
+# is no longer the same bullet said more tightly, it is a different and
+# thinner one, which is a cut by another name.
+_MIN_REWRITE_RATIO = 0.4
+
+_REWRITE_SYSTEM_PROMPT = (
+    "You are shown a compiled resume PDF that runs past its target page "
+    "count by a small amount. Its margins, spacing and type size are "
+    "already as tight as they go. Find the lines whose shortening would "
+    "pull the overflow back: a bullet whose last few words wrap onto a "
+    "line of their own, a summary sentence that wraps by a word or two. "
+    "For each, give a shorter wording that says the same thing: drop "
+    "filler, use a tighter verb, remove repetition. Never add a fact, "
+    "number, tool, or claim that is not in the original, never change a "
+    "number, and never use an em dash. Copy the original text exactly as "
+    "listed. For a bullet, set owner to the project name or the "
+    "experience company it sits under; for the summary, leave owner empty. "
+    "Only reword lines where it actually saves a line in the PDF, not "
+    "every line. If nothing can be shortened safely, return an empty "
+    "list. Return JSON matching the given schema, nothing else."
+)
 
 _TRIM_SCHEMA = {
     "type": "object",
@@ -176,6 +194,7 @@ class FitResult:
     page_count: int
     cuts_made: int
     additions_made: int = 0
+    rewrites_made: int = 0
     density: float = 1.0
     target_pages: int = 0
     fit_exact: bool = True
@@ -301,11 +320,104 @@ def _apply_cut(data: dict[str, Any], suggestion: dict[str, Any]) -> bool:
                 continue
             points = role.get("points", [])
             if point_text in points and len(points) > 1:
-                points.remove(point_text)
+                index = points.index(point_text)
+                del points[index]
+                sources = role.get("source_points")
+                if isinstance(sources, list) and index < len(sources):
+                    del sources[index]
                 return True
         return False
 
     return False
+
+
+_WORD_RE = re.compile(r"[a-z][a-z+#]*")
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _is_faithful_shortening(original: str, shorter: str) -> bool:
+    """The grounding check on a rewording: shorter, not gutted, and built
+    only from what the original already says. Words are compared on
+    their first four letters so "built" may become "building" and
+    "optimized" may become "optimizing", while a word the original never
+    used, the way a new tool or a new claim would arrive, fails it.
+    Short words (a, to, and, via) are free, they carry no facts.
+    """
+    shorter = shorter.strip()
+    if not shorter or len(shorter) >= len(original):
+        return False
+    if len(shorter) < _MIN_REWRITE_RATIO * len(original):
+        return False
+    if "\u2014" in shorter or "\u2013" in shorter:
+        return False
+    if not set(_NUMBER_RE.findall(shorter)) <= set(_NUMBER_RE.findall(original)):
+        return False
+    stems = {w[:4] for w in _WORD_RE.findall(original.casefold())}
+    return all(
+        w[:4] in stems for w in _WORD_RE.findall(shorter.casefold()) if len(w) > 3
+    )
+
+
+def _apply_rewrite(data: dict[str, Any], rewrite: dict[str, Any]) -> bool:
+    """Mutates data in place. True when the rewording matched a current
+    line exactly and passed _is_faithful_shortening(); anything else (a
+    misquoted original, a wording that adds something) is dropped."""
+    target = rewrite.get("target")
+    original = str(rewrite.get("original", "")).strip()
+    shorter = str(rewrite.get("shorter", "")).strip()
+    owner = str(rewrite.get("owner", "")).strip()
+    if not original or not _is_faithful_shortening(original, shorter):
+        return False
+
+    if target == "summary":
+        if (data.get("summary") or "").strip() == original:
+            data["summary"] = shorter
+            return True
+        return False
+
+    if target == "project_point":
+        entries, owner_key = data.get("projects", []), "name"
+    elif target == "experience_point":
+        entries, owner_key = data.get("experience", []), "company"
+    else:
+        return False
+    for entry in entries:
+        if entry.get(owner_key) != owner:
+            continue
+        points = entry.get("points", [])
+        if original in points:
+            points[points.index(original)] = shorter
+            return True
+    return False
+
+
+def _plan_rewrites(
+    data: dict[str, Any], overflowing: _Attempt, target_pages: int, account_id: int | None
+) -> list[dict[str, Any]]:
+    """One look at the overflowing PDF, a list of shorter wordings in the
+    shape _apply_rewrite() takes. Quality tier, unlike the cut plan: this
+    one writes text that ends up on the resume."""
+    response = complete(
+        "quality",
+        [
+            system_message(_REWRITE_SYSTEM_PROMPT),
+            user_message(
+                f"Target: {target_pages} page(s). "
+                f"Current: {overflowing.pages} page(s). "
+                f"Give up to {_MAX_REWRITES} rewording(s).\n\n"
+                + "Summary: " + (data.get("summary") or "(none)") + "\n"
+                + _describe_data(data),
+                files=[overflowing.pdf_bytes],
+            ),
+        ],
+        schema=_REWRITE_SCHEMA,
+        account_id=account_id,
+        purpose="pagefit_rewrite",
+    )
+    planned = (response.parsed or {}).get("rewrites")
+    if not isinstance(planned, list):
+        return []
+    return [r for r in planned if isinstance(r, dict)][:_MAX_REWRITES]
 
 
 def _apply_addition(data: dict[str, Any], reserve: dict[str, Any]) -> bool:
@@ -335,9 +447,16 @@ def _apply_addition(data: dict[str, Any], reserve: dict[str, Any]) -> bool:
         while points:
             point = points.pop(0)
             for role in data.get("experience", []):
-                if role["company"] == company and point not in role.get("points", []):
-                    role.setdefault("points", []).append(point)
-                    return True
+                if role["company"] != company:
+                    continue
+                shown = role.setdefault("points", [])
+                sources = role.get("source_points")
+                if point in (sources if isinstance(sources, list) else shown):
+                    continue
+                shown.append(point)
+                if isinstance(sources, list):
+                    sources.append(point)
+                return True
 
     skills_held: list[str] = reserve.get("skills") or []
     while skills_held:
@@ -474,6 +593,9 @@ def fit_to_page_limit(
     account_id: int | None = None,
     max_additions: int = _DEFAULT_MAX_ADDITIONS,
     max_compiles: int = _DEFAULT_MAX_COMPILES,
+    reworded: bool = False,
+    cuts_made: int = 0,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> FitResult:
     """Renders `data` on `template` at exactly `max_pages` pages.
 
@@ -489,19 +611,34 @@ def fit_to_page_limit(
     gone). Either way the error carries the best compiled result, so the
     caller can still hand back a real resume. Coming up short returns
     normally with fit_exact False.
+
+    on_progress hears the content as it stands (reserve included) each
+    time a model call has changed it, along with `reworded` and
+    `cuts_made`. A fit that stops partway, a Tectonic timeout say, can
+    then be started again from that state by passing all three back in,
+    rather than paying for the same model calls a second time.
     """
     target_pages = max(1, max_pages)
     working = copy.deepcopy(data)
     reserve = working.pop("reserve", None) or {}
     typesetter = _Typesetter(template, max_compiles=max_compiles)
 
-    cuts = 0
+    cuts = cuts_made
     additions = 0
+    rewrites = 0
     undo_last_addition: dict[str, Any] | None = None
     # Cuts the model has already picked but that have not been applied yet.
     # Refilled by one call whenever it runs dry, so a resume needing three
     # cuts costs one look at the PDF rather than three.
     planned_cuts: list[dict[str, Any]] = []
+
+    def _report() -> None:
+        if on_progress is not None:
+            on_progress({
+                "data": {**copy.deepcopy(working), "reserve": copy.deepcopy(reserve)},
+                "reworded": reworded,
+                "cuts_made": cuts,
+            })
 
     def _result(attempt: _Attempt) -> FitResult:
         return FitResult(
@@ -510,6 +647,7 @@ def fit_to_page_limit(
             page_count=attempt.pages,
             cuts_made=cuts,
             additions_made=additions,
+            rewrites_made=rewrites,
             density=attempt.density,
             target_pages=target_pages,
             fit_exact=attempt.pages == target_pages,
@@ -540,6 +678,21 @@ def fit_to_page_limit(
                     f"(limit {max_iterations}), target was {target_pages}",
                     overflowing.tex, overflowing.pdf_bytes, overflowing.pages, working,
                 )
+
+            if not reworded:
+                # Rewording loses nothing, so it goes before any cut. A
+                # model out of reach here is not the end of the fit: the
+                # cut step below asks again and reports it properly.
+                reworded = True
+                try:
+                    planned = _plan_rewrites(working, overflowing, target_pages, account_id)
+                except _LLM_UNREACHABLE:
+                    planned = []
+                applied_rewrites = sum(_apply_rewrite(working, r) for r in planned)
+                if applied_rewrites:
+                    rewrites += applied_rewrites
+                    _report()
+                    continue
 
             if not planned_cuts:
                 try:
@@ -584,6 +737,7 @@ def fit_to_page_limit(
                 )
 
             cuts += 1
+            _report()
             continue
 
         if fitting.pages >= target_pages or typesetter.budget_left <= 0:

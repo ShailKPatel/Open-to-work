@@ -1,56 +1,29 @@
-"""Folds a resume's LLM-extracted skills, work-history and education
-entries into an account's actual profile data (the `skills`,
-`experiences` and `education` tables), once extraction succeeds (see
-app/profile/resume_ingest.py's run_extraction). Different dedup rules, matching how each table
-already treats duplicates elsewhere in this codebase:
+"""Merges what was extracted from a resume into the account's profile,
+once extraction succeeds (resume_ingest.py's run_extraction). Every row
+a resume creates or matches is recorded as a ResumeProfileLink.
 
-Skills: reuses the resume's own `tags` (already "concrete skills, tools,
-technologies, and practices" per resume_extract.py's prompt, no separate
-"skills" field needed). A tag whose casefolded name already exists
-anywhere for this account (a manual `Skill` row, or evidence from a
-project or experience, the exact same union GET /api/skills reads) is
-left alone, no new row, no new evidence source; a name that's
-new becomes a freestanding `Skill` row pointing back at the resume it
-came from, so the Skills page can say where it was found, unless the
-skill review (app/profile/skill_review.py) rejects it first. No fuzzy
-matching, casefold-equal is equal, the same rule this app already uses
-everywhere skills get deduplicated.
+Skills: the resume's tags. A name the account already has anywhere
+(casefolded, as GET /api/skills groups) is skipped; a new one becomes a
+freestanding Skill pointing at the resume, unless the skill review
+rejects it. Roles merge first, so a skill tied to a role is never also
+freestanding.
 
-Experience: matched on (company, title), both casefolded and trimmed, NOT
-on dates. Two resumes (or a resume and a hand-entered role) describing
-"Engineer at Acme" are the same line item even if one states different
-start/end dates or none at all; a promotion at the same company is a
-different title, so a legitimately different, second row. A matching
-existing row gets its location/start_date/end_date filled in from the resume ONLY
-where that field was previously null, so a date entered by hand (or by an
-earlier resume) never gets silently overwritten; a new
-(company, title) pair becomes a new Experience row. Skills the resume
-ties to a role become that row's experience evidence (evidence_type
-"resume"), skipping names it already has or the skill review rejects.
-Roles merge before the tags do, so a skill tied to a role is never also
-added as freestanding; a freestanding skill an earlier resume added is
-removed once a role's evidence carries the same name.
+Experience: matched on (company, title), not dates, after folding case,
+punctuation, parenthetical notes and legal suffixes ("Acme Inc." is
+"Acme"). A promotion is a new title and so a new row; an archived role
+still matches. A match only fills fields that are empty, so nothing
+entered earlier is overwritten. Skills the resume ties to a role become
+that role's evidence.
 
-Education: same shape as Experience, matched on (institution, degree),
-casefolded and trimmed, not on dates. A matching row only gets its
-location/start_date/end_date filled where previously null; a new
-(institution, degree) pair becomes a new Education row.
+Education: the same, on (institution, degree). details are filled only
+when the entry has none.
 
-Every experience, bullet point, experience skill, education entry and
-freestanding skill a resume creates or matches is recorded as a
-ResumeProfileLink row, so what a resume contributed can be read back
-later without re-extracting it.
-
-Contact: every extracted email, phone and link that the account doesn't
-already have is added; one it already has is skipped, never edited.
-Emails match casefolded; phones match on their digits alone, ignoring a
-country-code prefix present on only one side; links match on the URL
-with scheme, "www.", query/fragment and trailing slash stripped,
-casefolded, and a GitHub link to Account.github_username counts as
-already present. The first email/phone an account ever gets becomes its
-primary, same as adding one on the Links page. Location fills
-Account.contact_location only when it's empty. The name is never
-merged: first/last name are set at signup and only change by hand.
+Contact: emails, phones and links the account lacks are added; existing
+ones are never edited, except that an unnamed link takes the resume's
+label for the same URL. Emails match casefolded, phones on digits with
+or without a country code, links on the URL without scheme, "www.",
+query or trailing slash. The first email or phone becomes primary.
+Location fills only an empty field; the name is never changed.
 """
 
 from __future__ import annotations
@@ -216,16 +189,37 @@ def _retire_resume_only_skills(db: Session, account_id: int, names: set[str]) ->
         db.delete(row)
 
 
+_PARENTHETICAL = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+_NON_ALNUM = re.compile(r"[^0-9a-z]+")
+_LEGAL_SUFFIXES = (
+    "private limited", "pvt ltd", "pvt", "ltd", "limited", "llc", "llp",
+    "inc", "incorporated", "corp", "corporation", "co", "gmbh", "plc",
+)
+
+
+def _org_key(company: str) -> str:
+    """Folded company name for role matching: no parenthetical note, no
+    trailing legal suffix, letters and digits only."""
+    words = _NON_ALNUM.sub(" ", _PARENTHETICAL.sub(" ", company).casefold()).split()
+    text = " ".join(words)
+    for suffix in _LEGAL_SUFFIXES:
+        if text.endswith(" " + suffix):
+            text = text[: -len(suffix) - 1]
+            break
+    return text.replace(" ", "")
+
+
+def _title_key(title: str) -> str:
+    return _NON_ALNUM.sub("", title.casefold())
+
+
 def _merge_experiences(
     db: Session, account_id: int, claims: list[ExperienceClaim], links: _LinkRecorder
 ) -> tuple[int, int, int]:
     existing_rows = list(
         db.execute(select(Experience).where(Experience.account_id == account_id)).scalars()
     )
-    by_key = {
-        (row.company.strip().casefold(), row.title.strip().casefold()): row
-        for row in existing_rows
-    }
+    by_key = {(_org_key(row.company), _title_key(row.title)): row for row in existing_rows}
 
     added = 0
     enriched = 0
@@ -239,7 +233,7 @@ def _merge_experiences(
     )
 
     for claim in claims:
-        key = (claim.company.casefold(), claim.title.casefold())
+        key = (_org_key(claim.company), _title_key(claim.title))
         existing = by_key.get(key)
         target_row: Experience
 
@@ -359,7 +353,7 @@ def _merge_education(
     db: Session, account_id: int, claims: list[EducationClaim], links: _LinkRecorder
 ) -> tuple[int, int]:
     by_key = {
-        (row.institution.strip().casefold(), row.degree.strip().casefold()): row
+        (_org_key(row.institution), _title_key(row.degree)): row
         for row in db.execute(
             select(Education).where(Education.account_id == account_id)
         ).scalars()
@@ -368,7 +362,7 @@ def _merge_education(
     added = 0
     enriched = 0
     for claim in claims:
-        key = (claim.institution.casefold(), claim.degree.casefold())
+        key = (_org_key(claim.institution), _title_key(claim.degree))
         existing = by_key.get(key)
         if existing is None:
             row = Education(
@@ -378,6 +372,8 @@ def _merge_education(
                 location=claim.location,
                 start_date=claim.start_date,
                 end_date=claim.end_date,
+                grade=claim.grade,
+                details=list(claim.details),
             )
             db.add(row)
             db.flush()
@@ -388,11 +384,14 @@ def _merge_education(
 
         links.record("education", existing.id, created=False)
         changed = False
-        for attr in ("location", "start_date", "end_date"):
+        for attr in ("location", "start_date", "end_date", "grade"):
             value = getattr(claim, attr)
             if getattr(existing, attr) is None and value is not None:
                 setattr(existing, attr, value)
                 changed = True
+        if not existing.details and claim.details:
+            existing.details = list(claim.details)
+            changed = True
         if changed:
             enriched += 1
 
@@ -420,6 +419,10 @@ def _link_key(url: str) -> str:
     parts = urlsplit(raw if "://" in raw else f"https://{raw}")
     host = parts.netloc.casefold().removeprefix("www.")
     return f"{host}{parts.path.rstrip('/')}".casefold()
+
+
+def _unnamed(link: SocialLink) -> bool:
+    return link.platform in ("website", "other") and not (link.label or "").strip()
 
 
 def _merge_contact(db: Session, account_id: int, claim: ContactClaim) -> tuple[int, int, int, bool]:
@@ -463,15 +466,25 @@ def _merge_contact(db: Session, account_id: int, claim: ContactClaim) -> tuple[i
         known_phones.append(digits)
         phones_added += 1
 
-    known_links = {
-        _link_key(url)
-        for (url,) in db.execute(select(SocialLink.url).where(SocialLink.account_id == account_id))
+    saved_links = {
+        _link_key(row.url): row
+        for row in db.execute(
+            select(SocialLink).where(SocialLink.account_id == account_id)
+        ).scalars()
     }
+    known_links = set(saved_links)
     if account.github_username:
         known_links.add(f"github.com/{account.github_username.strip().casefold()}")
     links_added = 0
+    links_named = False
     for link in claim.links:
         key = _link_key(link.url)
+        saved = saved_links.get(key)
+        if saved is not None and link.label and _unnamed(saved):
+            # Saved before links could be named ("website", no label):
+            # take the name the resume gives it. A named link is left alone.
+            saved.platform, saved.label = "other", link.label
+            links_named = True
         if not key or key in known_links:
             continue
         db.add(
@@ -487,7 +500,7 @@ def _merge_contact(db: Session, account_id: int, claim: ContactClaim) -> tuple[i
         account.contact_location = claim.location
         location_filled = True
 
-    if emails_added or phones_added or links_added or location_filled:
+    if emails_added or phones_added or links_added or links_named or location_filled:
         db.commit()
     return emails_added, phones_added, links_added, location_filled
 

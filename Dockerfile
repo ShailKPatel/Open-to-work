@@ -36,15 +36,14 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 # layer above) stay cached across ordinary code edits. The real app/ is
 # copied in below, after deps are settled.
 RUN mkdir app && touch app/__init__.py
-RUN pip install --no-cache-dir -e ".[dev]"
+RUN pip install --no-cache-dir -e .
 
-# Playwright's Chromium, for app/ingest/jobs/auth_fetch.py (login-walled
-# job posting fetch, real automated browser login). --with-deps also
-# installs the OS-level shared libraries Chromium needs on this base image
-# (fonts, audio/video codec stubs, etc), delegated to Playwright's own
-# installer since that list is long and maintained per Chromium version.
-# Adds roughly 300MB to the image.
-RUN playwright install --with-deps chromium
+# Fill Tectonic's package cache now, so a resume build never downloads
+# LaTeX packages or fonts mid-compile (a cold fetch can outlast
+# compile.py's timeout). Only app/resume_build/ is copied first, so this
+# layer reruns when templates change, not on every code edit.
+COPY app/resume_build ./app/resume_build
+RUN python -m app.resume_build.warm_tectonic
 
 # Code changes invalidate only from here down; deps above stay cached.
 COPY app ./app

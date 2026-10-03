@@ -79,6 +79,38 @@ def test_create_rejects_blank_institution_or_degree(tmp_path):
     assert resp2.status_code == 422
 
 
+def test_grade_and_details_are_optional_and_trimmed(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+
+    plain = client.post(
+        "/api/education",
+        json={"account_id": account_id, "institution": "State University", "degree": "BA"},
+    ).json()
+    assert plain["grade"] is None
+    assert plain["details"] == []
+
+    created = client.post(
+        "/api/education",
+        json={
+            "account_id": account_id,
+            "institution": "Tech Institute",
+            "degree": "B.Tech",
+            "grade": "  CGPA 8.9/10 ",
+            "details": ["Ranked 1st in university", "   ", " Coursework: OS "],
+        },
+    ).json()
+    assert created["grade"] == "CGPA 8.9/10"
+    assert created["details"] == ["Ranked 1st in university", "Coursework: OS"]
+
+    cleared = client.patch(
+        f"/api/education/{created['id']}", json={"grade": "  ", "details": []}
+    ).json()
+    assert cleared["grade"] is None
+    assert cleared["details"] == []
+
+
 def test_update_education(tmp_path):
     _reset_db(tmp_path)
     account_id = _make_account()
@@ -167,3 +199,63 @@ def test_delete_account_removes_education(tmp_path):
     db = get_db()
     assert db.query(Education).filter_by(account_id=account["id"]).count() == 0
     db.close()
+
+
+def test_exclude_from_resume_round_trips_and_survives_other_edits(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+    created = client.post(
+        "/api/education",
+        json={"account_id": account_id, "institution": "Night School", "degree": "Cert"},
+    ).json()
+    assert created["exclude_from_resume"] is False
+
+    resp = client.patch(f"/api/education/{created['id']}", json={"exclude_from_resume": True})
+    assert resp.json()["exclude_from_resume"] is True
+
+    client.patch(f"/api/education/{created['id']}", json={"degree": "Diploma"})
+    client.patch(f"/api/education/{created['id']}", json={"exclude_from_resume": None})
+    row = client.get(f"/api/education?account_id={account_id}").json()[0]
+    assert (row["degree"], row["exclude_from_resume"]) == ("Diploma", True)
+
+
+def test_dates_stored_as_month_and_year_on_create_and_edit(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+
+    created = client.post(
+        "/api/education",
+        json={
+            "account_id": account_id,
+            "institution": "State University",
+            "degree": "B.Eng",
+            "start_date": "2020-08-01",
+            "end_date": "may 2024",
+        },
+    ).json()
+    assert (created["start_date"], created["end_date"]) == ("aug 2020", "may 2024")
+
+    edited = client.patch(
+        f"/api/education/{created['id']}", json={"start_date": "September 2019"}
+    ).json()
+    assert edited["start_date"] == "sep 2019"
+
+    bad = client.patch(f"/api/education/{created['id']}", json={"end_date": "someday"})
+    assert bad.status_code == 422
+    assert "mar 2026" in bad.json()["detail"]
+
+
+def test_list_is_newest_first_with_undated_last(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+    for start in (None, "aug 2016", "jul 2020"):
+        client.post(
+            "/api/education",
+            json={"account_id": account_id, "institution": "U", "degree": "D", "start_date": start},
+        )
+
+    listed = client.get(f"/api/education?account_id={account_id}").json()
+    assert [r["start_date"] for r in listed] == ["jul 2020", "aug 2016", None]

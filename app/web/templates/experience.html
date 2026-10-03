@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Experience · Open to Work{% endblock %}
 {% block content %}
 <div x-data="experienceApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -26,11 +27,11 @@
         <input x-model="draft.location" placeholder="Location (optional)" class="otw-input sm:col-span-2" />
         <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
           Start date
-          <input x-model="draft.start_date" type="date" class="otw-input" />
+          <input x-model="draft.start_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
         </label>
         <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
           End date (leave blank if current)
-          <input x-model="draft.end_date" type="date" class="otw-input" />
+          <input x-model="draft.end_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
         </label>
         <p class="text-xs text-[color:var(--muted)] sm:col-span-2">
           Save this, then add as many points as this role deserves on the
@@ -56,7 +57,20 @@
       <p class="text-[color:var(--muted)]">No experience added yet.</p>
     </div>
 
-    <div x-cloak x-show="rows.length > 0" class="mt-10 otw-timeline">
+    <div x-cloak x-show="!loading && rows.length > 0 && activeRows.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">Every role is archived. Restore one below to bring it back.</p>
+    </div>
+
+    <div x-cloak x-show="!loading && activeRows.length > 0" class="mt-8 flex items-center gap-4">
+      {{ ui.search("query", "Search experience", class="flex-1 min-w-0") }}
+      <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="countLabel"></span>
+    </div>
+
+    <div x-cloak x-show="!loading && activeRows.length > 0 && filteredRows.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No roles match that search.</p>
+    </div>
+
+    <div x-cloak x-show="filteredRows.length > 0" class="mt-8 otw-timeline">
       <template x-for="row in pagedRows" :key="row.id">
         <div class="otw-timeline-item" :class="{ 'is-current': otwDates.isOngoing(row.start_date, row.end_date) }">
           <a :href="'/portfolio/experience/' + row.id" class="otw-tile otw-entry otw-entry-link">
@@ -81,17 +95,37 @@
               <span x-show="otwDates.isOngoing(row.start_date, row.end_date)" class="otw-pill otw-pill-live">Current</span>
               <p class="otw-when-range" x-text="dateRange(row) || 'Dates not set'"></p>
               <p x-show="otwDates.length(row.start_date, row.end_date)" class="otw-when-len" x-text="otwDates.length(row.start_date, row.end_date)"></p>
+              <div class="flex items-center justify-end gap-2 mt-3">
+                {{ ui.archive_button("$event.preventDefault(); $event.stopPropagation(); setArchived(row, true)", label="Archive role", disabled="Boolean(archiveBusy[row.id])", size="sm") }}
+                {{ ui.bin_button("$event.preventDefault(); $event.stopPropagation(); remove(row)", label="Delete role", disabled="Boolean(deleting[row.id])", size="sm") }}
+              </div>
             </div>
           </a>
         </div>
       </template>
     </div>
 
-    <div x-cloak x-show="!loading && rows.length > pageSize" class="otw-pagination">
+    <div x-cloak x-show="!loading && filteredRows.length > pageSize" class="otw-pagination">
       <button @click="page = Math.max(1, page - 1)" :disabled="page <= 1">← Prev</button>
       <span>Page <span x-text="page"></span> of <span x-text="totalPages"></span></span>
       <button @click="page = Math.min(totalPages, page + 1)" :disabled="page >= totalPages">Next →</button>
     </div>
+
+    {% call ui.archived_section("filteredArchived", "archivedOpen", "Kept in your profile, but resume building never sees these roles or their bullets, and they are left out of your role count.") %}
+      <template x-for="row in filteredArchived" :key="row.id">
+        <div class="otw-tile px-4 py-3 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <a :href="'/portfolio/experience/' + row.id" class="font-display text-base hover:underline break-words" x-text="row.title + ' @ ' + row.company"></a>
+            <p class="text-xs text-[color:var(--muted)] mt-0.5" x-text="dateRange(row) || 'Dates not set'"></p>
+            <p x-show="archiveError[row.id]" class="otw-error text-xs mt-1" x-text="archiveError[row.id]"></p>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button @click="setArchived(row, false)" :disabled="Boolean(archiveBusy[row.id])" class="otw-btn-ghost text-xs px-3 py-1.5">Restore</button>
+            {{ ui.bin_button("remove(row)", label="Delete role", disabled="Boolean(deleting[row.id])", size="sm") }}
+          </div>
+        </div>
+      </template>
+    {% endcall %}
   </main>
 </div>
 
@@ -106,6 +140,11 @@
       adding: false,
       addError: '',
       draft: { title: '', company: '', location: '', start_date: '', end_date: '' },
+      deleting: {},
+      archiveBusy: {},
+      archiveError: {},
+      archivedOpen: false,
+      query: '',
       page: 1,
       pageSize: 10,
 
@@ -116,16 +155,40 @@
           window.location.href = '/';
           return;
         }
+        this.query = new URLSearchParams(window.location.search).get('q') || '';
+        this.$watch('query', () => { this.page = 1; });
         await this.load();
       },
 
+      get activeRows() {
+        return this.rows.filter((r) => !r.exclude_from_resume);
+      },
+
+      searchFields(r) {
+        return [r.title, r.company, r.location];
+      },
+
+      get filteredRows() {
+        return otwSearch(this.activeRows, this.query, this.searchFields);
+      },
+
+      get filteredArchived() {
+        return otwSearch(this.rows.filter((r) => r.exclude_from_resume), this.query, this.searchFields);
+      },
+
+      get countLabel() {
+        const shown = this.filteredRows.length;
+        const total = this.activeRows.length;
+        return shown === total ? `${total} role${total !== 1 ? 's' : ''}` : `${shown} of ${total}`;
+      },
+
       get totalPages() {
-        return Math.max(1, Math.ceil(this.rows.length / this.pageSize));
+        return Math.max(1, Math.ceil(this.filteredRows.length / this.pageSize));
       },
 
       get pagedRows() {
         const start = (this.page - 1) * this.pageSize;
-        return this.rows.slice(start, start + this.pageSize);
+        return this.filteredRows.slice(start, start + this.pageSize);
       },
 
       async load() {
@@ -136,6 +199,40 @@
           if (this.page > this.totalPages) this.page = this.totalPages;
         } finally {
           this.loading = false;
+        }
+      },
+
+      async remove(row) {
+        if (!(await otwConfirm({
+          title: `Delete "${row.title}" at ${row.company}?`,
+          body: 'Its bullets and skills go with it. This cannot be undone. Reprocessing a resume that lists this role adds it back; to keep it but hide it from resume building, archive it instead.',
+        }))) return;
+        this.deleting[row.id] = true;
+        try {
+          const res = await fetch(`/api/experience/${row.id}`, { method: 'DELETE' });
+          if (res.ok) this.rows = this.rows.filter((r) => r.id !== row.id);
+        } finally {
+          this.deleting[row.id] = false;
+        }
+      },
+
+      async setArchived(row, archived) {
+        this.archiveBusy[row.id] = true;
+        this.archiveError[row.id] = '';
+        try {
+          const res = await fetch(`/api/experience/${row.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exclude_from_resume: archived }),
+          });
+          if (!res.ok) {
+            this.archiveError[row.id] = 'Could not save, try again.';
+            return;
+          }
+          row.exclude_from_resume = (await res.json()).exclude_from_resume;
+          if (this.page > this.totalPages) this.page = this.totalPages;
+        } finally {
+          this.archiveBusy[row.id] = false;
         }
       },
 

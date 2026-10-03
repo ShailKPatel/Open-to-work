@@ -23,13 +23,12 @@ pytestmark = pytest.mark.skipif(
 _PAGES = [
     "/",
     "/home",
-    "/sync",
     "/portfolio",
     "/portfolio/projects",
     "/portfolio/experience",
     "/portfolio/education",
     "/portfolio/skills",
-    "/portfolio/contact",
+    "/portfolio/contact-links",
     "/portfolio/resume",
     "/portfolio/resume/build",
     "/jobs",
@@ -38,7 +37,6 @@ _PAGES = [
     "/explanation",
     "/settings",
     "/monitor/sync",
-    "/settings/auth-sources",
     "/apis",
 ]
 

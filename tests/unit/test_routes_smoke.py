@@ -26,8 +26,6 @@ _SKIP_JSON_GETS = {
     "/api/monitor/status": "calls the live GitHub rate-limit endpoint",
     "/api/resume/search": "loads the local embedding model",
     "/api/projects/process-pending/stream": "long-lived SSE stream",
-    "/sync/github/stream": "SSE stream that syncs from GitHub",
-    "/sync/github/status": "needs a username, covered in test_api.py",
 }
 
 
@@ -125,7 +123,6 @@ def test_openapi_schema_documents_every_api_area(client):
     for prefix in (
         "/accounts",
         "/api/api-keys",
-        "/api/auth-sources",
         "/api/accounts/{account_id}/contact",
         "/api/education",
         "/api/experience",
@@ -137,7 +134,6 @@ def test_openapi_schema_documents_every_api_area(client):
         "/api/resume-build",
         "/api/skills",
         "/api/sources",
-        "/sync/github",
     ):
         assert any(p.startswith(prefix) for p in paths), prefix
 

@@ -1,15 +1,9 @@
-"""Sync sources: the "fetch data from" list. Kept separate from
-Account.github_username, which stays pure identity (who this profile is,
-used for commit attribution); a SyncSource is where evidence gets
-pulled from, and an account can have any number of them.
+"""Sync sources: the GitHub accounts and repos a profile pulls evidence
+from, and their syncs (see SyncSource in app/core/db/models.py).
 
-Accepts a bare username, a github.com profile URL, or a github.com repo
-URL; see app/ingest/github/source_parser.py for what's recognized. A
-username/profile-URL source syncs the whole account (sync_account_progress,
-already built for /sync); a repo-URL source syncs just that one project
-(sync_single_repo_progress), for something contributed to but not owned,
-where pulling the owner's entire account would mix in repos that aren't
-this person's.
+A username or profile URL syncs the whole account; a repo URL syncs only
+that repo, for a project the person contributed to but does not own.
+app/ingest/github/source_parser.py parses the input.
 """
 
 from __future__ import annotations
@@ -23,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
 from app.core.db import Account, SyncSource, get_db
@@ -141,7 +136,7 @@ def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
 
-def _target(db, row: SyncSource) -> background.SyncTarget:
+def _target(db: Session, row: SyncSource) -> background.SyncTarget:
     account = db.get(Account, row.account_id)
     return background.SyncTarget(
         kind=row.kind,

@@ -26,7 +26,7 @@
 \usepackage[
     pdftitle={\VAR{full_name | latex} - Resume},
     pdfauthor={\VAR{full_name | latex}},
-    pdfcreator={LaTeX},
+    pdfcreator={\VAR{pdf_creator | latex}},
     colorlinks=true,
     urlcolor=black,
     linkcolor=primaryColor
@@ -202,8 +202,19 @@
         \textit{\VAR{school.date_range | latex}}
     }
         \textbf{\VAR{school.institution | latex}} \\
-        \textit{\VAR{school.degree | latex}}
+        \textit{\VAR{school.degree | latex}}\BLOCK{if school.grade}\kern 0.20 cm\textbar\kern 0.20 cm \VAR{school.grade | latex}\BLOCK{endif}
     \end{twocolentry}
+
+    \BLOCK{if school.details}
+    \vspace{\VAR{layout.entry_gap_cm} cm}
+    \begin{onecolentry}
+        \begin{highlights}
+            \BLOCK{for line in school.details}
+            \item \VAR{line | latex}
+            \BLOCK{endfor}
+        \end{highlights}
+    \end{onecolentry}
+    \BLOCK{endif}
     \BLOCK{if not loop.last}\vspace{\VAR{layout.education_gap_cm} cm}\BLOCK{endif}
 \BLOCK{endfor}
 \BLOCK{endif}

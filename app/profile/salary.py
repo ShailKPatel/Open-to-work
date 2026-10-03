@@ -110,10 +110,13 @@ def parse_salary(text: str | None) -> AnnualSalary:
     # "12-18 LPA", "1.5 to 1.6 lakhs": a bare leading number shares the
     # unit written after the last one.
     trailing_unit = next((u for _, u in reversed(amounts) if u), None)
-    values = [n * _UNIT[u or trailing_unit] if (u or trailing_unit) else n for n, u in amounts]
+    scaled: list[float] = []
+    for number, unit in amounts:
+        shared = unit or trailing_unit
+        scaled.append(number * _UNIT[shared] if shared else number)
 
     multiplier = _PERIOD_TO_ANNUAL[_period(lowered)]
-    values = [round(v * multiplier) for v in values[:2]]
+    values = [round(v * multiplier) for v in scaled[:2]]
     currency = _currency(lowered)
 
     if len(values) == 1:

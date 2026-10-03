@@ -1,7 +1,7 @@
 {% extends "_base.html" %}
-{% block title %}Skill analytics · Open to Work{% endblock %}
+{% block title %}Insights · Open to Work{% endblock %}
 {% block content %}
-<div x-data="jobsAnalyticsApp()" x-init="init()" class="min-h-screen flex flex-col">
+<div x-data="jobsInsightsApp()" x-init="init()" class="min-h-screen flex flex-col">
 
   {% set top_active = 'jobs' %}
   {% include "_header.html" %}
@@ -10,101 +10,329 @@
     {% set jobs_active = 'analytics' %}
     {% include "_jobs_subnav.html" %}
 
-    <h1 class="font-display text-4xl mt-8">Skill analytics</h1>
+    <h1 class="font-display text-4xl mt-8">Insights</h1>
+    <p x-cloak x-show="data && data.posting_count" class="text-sm text-[color:var(--muted)] mt-2"
+       x-text="'From the ' + (data ? data.posting_count : 0) + ' postings you saved, checked against the skills in your portfolio.'"></p>
 
     <div x-show="loading" class="mt-16 text-center text-[color:var(--muted)]">Loading…</div>
 
-    <div x-cloak x-show="!loading && demand.length === 0" class="mt-16 text-center">
-      <p class="text-[color:var(--muted)]">No extracted job postings yet. Add some on
-        <a href="/jobs" class="underline">Jobs</a> first.</p>
+    <div x-cloak x-show="!loading && (!data || data.posting_count === 0)" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No read job postings yet. Add a few on
+        <a href="/jobs" class="underline">Jobs</a> and this page fills in.</p>
     </div>
 
-    <div x-cloak x-show="!loading && demand.length > 0">
+    <template x-if="!loading && data && data.posting_count > 0">
+      <div>
 
-      <!-- Role family filter -->
-      <section class="mt-8">
-        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">By role</h2>
-        <div class="flex flex-wrap gap-2 mt-3">
-          <button type="button" class="otw-chip" :class="roleFamilyId === null ? 'otw-chip-active' : ''" @click="selectRole(null)">
-            All roles · <span x-text="demand.length"></span> skills
-          </button>
-          <template x-for="rf in roleFamilies" :key="rf.id">
-            <button type="button" class="otw-chip" :class="roleFamilyId === rf.id ? 'otw-chip-active' : ''" @click="selectRole(rf.id)">
-              <span x-text="rf.canonical_name"></span> · <span x-text="rf.posting_count"></span>
-            </button>
-          </template>
-        </div>
-      </section>
+        <!-- Headline numbers -->
+        <section class="mt-8 grid gap-4 grid-cols-2 md:grid-cols-4">
+          <div class="otw-tile p-5">
+            <p class="otw-stat-label">Postings saved</p>
+            <p class="otw-stat-value" x-text="data.posting_count"></p>
+            <p class="otw-stat-note" x-text="data.applied_count + ' applied'"></p>
+          </div>
+          <div class="otw-tile p-5">
+            <p class="otw-stat-label">Strong matches</p>
+            <p class="otw-stat-value" x-text="data.strong_count"></p>
+            <p class="otw-stat-note">You have 70%+ of what they ask</p>
+          </div>
+          <div class="otw-tile p-5">
+            <p class="otw-stat-label">Skill coverage</p>
+            <p class="otw-stat-value" x-text="data.coverage_pct + '%'"></p>
+            <p class="otw-stat-note">of every skill asked, you have</p>
+          </div>
+          <div class="otw-tile p-5">
+            <p class="otw-stat-label">Typical pay</p>
+            <p class="otw-stat-value" x-text="data.median_pay ? money(data.median_pay) : 'n/a'"></p>
+            <p class="otw-stat-note" x-text="data.median_pay ? 'median a year, ' + data.paid_count + ' postings state pay' : 'no postings state pay'"></p>
+          </div>
+        </section>
 
-      <!-- Skill demand bars -->
-      <section class="otw-tile p-6 mt-8">
-        <h2 class="font-display text-xl">Most in-demand skills</h2>
-        <p class="text-xs text-[color:var(--muted)] mt-1">Ranked by how many postings ask for them. Bars in your accent color are skills you already have; the rest are gaps.</p>
-        <div class="mt-5 space-y-2.5">
-          <template x-for="d in demand" :key="d.skill">
-            <div>
-              <div class="flex items-center justify-between text-sm">
-                <span class="flex items-center gap-2">
-                  <span x-text="d.skill"></span>
-                  <span x-show="d.dominant_level" class="text-xs text-[color:var(--muted)]" x-text="'(' + d.dominant_level + ')'"></span>
-                </span>
-                <span class="text-xs text-[color:var(--muted)]" x-text="d.posting_count + (d.posting_count === 1 ? ' posting' : ' postings')"></span>
-              </div>
-              <div class="mt-1 h-2 w-full" style="background: rgba(242,242,240,0.08);">
-                <div
-                  class="h-2"
-                  :style="'width:' + Math.round((d.posting_count / maxCount) * 100) + '%; background:' + (d.have_it ? 'var(--ink)' : 'var(--danger)') + ';'"
-                ></div>
-              </div>
+        <!-- What to do next -->
+        <section class="otw-tile p-6 mt-6" x-show="data.advice.length">
+          <h2 class="font-display text-xl">What to do next</h2>
+          <ol class="mt-4 space-y-4">
+            <template x-for="(a, i) in data.advice" :key="a.kind + i">
+              <li class="flex gap-4">
+                <span class="otw-step" x-text="i + 1"></span>
+                <div class="min-w-0">
+                  <p class="text-sm text-[color:var(--ink)]" x-text="a.headline"></p>
+                  <p class="text-sm text-[color:var(--muted)] mt-0.5">
+                    <span x-text="a.detail"></span>
+                    <a x-show="a.href" :href="a.href" class="underline ml-1">Open</a>
+                  </p>
+                </div>
+              </li>
+            </template>
+          </ol>
+        </section>
+
+        <!-- Jobs: apply now vs stretch -->
+        <section class="mt-6 grid gap-5 md:grid-cols-2">
+          <div class="otw-tile p-6">
+            <h2 class="font-display text-xl">Best matches</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-1">Not applied yet, ranked by how much of the ask you already cover.</p>
+            <div class="mt-4 space-y-4">
+              <template x-for="j in data.best_matches" :key="j.id">
+                <div x-html="jobRow(j)"></div>
+              </template>
+              <p x-show="!data.best_matches.length" class="text-sm text-[color:var(--muted)]">You have applied to everything you saved.</p>
             </div>
-          </template>
-        </div>
-      </section>
-
-      <!-- Have vs missing summary -->
-      <section class="mt-8 grid gap-5" style="grid-template-columns: 1fr 1fr;">
-        <div class="otw-tile p-5">
-          <h3 class="font-display text-lg">You already have</h3>
-          <div class="flex flex-wrap gap-1.5 mt-3">
-            <template x-for="d in demand.filter((d) => d.have_it)" :key="d.skill">
-              <span class="otw-chip" style="border-color: var(--ink);" x-text="d.skill"></span>
-            </template>
-            <span x-show="demand.filter((d) => d.have_it).length === 0" class="text-xs text-[color:var(--muted)]">None of the requested skills are in your portfolio yet.</span>
           </div>
-        </div>
-        <div class="otw-tile p-5">
-          <h3 class="font-display text-lg">Worth picking up</h3>
-          <p class="text-xs text-[color:var(--muted)] mt-1">Missing skills, most-requested first.</p>
-          <div class="flex flex-wrap gap-1.5 mt-3">
-            <template x-for="d in demand.filter((d) => !d.have_it).slice(0, 15)" :key="d.skill">
-              <span class="otw-chip otw-error" x-text="d.skill + ' (' + d.posting_count + ')'"></span>
-            </template>
-            <span x-show="demand.filter((d) => !d.have_it).length === 0" class="text-xs text-[color:var(--muted)]">You already cover everything requested.</span>
+          <div class="otw-tile p-6">
+            <h2 class="font-display text-xl">Pays the most, still within reach</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-1">Highest stated pay where you cover at least 40% of the ask. Worth building toward.</p>
+            <div class="mt-4 space-y-4">
+              <template x-for="j in data.top_paying_close" :key="j.id">
+                <div x-html="jobRow(j)"></div>
+              </template>
+              <p x-show="!data.top_paying_close.length" class="text-sm text-[color:var(--muted)]">None of your closer matches state pay yet.</p>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Per-role-family top skills -->
-      <section class="mt-8" x-show="roleFamilyId === null && roleFamilies.length > 0">
-        <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Per role</h2>
-        <div class="mt-3 grid gap-5" style="grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));">
-          <template x-for="rf in roleFamilies" :key="rf.id">
-            <div class="otw-tile p-5">
-              <div class="flex items-center justify-between">
-                <h3 class="font-display text-base" x-text="rf.canonical_name"></h3>
-                <span class="text-xs text-[color:var(--muted)]" x-text="rf.posting_count + (rf.posting_count === 1 ? ' posting' : ' postings')"></span>
-              </div>
+        <section class="otw-tile p-6 mt-6" x-show="data.near_misses.length">
+          <h2 class="font-display text-xl">One or two skills away</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">More jobs where learning one or two skills makes you a full match.</p>
+          <div class="mt-4 grid gap-4 md:grid-cols-2">
+            <template x-for="j in data.near_misses" :key="j.id">
+              <div x-html="jobRow(j)"></div>
+            </template>
+          </div>
+        </section>
+
+        <!-- Roles compared -->
+        <section class="otw-tile p-6 mt-6">
+          <h2 class="font-display text-xl">Roles compared</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">Similar titles are grouped. Your match is the average share of asked skills you have across that role's postings.</p>
+          <div class="mt-4 overflow-x-auto">
+            <table class="otw-table w-full text-sm">
+              <thead>
+                <tr>
+                  <th class="text-left">Role</th>
+                  <th class="text-right">Postings</th>
+                  <th class="text-left" style="min-width: 9rem;">Your match</th>
+                  <th class="text-right">Median pay</th>
+                  <th class="text-left">Most often missing</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="r in data.roles" :key="r.name">
+                  <tr class="cursor-pointer" @click="openRole = openRole === r.name ? null : r.name">
+                    <td>
+                      <span x-text="r.name"></span>
+                      <span x-show="data.best_role && data.best_role.name === r.name" class="otw-tag ml-1">Best fit</span>
+                    </td>
+                    <td class="text-right tabular-nums" x-text="r.posting_count"></td>
+                    <td>
+                      <div class="flex items-center gap-2" :title="r.avg_match_pct + '% average, best single posting ' + r.best_match_pct + '%'">
+                        <div class="otw-bar flex-1"><div class="otw-bar-fill" :style="'width:' + r.avg_match_pct + '%'"></div></div>
+                        <span class="tabular-nums text-xs w-9 text-right" x-text="r.avg_match_pct + '%'"></span>
+                      </div>
+                    </td>
+                    <td class="text-right tabular-nums" x-text="r.median_pay ? money(r.median_pay) : '·'"></td>
+                    <td class="text-xs text-[color:var(--muted)]" x-text="r.missing_top.slice(0, 3).join(', ') || 'Nothing'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <template x-for="r in data.roles.filter((r) => r.name === openRole)" :key="'open-' + r.name">
+            <div class="mt-4 pt-4" style="border-top: 1px solid var(--line);">
+              <p class="text-sm"><span x-text="r.name"></span>: what its postings ask for</p>
               <div class="flex flex-wrap gap-1.5 mt-3">
-                <template x-for="s in rf.top_skills" :key="s">
-                  <span class="otw-chip" x-text="s"></span>
+                <template x-for="s in r.top_skills" :key="s.skill">
+                  <span class="otw-chip" :class="s.have_it ? 'otw-chip-have' : 'otw-chip-miss'"
+                        :title="s.have_it ? 'You have this' : 'Missing'"
+                        x-text="s.skill + ' · ' + s.share_pct + '%' + (s.have_it ? ' · have' : '')"></span>
                 </template>
               </div>
-              <button type="button" class="text-xs underline mt-3" @click="selectRole(rf.id)">Focus on this role →</button>
             </div>
           </template>
-        </div>
-      </section>
-    </div>
+        </section>
+
+        <!-- Pay by role: each role's stated pay on one shared scale, best
+             paid first. Picking a role opens pay against the experience
+             its postings ask for, with every other role kept faintly
+             behind it for comparison. -->
+        <section class="otw-tile p-6 mt-6" x-show="paidRoles.length"
+                 @mouseover="showTip($event)" @mousemove="moveTip($event)" @mouseout="hideTip($event)">
+          <h2 class="font-display text-xl">Pay by role</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">
+            The line runs from the lowest to the highest pay stated in a role's postings, the dot is the median.
+            Pick a role to see what it pays for the experience it asks.
+          </p>
+
+          <div class="mt-5 space-y-1">
+            <template x-for="r in paidRoles" :key="'pay-' + r.name">
+              <button type="button" class="otw-payrow" :class="payRole === r.name && 'active'"
+                      @click="payRole = payRole === r.name ? null : r.name">
+                <span class="otw-payrow-name">
+                  <span class="truncate" x-text="r.name"></span>
+                  <span class="text-[color:var(--muted)] tabular-nums" x-text="r.paid_count + (r.paid_count === 1 ? ' posting' : ' postings')"></span>
+                </span>
+                <span class="otw-paytrack" :data-tip="roleTip(r)">
+                  <span class="otw-payrange" :style="rangeStyle(r.pay_low, r.pay_high)"></span>
+                  <span class="otw-paydot" :style="'left:' + payX(r.median_pay) + '%'"></span>
+                  <span x-show="r.pay_high > payCap" class="otw-payoff">off scale ›</span>
+                </span>
+                <span class="otw-payrow-value tabular-nums" x-text="money(r.median_pay)"></span>
+              </button>
+            </template>
+            <div class="otw-payrow otw-payaxis" aria-hidden="true">
+              <span></span>
+              <span class="otw-paytrack">
+                <template x-for="t in payTicks" :key="'pt-' + t">
+                  <span class="otw-paytick" :style="'left:' + payX(t) + '%'" x-text="money(t)"></span>
+                </template>
+              </span>
+              <span></span>
+            </div>
+          </div>
+          <p x-show="unpaidRoleCount" class="text-xs text-[color:var(--muted)] mt-4"
+             x-text="unpaidRoleCount + (unpaidRoleCount === 1 ? ' role has' : ' roles have') + ' no postings that state pay.'"></p>
+
+          <div x-show="payRole !== null" class="mt-6 pt-5" style="border-top: 1px solid var(--line);">
+            <div class="flex items-baseline justify-between gap-4 flex-wrap">
+              <p class="text-sm">Pay against experience asked</p>
+              <button type="button" class="text-xs underline text-[color:var(--muted)] hover:text-[color:var(--ink)]" @click="payRole = null">Close</button>
+            </div>
+            <div class="flex flex-wrap gap-1.5 mt-3">
+              <button type="button" class="otw-chip" :class="payRole === '' ? 'otw-chip-have' : 'otw-chip-miss'" @click="payRole = ''">All roles</button>
+              <template x-for="r in paidRoles" :key="'pick-' + r.name">
+                <button type="button" class="otw-chip" :class="payRole === r.name ? 'otw-chip-have' : 'otw-chip-miss'"
+                        @click="payRole = r.name" x-text="r.name"></button>
+              </template>
+            </div>
+            <div class="mt-4" x-html="experienceChart()"
+                 @click="const g = $event.target.closest('[data-href]'); if (g) window.location.href = g.dataset.href"></div>
+            <p class="text-xs text-[color:var(--muted)] mt-2">
+              Each dot is a posting at the least experience it asks for, the vertical line is its pay range.
+              A hollow dot means the posting gave no years, so they come from its seniority (Junior, Senior and so on).
+            </p>
+            <p x-show="noYearsCount" class="text-xs text-[color:var(--muted)] mt-1"
+               x-text="noYearsCount + (noYearsCount === 1 ? ' posting states' : ' postings state') + ' pay but nothing about experience, so ' + (noYearsCount === 1 ? 'it is' : 'they are') + ' not plotted.'"></p>
+          </div>
+
+          <div x-show="tip" x-cloak class="otw-paytip" :style="'left:' + tipX + 'px;top:' + tipY + 'px'" x-text="tip"></div>
+        </section>
+
+        <!-- Where the jobs are. Remote postings are a place of their own:
+             they can be done from any city, so none is counted under the
+             city it mentions. -->
+        <section class="otw-tile p-6 mt-6" x-show="data.places.length">
+          <h2 class="font-display text-xl">Where the jobs are</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">Remote means you can do it from any city. Hybrid and on-site jobs need you there, all or part of the week. A posting naming two cities counts under both.</p>
+
+          <div class="otw-modes mt-5" role="img" :aria-label="data.work_modes.map((m) => m.label + ' ' + m.share_pct + '%').join(', ')">
+            <template x-for="m in data.work_modes" :key="m.kind">
+              <div class="otw-mode" :class="'otw-mode-' + m.kind" :style="'flex-grow:' + m.posting_count" :title="m.label + ': ' + m.posting_count"></div>
+            </template>
+          </div>
+          <div class="flex flex-wrap gap-x-5 gap-y-1 mt-2 text-xs text-[color:var(--muted)]">
+            <template x-for="m in data.work_modes" :key="'legend-' + m.kind">
+              <span class="flex items-center gap-1.5">
+                <span class="otw-mode-key" :class="'otw-mode-' + m.kind"></span>
+                <span x-text="m.label + ' ' + m.posting_count + ' (' + m.share_pct + '%)'"></span>
+              </span>
+            </template>
+          </div>
+
+          <div class="mt-5 overflow-x-auto">
+            <table class="otw-table w-full text-sm">
+              <thead>
+                <tr>
+                  <th class="text-left">Place</th>
+                  <th class="text-right">Postings</th>
+                  <th class="text-left">How it is worked</th>
+                  <th class="text-left" style="min-width: 9rem;">Your match</th>
+                  <th class="text-right">Median pay</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="pl in data.places" :key="pl.kind + pl.name">
+                  <tr class="cursor-pointer" @click="window.location.href = placeHref(pl)">
+                    <td>
+                      <span x-text="pl.kind === 'remote' ? 'Remote, anywhere' : pl.name"></span>
+                      <span x-show="bestPlace && bestPlace.name === pl.name" class="otw-tag ml-1">Best fit</span>
+                    </td>
+                    <td class="text-right tabular-nums" x-text="pl.posting_count"></td>
+                    <td class="text-xs text-[color:var(--muted)]" x-text="placeModes(pl)"></td>
+                    <td>
+                      <div x-show="pl.avg_match_pct !== null" class="flex items-center gap-2">
+                        <div class="otw-bar flex-1"><div class="otw-bar-fill" :style="'width:' + pl.avg_match_pct + '%'"></div></div>
+                        <span class="tabular-nums text-xs w-9 text-right" x-text="pl.avg_match_pct + '%'"></span>
+                      </div>
+                      <span x-show="pl.avg_match_pct === null" class="text-xs text-[color:var(--muted)]">·</span>
+                    </td>
+                    <td class="text-right tabular-nums" x-text="pl.median_pay ? money(pl.median_pay) : '·'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <!-- Skills to learn -->
+        <section class="otw-tile p-6 mt-6" x-show="data.skills_to_learn.length">
+          <h2 class="font-display text-xl">Skills to learn next</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">Missing skills ranked by how many postings ask for them, how many jobs they would turn into strong matches, and what those jobs pay.</p>
+          <ol class="mt-4 space-y-4">
+            <template x-for="(s, i) in data.skills_to_learn" :key="s.skill">
+              <li class="flex gap-4">
+                <span class="otw-step" x-text="i + 1"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-baseline justify-between gap-3 flex-wrap">
+                    <p class="text-sm">
+                      <span x-text="s.skill"></span>
+                      <span x-show="s.level" class="text-xs text-[color:var(--muted)]" x-text="'at ' + s.level + ' level'"></span>
+                    </p>
+                    <p class="text-xs text-[color:var(--muted)] tabular-nums" x-text="learnFacts(s)"></p>
+                  </div>
+                  <div class="otw-bar mt-1.5" :title="s.posting_count + ' of ' + data.posting_count + ' postings'">
+                    <div class="otw-bar-fill otw-bar-fill-miss" :style="'width:' + s.share_pct + '%'"></div>
+                  </div>
+                  <p class="text-xs text-[color:var(--muted)] mt-1" x-show="s.roles.length" x-text="'Asked in ' + s.roles.join(', ')"></p>
+                </div>
+              </li>
+            </template>
+          </ol>
+        </section>
+
+        <!-- Overall demand -->
+        <section class="otw-tile p-6 mt-6">
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+            <h2 class="font-display text-xl">What employers ask for most</h2>
+            <label class="flex items-center gap-2 text-xs text-[color:var(--muted)]">
+              <input type="checkbox" class="otw-checkbox" x-model="onlyMissing" /> Only skills I am missing
+            </label>
+          </div>
+          <p class="text-xs text-[color:var(--muted)] mt-1">Share of your saved postings that ask for each skill. Filled bars are skills you have, outlined bars are gaps.</p>
+          <div class="mt-4 space-y-2.5">
+            <template x-for="s in data.demand.filter((s) => !onlyMissing || !s.have_it)" :key="s.skill">
+              <div class="grid items-center gap-3" style="grid-template-columns: minmax(7rem, 11rem) 1fr 7.5rem;">
+                <span class="text-sm truncate" :title="s.skill" x-text="s.skill"></span>
+                <div class="otw-bar" :title="s.posting_count + ' of ' + data.posting_count + ' postings' + (s.median_pay ? ', median pay ' + money(s.median_pay) : '')">
+                  <div class="otw-bar-fill" :class="!s.have_it && 'otw-bar-fill-miss'" :style="'width:' + s.share_pct + '%'"></div>
+                </div>
+                <span class="text-xs tabular-nums text-right" :class="s.have_it ? 'text-[color:var(--ink)]' : 'text-[color:var(--muted)]'"
+                      x-text="s.share_pct + '% · ' + (s.have_it ? 'have' : 'missing')"></span>
+              </div>
+            </template>
+          </div>
+        </section>
+
+        <section class="otw-tile p-6 mt-6" x-show="data.strengths.length">
+          <h2 class="font-display text-xl">Lead with these</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">Skills you have that the most postings ask for. Put them first on your resume.</p>
+          <div class="flex flex-wrap gap-1.5 mt-3">
+            <template x-for="s in data.strengths" :key="s.skill">
+              <span class="otw-chip otw-chip-have" x-text="s.skill + ' · ' + s.share_pct + '% of postings'"></span>
+            </template>
+          </div>
+        </section>
+      </div>
+    </template>
   </main>
 </div>
 
@@ -117,23 +345,80 @@
     color: var(--ink);
     background: rgba(242, 242, 240, 0.06);
     border: 1px solid var(--line);
-    cursor: pointer;
   }
-  .otw-chip-active {
-    background: var(--ink);
-    color: var(--paper);
+  .otw-chip-have { border-color: var(--ink); }
+  .otw-chip-miss { color: var(--muted); border-style: dashed; }
+  .otw-stat-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .otw-stat-value { font-family: var(--font-display, inherit); font-size: 2rem; line-height: 1.1; margin-top: 0.4rem; font-variant-numeric: tabular-nums; }
+  .otw-stat-note { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+  .otw-step {
+    flex: none; width: 1.6rem; height: 1.6rem; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); font-size: 0.75rem; color: var(--muted); font-variant-numeric: tabular-nums;
   }
+  .otw-tag { font-size: 0.68rem; padding: 0.1rem 0.4rem; border: 1px solid var(--ink); white-space: nowrap; }
+  .otw-bar { height: 0.5rem; background: rgba(242, 242, 240, 0.08); border-radius: 2px; overflow: hidden; }
+  .otw-bar-fill { height: 100%; background: var(--ink); border-radius: 0 2px 2px 0; }
+  .otw-bar-fill-miss { background: transparent; box-shadow: inset 0 0 0 1px var(--muted); }
+  .otw-table th { font-size: 0.72rem; font-weight: normal; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding: 0 0.75rem 0.6rem 0; }
+  .otw-table td { padding: 0.6rem 0.75rem 0.6rem 0; border-top: 1px solid var(--line); vertical-align: middle; }
+  .otw-table tbody tr:hover td { background: rgba(242, 242, 240, 0.03); }
+  .otw-modes { display: flex; gap: 2px; height: 0.75rem; }
+  .otw-mode { flex-basis: 0; min-width: 4px; border-radius: 2px; }
+  .otw-mode-key { width: 0.65rem; height: 0.65rem; border-radius: 2px; display: inline-block; }
+  .otw-mode-remote { background: var(--ink); }
+  .otw-mode-hybrid { background: color-mix(in srgb, var(--ink) 60%, transparent); }
+  .otw-mode-on_site { background: color-mix(in srgb, var(--ink) 32%, transparent); }
+  .otw-mode-unknown { background: transparent; box-shadow: inset 0 0 0 1px var(--muted); }
+  .otw-payrow {
+    display: grid; grid-template-columns: minmax(7rem, 13rem) 1fr 4.5rem; align-items: center; gap: 1rem;
+    width: 100%; padding: 0.45rem 0; text-align: left; font-size: 0.85rem; color: var(--ink);
+  }
+  .otw-payrow:not(.otw-payaxis):hover .otw-payrow-name > :first-child,
+  .otw-payrow.active .otw-payrow-name > :first-child { text-decoration: underline; }
+  .otw-payrow-name { display: flex; flex-direction: column; min-width: 0; font-size: 0.85rem; }
+  .otw-payrow-name > :last-child { font-size: 0.72rem; }
+  .otw-payrow-value { text-align: right; }
+  .otw-paytrack { position: relative; height: 1.25rem; }
+  .otw-paytrack::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--line); }
+  .otw-payrange { position: absolute; top: calc(50% - 1px); height: 2px; border-radius: 1px; background: var(--muted); }
+  .otw-payrow.active .otw-payrange, .otw-payrow:hover .otw-payrange { background: var(--ink); }
+  .otw-paydot {
+    position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+    background: var(--ink); box-shadow: 0 0 0 2px var(--surface);
+  }
+  .otw-payoff { position: absolute; right: 0; top: -0.55rem; font-size: 0.65rem; color: var(--muted); }
+  .otw-payaxis { padding-top: 0.2rem; }
+  .otw-payaxis .otw-paytrack::before { display: none; }
+  .otw-paytick { position: absolute; top: 0; transform: translateX(-50%); font-size: 0.68rem; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .otw-paytick:first-of-type { transform: none; }
+  .otw-paytip {
+    position: fixed; z-index: 60; pointer-events: none; max-width: 18rem; white-space: pre-line;
+    padding: 0.5rem 0.65rem; font-size: 0.75rem; line-height: 1.4;
+    background: var(--paper); color: var(--ink); border: 1px solid var(--line-strong);
+  }
+  .otw-xchart text { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  @media (max-width: 640px) {
+    .otw-payrow { grid-template-columns: 6.5rem 1fr 3.5rem; gap: 0.6rem; }
+    .otw-paytick:nth-of-type(even) { display: none; }
+  }
+  .otw-job { display: block; color: inherit; text-decoration: none; }
+  .otw-job:hover .otw-job-title { text-decoration: underline; }
 </style>
 
 <script>
-  function jobsAnalyticsApp() {
+  function jobsInsightsApp() {
     return {
       accountId: null,
       accountName: '',
       loading: true,
-      demand: [],
-      roleFamilies: [],
-      roleFamilyId: null,
+      data: null,
+      openRole: null,
+      onlyMissing: false,
+      // Role shown in the pay-against-experience chart: null closed, '' all roles.
+      payRole: null,
+      tip: '',
+      tipX: 0,
+      tipY: 0,
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -142,31 +427,249 @@
           window.location.href = '/';
           return;
         }
-        await this.loadRoleFamilies();
-        await this.loadDemand();
-        this.loading = false;
+        try {
+          const res = await fetch(`/api/job-analytics/insights?account_id=${this.accountId}`);
+          this.data = res.ok ? await res.json() : null;
+        } finally {
+          this.loading = false;
+        }
       },
 
-      get maxCount() {
-        return Math.max(1, ...this.demand.map((d) => d.posting_count));
+      // Compact annual pay in the dashboard's one currency: "₹18L", "$145K".
+      money(v, currencyOverride) {
+        const currency = currencyOverride || (this.data && this.data.currency);
+        const locale = currency === 'INR' ? 'en-IN' : undefined;
+        try {
+          if (currency) {
+            return new Intl.NumberFormat(locale, { style: 'currency', currency, notation: 'compact', maximumFractionDigits: 1 }).format(v);
+          }
+        } catch (e) { /* unknown currency code: plain number below */ }
+        return new Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(v);
       },
 
-      async loadRoleFamilies() {
-        const res = await fetch(`/api/job-analytics/role-families?account_id=${this.accountId}`);
-        this.roleFamilies = res.ok ? await res.json() : [];
+      // The place with the best average match, among those with two or
+      // more postings, same rule as the "where" advice.
+      get bestPlace() {
+        const rows = (this.data ? this.data.places : []).filter((p) => p.kind !== 'unknown' && p.posting_count >= 2 && p.avg_match_pct !== null);
+        if (rows.length < 2) return null;
+        return rows.reduce((a, b) => (b.avg_match_pct > a.avg_match_pct ? b : a));
       },
 
-      async loadDemand() {
-        const url = this.roleFamilyId
-          ? `/api/job-analytics/skills-demand?account_id=${this.accountId}&role_family_id=${this.roleFamilyId}`
-          : `/api/job-analytics/skills-demand?account_id=${this.accountId}`;
-        const res = await fetch(url);
-        this.demand = res.ok ? await res.json() : [];
+      // Roles with stated pay, best paid first.
+      get paidRoles() {
+        return (this.data ? this.data.roles : [])
+          .filter((r) => r.median_pay)
+          .sort((a, b) => b.median_pay - a.median_pay);
       },
 
-      async selectRole(id) {
-        this.roleFamilyId = id;
-        await this.loadDemand();
+      get unpaidRoleCount() {
+        return (this.data ? this.data.roles : []).length - this.paidRoles.length;
+      },
+
+      // Top of the pay scale. A figure over five times the overall median
+      // is almost always a misread salary, so it is left off the scale
+      // and pinned to the edge rather than squashing everything else.
+      get payCap() {
+        const median = this.data ? this.data.median_pay : null;
+        const values = [
+          ...this.paidRoles.map((r) => r.pay_high),
+          ...(this.data ? this.data.pay_points : []).map((p) => p.pay_high),
+        ].filter((v) => v && (!median || v <= median * 5));
+        return this.niceScale(values.length ? Math.max(...values) : 1).max;
+      },
+
+      get payTicks() {
+        const { step, max } = this.niceScale(this.payCap);
+        const ticks = [];
+        for (let v = 0; v <= max + step / 2; v += step) ticks.push(v);
+        return ticks;
+      },
+
+      // Round axis maximum and tick step for a largest value: about four ticks.
+      niceScale(top) {
+        const rough = top / 4;
+        const mag = Math.pow(10, Math.floor(Math.log10(rough || 1)));
+        const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= rough) || mag * 10;
+        return { step, max: Math.ceil(top / step) * step || step };
+      },
+
+      payX(v) {
+        return Math.min(100, Math.max(0, (v / this.payCap) * 100));
+      },
+
+      rangeStyle(low, high) {
+        const a = this.payX(low);
+        const b = this.payX(high);
+        return 'left:' + a + '%;width:' + Math.max(b - a, 0.5) + '%';
+      },
+
+      roleTip(r) {
+        const lines = [r.name, 'Median ' + this.money(r.median_pay) + ' a year'];
+        lines.push(r.pay_low === r.pay_high
+          ? 'Stated pay ' + this.money(r.pay_low)
+          : 'Stated pay ' + this.money(r.pay_low) + ' to ' + this.money(r.pay_high));
+        lines.push(r.paid_count + ' of ' + r.posting_count + ' postings state pay');
+        if (r.pay_high > this.payCap) lines.push('Highest figure is off the scale, likely a misread salary');
+        return lines.join('\n');
+      },
+
+      yearsLabel(p) {
+        if (p.years_min === null) return 'Experience not stated';
+        const n = (v) => (v === 1 ? '1 year' : v + ' years');
+        if (p.years_estimated) return (p.years_min ? 'Around ' + n(p.years_min) : 'Entry level') + ' (from seniority)';
+        if (p.years_max === null) return p.years_min ? n(p.years_min) + '+' : 'Any experience';
+        if (p.years_max === 0) return 'No experience needed';
+        if (p.years_max === p.years_min) return n(p.years_min);
+        return p.years_min + ' to ' + n(p.years_max);
+      },
+
+      get noYearsCount() {
+        return this.payPointsFor().filter((p) => p.years_min === null).length;
+      },
+
+      payPointsFor() {
+        const points = this.data ? this.data.pay_points : [];
+        return this.payRole ? points.filter((p) => p.role === this.payRole) : points;
+      },
+
+      // Pay (y) against least experience asked (x) as an SVG string. The
+      // chosen role draws in ink over every other role in faint gray, so
+      // it reads against the whole market.
+      experienceChart() {
+        if (!this.data || this.payRole === null) return '';
+        const all = this.data.pay_points.filter((p) => p.years_min !== null);
+        if (!all.length) {
+          return '<p class="text-sm text-[color:var(--muted)]">None of the postings with pay say how much experience they want.</p>';
+        }
+        // Narrower drawing on a phone so the text stays readable once scaled.
+        const narrow = window.innerWidth < 640;
+        const W = narrow ? 360 : 640, H = narrow ? 260 : 300, L = 56, R = 16, T = 14, B = 34;
+        // Inset so a posting at zero years isn't cut in half by the axis.
+        const pad = 16;
+        const pw = W - L - R - pad, ph = H - T - B;
+        const yearsTop = Math.max(...all.map((p) => Math.max(p.years_min, p.years_max || 0)), 1);
+        const xMax = Math.max(Math.ceil(yearsTop + 0.5), 2);
+        const xStep = xMax <= 6 ? 1 : xMax <= 12 ? 2 : 5;
+        const x = (yr) => L + pad + (Math.min(yr, xMax) / xMax) * pw;
+        const y = (v) => T + ph - (Math.min(v, this.payCap) / this.payCap) * ph;
+        const e = (t) => this.escape(t).replace(/"/g, '&quot;');
+
+        let out = '<svg class="otw-xchart" viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Pay against experience asked">';
+        for (const t of this.payTicks) {
+          out += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="var(--line)" stroke-width="1"/>';
+          out += '<text x="' + (L - 8) + '" y="' + (y(t) + 4) + '" text-anchor="end">' + e(this.money(t)) + '</text>';
+        }
+        for (let v = 0; v <= xMax; v += xStep) {
+          out += '<text x="' + x(v) + '" y="' + (H - B + 18) + '" text-anchor="middle">' + (v === 0 ? '0' : v + (v === 1 ? ' yr' : ' yrs')) + '</text>';
+        }
+        out += '<text x="' + (W - R) + '" y="' + (H - 2) + '" text-anchor="end">Experience asked</text>';
+
+        // Postings at the same spot fan out sideways instead of hiding each other.
+        const seen = {};
+        const offset = (p) => {
+          const key = p.years_min + ':' + Math.round(y(p.pay_high) / 6);
+          seen[key] = (seen[key] || 0) + 1;
+          return (seen[key] - 1) * 7;
+        };
+        const focus = (p) => this.payRole === '' || p.role === this.payRole;
+        const ordered = [...all.filter((p) => !focus(p)), ...all.filter(focus)];
+        for (const p of ordered) {
+          const on = focus(p);
+          const color = on ? 'var(--ink)' : 'var(--muted)';
+          const opacity = on ? 1 : 0.35;
+          const cx = x(p.years_min) + offset(p);
+          const off = p.pay_high > this.payCap;
+          const mid = (p.pay_low + Math.min(p.pay_high, this.payCap)) / 2;
+          const tipLines = [
+            p.title + ' · ' + p.company,
+            p.role,
+            (p.pay_low === p.pay_high ? this.money(p.pay_high) : this.money(p.pay_low) + ' to ' + this.money(p.pay_high)) + ' a year',
+            this.yearsLabel(p) + (p.experience_text ? ' ("' + p.experience_text + '")' : ''),
+          ];
+          if (off) tipLines.push('Pay is off the scale, likely a misread salary');
+          out += '<g opacity="' + opacity + '" data-tip="' + e(tipLines.join('\n')) + '" style="cursor:pointer" data-href="/jobs/' + p.id + '">';
+          if (p.years_max && p.years_max > p.years_min) {
+            out += '<line x1="' + cx + '" x2="' + x(p.years_max) + '" y1="' + y(mid) + '" y2="' + y(mid) + '" stroke="' + color + '" stroke-width="2" stroke-linecap="round" opacity="0.5"/>';
+          }
+          if (p.pay_high !== p.pay_low) {
+            out += '<line x1="' + cx + '" x2="' + cx + '" y1="' + y(p.pay_low) + '" y2="' + y(p.pay_high) + '" stroke="' + color + '" stroke-width="2" stroke-linecap="round"/>';
+          }
+          if (off) {
+            out += '<path d="M' + (cx - 5) + ' ' + (T + 6) + ' L' + cx + ' ' + (T - 2) + ' L' + (cx + 5) + ' ' + (T + 6) + ' Z" fill="' + color + '"/>';
+          }
+          out += '<circle cx="' + cx + '" cy="' + y(mid) + '" r="5" stroke="var(--surface)" stroke-width="2" fill="' + (p.years_estimated ? 'var(--surface)' : color) + '"/>';
+          if (p.years_estimated) {
+            out += '<circle cx="' + cx + '" cy="' + y(mid) + '" r="4" fill="none" stroke="' + color + '" stroke-width="1.5"/>';
+          }
+          // Bigger invisible target than the mark.
+          out += '<circle cx="' + cx + '" cy="' + y(mid) + '" r="12" fill="transparent"/>';
+          out += '</g>';
+        }
+        return out + '</svg>';
+      },
+
+      showTip(ev) {
+        const el = ev.target.closest && ev.target.closest('[data-tip]');
+        this.tip = el ? el.getAttribute('data-tip') : '';
+        if (el) this.moveTip(ev);
+      },
+
+      moveTip(ev) {
+        if (!this.tip) return;
+        this.tipX = Math.min(ev.clientX + 14, window.innerWidth - 300);
+        this.tipY = ev.clientY + 14;
+      },
+
+      hideTip(ev) {
+        const to = ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest('[data-tip]');
+        if (!to) this.tip = '';
+      },
+
+      placeModes(pl) {
+        if (pl.kind === 'remote') return 'From anywhere';
+        const parts = [];
+        if (pl.on_site_count) parts.push(pl.on_site_count + ' on-site');
+        if (pl.hybrid_count) parts.push(pl.hybrid_count + ' hybrid');
+        if (pl.unstated_count) parts.push(pl.unstated_count + ' not stated');
+        return parts.join(' · ');
+      },
+
+      placeHref(pl) {
+        const key = pl.kind === 'remote' ? 'remote' : pl.kind === 'unknown' ? 'none' : pl.name.toLowerCase();
+        return '/jobs?place=' + encodeURIComponent(key);
+      },
+
+      learnFacts(s) {
+        const parts = [s.posting_count + (s.posting_count === 1 ? ' posting' : ' postings')];
+        if (s.unlocks) parts.push('+' + s.unlocks + ' strong ' + (s.unlocks === 1 ? 'match' : 'matches'));
+        if (s.pay_premium_pct != null && s.pay_premium_pct !== 0) {
+          parts.push('pay ' + (s.pay_premium_pct > 0 ? '+' : '') + s.pay_premium_pct + '%');
+        }
+        return parts.join(' · ');
+      },
+
+      escape(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : String(text);
+        return div.innerHTML;
+      },
+
+      jobRow(j) {
+        const e = (t) => this.escape(t);
+        const pay = j.pay ? this.money(j.pay, j.pay_currency) + ' / yr' : 'Pay not stated';
+        const missing = j.missing.length
+          ? '<div class="flex flex-wrap gap-1.5 mt-2">' + j.missing.slice(0, 5)
+              .map((m) => '<span class="otw-chip otw-chip-miss">' + e(m) + '</span>').join('')
+            + (j.missing.length > 5 ? '<span class="text-xs text-[color:var(--muted)] self-center">+' + (j.missing.length - 5) + '</span>' : '')
+            + '</div>'
+          : '<p class="text-xs mt-2">You have every skill it asks for.</p>';
+        return '<a class="otw-job" href="/jobs/' + j.id + '">'
+          + '<div class="flex items-baseline justify-between gap-3">'
+          + '<p class="text-sm otw-job-title truncate">' + e(j.title) + '</p>'
+          + '<span class="text-xs tabular-nums">' + j.match_pct + '% match</span></div>'
+          + '<p class="text-xs text-[color:var(--muted)] truncate">' + e(j.company) + ' · ' + e(pay) + '</p>'
+          + '<div class="otw-bar mt-2" title="' + j.matched.length + ' of ' + j.skill_count + ' asked skills"><div class="otw-bar-fill" style="width:' + j.match_pct + '%"></div></div>'
+          + missing + '</a>';
       },
     };
   }

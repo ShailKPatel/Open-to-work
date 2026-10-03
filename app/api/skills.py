@@ -12,6 +12,13 @@ Grouping key is name.strip().casefold(), so "Python" and "python" land in
 one group, displayed using whichever casing was seen first. This is a
 display-time union, not a stored/materialized table, so it stays correct
 automatically as evidence rows are added/edited/removed elsewhere.
+
+A group is archived either by hand (a SkillArchive row) or because every
+source behind it is a project or role marked exclude_from_resume. GET
+/api/skills still returns archived groups, flagged, so the Skills page
+can list them under Archived; everything that treats skills as the
+account's real ones (the map, resume building, job analytics) goes
+through active_skill_groups or account_skill_names instead.
 """
 
 from __future__ import annotations
@@ -32,6 +39,7 @@ from app.core.db import (
     Repository,
     Resume,
     Skill,
+    SkillArchive,
     SkillEvidence,
     SkillStar,
     SkillVerdict,
@@ -47,6 +55,7 @@ from app.profile.skill_map import (
     store_cached,
 )
 from app.profile.skill_review import approve, reject
+from app.resume_build.context import archived_skill_keys, excluded_sources
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +88,10 @@ class SkillGroup(BaseModel):
     source_resume: SkillResumeRef | None = None
     sources: list[SkillSource] = []
     starred: bool = False
+    archived: bool = False
+    # "user" when archived by hand, "sources" when every project or role
+    # behind it is archived; None while the skill is active.
+    archived_by: str | None = None
 
 
 def _name_key(name: str) -> str:
@@ -156,7 +169,30 @@ def _load_groups(db: Session, account_id: int) -> dict[str, SkillGroup]:
         if key in groups:
             groups[key].starred = True
 
+    archived_keys = archived_skill_keys(db, account_id)
+    excluded_repos, excluded_roles = excluded_sources(db, account_id)
+
+    def _source_archived(source: SkillSource) -> bool:
+        if source.type == "experience":
+            return source.ref_id in excluded_roles
+        return source.ref_id in excluded_repos
+
+    for key, group in groups.items():
+        if key in archived_keys:
+            group.archived_by = "user"
+        elif (
+            group.manual_skill_id is None
+            and group.sources
+            and all(_source_archived(source) for source in group.sources)
+        ):
+            group.archived_by = "sources"
+        group.archived = group.archived_by is not None
+
     return groups
+
+
+def _active_groups(db: Session, account_id: int) -> dict[str, SkillGroup]:
+    return {key: g for key, g in _load_groups(db, account_id).items() if not g.archived}
 
 
 def skill_groups_for_account(db: Session, account_id: int) -> list[SkillGroup]:
@@ -167,6 +203,12 @@ def skill_groups_for_account(db: Session, account_id: int) -> list[SkillGroup]:
     """
     groups = _load_groups(db, account_id)
     return sorted(groups.values(), key=lambda g: (not g.starred, g.name.casefold()))
+
+
+def active_skill_groups(db: Session, account_id: int) -> list[SkillGroup]:
+    """skill_groups_for_account without the archived groups: the skills
+    resume building may offer or send to the model."""
+    return [g for g in skill_groups_for_account(db, account_id) if not g.archived]
 
 
 @router.get("", response_model=list[SkillGroup])
@@ -228,7 +270,7 @@ def warm_skill_maps() -> None:
     try:
         account_ids = list(db.execute(select(Account.id)).scalars())
         for account_id in account_ids:
-            groups = list(_load_groups(db, account_id).values())
+            groups = list(_active_groups(db, account_id).values())
             if not groups:
                 continue
             contexts = skill_contexts(account_id)
@@ -256,8 +298,11 @@ def get_skills_map(account_id: int, *, db: DbSession) -> SkillMapResponse:
     Colour is assigned here rather than stored in the cache: it is a
     presentation choice that can change without every cached layout
     becoming wrong.
+
+    Archived skills are left off the map, same as everywhere else that
+    shows the account's real skills.
     """
-    groups_by_key = _load_groups(db, account_id)
+    groups_by_key = _active_groups(db, account_id)
     groups = list(groups_by_key.values())
     if not groups:
         return SkillMapResponse(clusters=[], nodes=[])
@@ -337,17 +382,48 @@ def set_skill_star(body: SkillStarUpdate, *, db: DbSession) -> SkillStarUpdate:
     return body
 
 
+class SkillArchiveUpdate(BaseModel):
+    account_id: int
+    name: str
+    archived: bool
+
+
+@router.post("/archive", response_model=SkillArchiveUpdate)
+def set_skill_archive(body: SkillArchiveUpdate, *, db: DbSession) -> SkillArchiveUpdate:
+    """Archive or restore a skill by name, idempotent both ways like
+    POST /star. Only the hand-made archive: a skill archived because all
+    its projects and roles are comes back when one of them does.
+    """
+    key = _name_key(body.name)
+    if not key:
+        raise HTTPException(status_code=422, detail="name is required")
+
+    existing = db.execute(
+        select(SkillArchive).where(
+            SkillArchive.account_id == body.account_id, SkillArchive.name_key == key
+        )
+    ).scalar_one_or_none()
+    if body.archived and existing is None:
+        db.add(SkillArchive(account_id=body.account_id, name_key=key))
+        db.commit()
+    elif not body.archived and existing is not None:
+        db.delete(existing)
+        db.commit()
+    return body
+
+
 def account_skill_names(account_id: int) -> dict[str, str]:
     """casefolded skill name -> display name, for callers that need a
     cheap "does this account have skill X" check without an HTTP round
     trip (app/api/job_analytics.py's gap computation). Same union
-    _load_groups already builds for GET /api/skills, reshaped. Kept as
-    a thin wrapper rather than duplicating the query, so the two
-    stay in sync automatically.
+    _load_groups already builds for GET /api/skills, reshaped, minus
+    archived skills: an archived skill does not count as one the account
+    has. Kept as a thin wrapper rather than duplicating the query, so the
+    two stay in sync automatically.
     """
     db = get_db()
     try:
-        groups = _load_groups(db, account_id)
+        groups = _active_groups(db, account_id)
         return {key: group.name for key, group in groups.items()}
     finally:
         db.close()
@@ -444,10 +520,10 @@ def remove_skill_everywhere(body: SkillRemove, *, db: DbSession) -> dict:
         .join(Experience, ExperienceSkillEvidence.experience_id == Experience.id)
         .where(Experience.account_id == body.account_id)
     ).scalars()
-    for evidence in experience_rows:
-        if _name_key(evidence.skill) == key:
-            experience_ids.append(evidence.id)
-            db.delete(evidence)
+    for exp_evidence in experience_rows:
+        if _name_key(exp_evidence.skill) == key:
+            experience_ids.append(exp_evidence.id)
+            db.delete(exp_evidence)
 
     resume_ids: set[int] = set()
     skill_ids: list[int] = []

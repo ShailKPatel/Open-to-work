@@ -118,7 +118,6 @@ def test_upload_merges_tags_and_experience_into_profile(tmp_path, monkeypatch):
     """End to end: an upload's extracted tags and work history land as
     real Skill/Experience rows too, not just on the Resume row itself
     (see app/profile/resume_profile_merge.py)."""
-    import datetime as dt
 
     from app.core.db import Experience, Skill, get_db
 
@@ -156,7 +155,7 @@ def test_upload_merges_tags_and_experience_into_profile(tmp_path, monkeypatch):
     assert len(experiences) == 1
     assert experiences[0].company == "Acme Corp"
     assert experiences[0].title == "Backend Engineer"
-    assert experiences[0].start_date == dt.date(2021, 3, 1)
+    assert experiences[0].start_date == "mar 2021"
     assert experiences[0].end_date is None
 
 
@@ -164,7 +163,6 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
     """The resume row itself carries what this file said about work
     history and schooling, and the education lands in the Education
     table the same way experience lands in Experience."""
-    import datetime as dt
 
     from app.core.db import Education, get_db
 
@@ -185,7 +183,7 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
             {
                 "institution": "Nirma University",
                 "degree": "B.Tech in Computer Science",
-                "location": "Ahmedabad",
+                "location": "Springfield",
                 "start_date": "2022-08-01",
                 "end_date": "2026-05-01",
             }
@@ -205,7 +203,7 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
             "company": "Acme Corp",
             "title": "Backend Engineer",
             "location": None,
-            "start_date": "2021-03-01",
+            "start_date": "mar 2021",
             "end_date": None,
             "points": ["Built the billing API"],
         }
@@ -214,9 +212,11 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
         {
             "institution": "Nirma University",
             "degree": "B.Tech in Computer Science",
-            "location": "Ahmedabad",
-            "start_date": "2022-08-01",
-            "end_date": "2026-05-01",
+            "location": "Springfield",
+            "start_date": "aug 2022",
+            "end_date": "may 2026",
+            "grade": None,
+            "details": [],
         }
     ]
 
@@ -225,7 +225,7 @@ def test_upload_shows_and_merges_experience_and_education(tmp_path, monkeypatch)
     db.close()
     assert len(rows) == 1
     assert rows[0].institution == "Nirma University"
-    assert rows[0].end_date == dt.date(2026, 5, 1)
+    assert rows[0].end_date == "may 2026"
 
 
 def test_upload_unsupported_type_stores_file_without_tags(tmp_path):
@@ -384,6 +384,78 @@ def test_reprocess_resume_reruns_extraction(tmp_path, monkeypatch):
     assert body["extraction_status"] == "extracted"
     assert body["tags"] == ["Rust"]
     assert body["summary"] == "Reprocessed summary."
+    assert body["is_generated"] is False
+
+
+def _make_generated_resume(tmp_path, account_id: int) -> tuple[int, int]:
+    """A resume as the build flow saves it: compiled PDF only, no upload."""
+    from app.core.db import JobPosting, Resume
+
+    compiled = tmp_path / "generated.pdf"
+    compiled.write_bytes(b"%PDF-compiled")
+    db = get_db()
+    posting = JobPosting(
+        account_id=account_id, source="pasted", external_id="x", company="Acme",
+        title="Engineer", raw_text_quarantined="hiring an engineer", content_hash="h1",
+    )
+    db.add(posting)
+    db.commit()
+    db.refresh(posting)
+    row = Resume(
+        account_id=account_id, filename="Engineer - Acme.pdf", mime_type="application/pdf",
+        compiled_path=str(compiled), job_posting_id=posting.id, extraction_status="extracted",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    ids = (row.id, posting.id)
+    db.close()
+    return ids
+
+
+def test_generated_resume_is_marked_and_names_its_job(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    resume_id, posting_id = _make_generated_resume(tmp_path, account_id)
+
+    listed = _client().get(f"/api/resume?account_id={account_id}").json()
+
+    assert len(listed) == 1
+    assert listed[0]["id"] == resume_id
+    assert listed[0]["is_generated"] is True
+    assert listed[0]["job_posting_id"] == posting_id
+    assert listed[0]["job_title"] == "Engineer"
+    assert listed[0]["job_company"] == "Acme"
+
+
+def test_list_resumes_filters_by_job_posting(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch)
+    client = _client()
+    client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("mine.pdf", io.BytesIO(b"%PDF-1.4 mine"), "application/pdf")},
+    )
+    resume_id, posting_id = _make_generated_resume(tmp_path, account_id)
+
+    listed = client.get(
+        f"/api/resume?account_id={account_id}&job_posting_id={posting_id}"
+    ).json()
+
+    assert [r["id"] for r in listed] == [resume_id]
+
+
+def test_reprocess_refuses_a_generated_resume(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    resume_id, _ = _make_generated_resume(tmp_path, account_id)
+
+    resp = _client().post(f"/api/resume/{resume_id}/reprocess")
+
+    assert resp.status_code == 409
+    assert "built here" in resp.json()["detail"]
 
 
 def test_download_resume_file_roundtrips_bytes(tmp_path):
@@ -762,6 +834,57 @@ def test_search_resumes_for_posting(tmp_path, monkeypatch):
     assert body[0]["score"] == 0.87
 
 
+def test_search_ranks_by_share_of_required_skills(tmp_path, monkeypatch):
+    """With extracted required skills, every resume gets a match
+    percentage and the list is ranked by it, whatever semantic search
+    thinks of the two."""
+    from app.core.db import JobPosting, Resume
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    db = get_db()
+    posting = JobPosting(
+        account_id=account_id, source="pasted", external_id="x", company="Acme",
+        title="Engineer", raw_text_quarantined="Python, SQL, Docker", content_hash="h2",
+        extracted_json={"skills_required": ["Python", "SQL", "Docker", "Go"]},
+        extraction_status="extracted",
+    )
+    weak = Resume(
+        account_id=account_id, filename="weak.pdf", mime_type="application/pdf",
+        tags_json=["Python"],
+    )
+    strong = Resume(
+        account_id=account_id, filename="strong.pdf", mime_type="application/pdf",
+        tags_json=["python", "sql"], content_json={"skills": ["Docker"]},
+    )
+    db.add_all([posting, weak, strong])
+    db.commit()
+    posting_id, strong_id = posting.id, strong.id
+    db.close()
+
+    monkeypatch.setattr("app.retrieval.search.search_resumes", lambda *a, **k: [])
+    # Every distinct name on its own axis: nothing is "related", so the
+    # ranking below is the exact tier alone.
+    axes: dict[str, int] = {}
+
+    def _orthogonal(texts):
+        return [
+            [1.0 if i == axes.setdefault(t.casefold(), len(axes)) else 0.0 for i in range(16)]
+            for t in texts
+        ]
+
+    monkeypatch.setattr("app.resume_build.skill_match.embed", _orthogonal)
+
+    body = _client().get(
+        f"/api/resume/search?account_id={account_id}&job_posting_id={posting_id}"
+    ).json()
+
+    assert [h["resume"]["id"] for h in body][0] == strong_id
+    assert body[0]["match_pct"] == 75
+    assert body[0]["missing"] == ["Go"]
+    assert body[1]["match_pct"] == 25
+
+
 def test_search_404_unknown_posting(tmp_path):
     _reset_db(tmp_path)
     resp = _client().get("/api/resume/search?account_id=1&job_posting_id=999999")
@@ -799,3 +922,128 @@ def test_download_compiled_file_404_when_missing(tmp_path):
     _reset_db(tmp_path)
     resp = _client().get("/api/resume/999999/compiled-file")
     assert resp.status_code == 404
+
+
+def test_uploading_the_same_file_again_is_refused(tmp_path, monkeypatch):
+    """Byte-identical file, even under another filename: no second row,
+    no second extraction. A different file of the same size still goes in."""
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch)
+    client = _client()
+
+    first = client.post(
+        "/api/resume",
+        data={"account_id": account_id, "name": "Backend"},
+        files={"file": ("resume.pdf", io.BytesIO(b"%PDF-1.4 one"), "application/pdf")},
+    )
+    assert first.status_code == 200
+
+    again = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("resume (1).pdf", io.BytesIO(b"%PDF-1.4 one"), "application/pdf")},
+    )
+    assert again.status_code == 409
+    assert '"Backend"' in again.json()["detail"]
+
+    other = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("resume.pdf", io.BytesIO(b"%PDF-1.4 two"), "application/pdf")},
+    )
+    assert other.status_code == 200
+    assert len(client.get(f"/api/resume?account_id={account_id}").json()) == 2
+
+
+def _pdf(creator: str) -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_metadata({"/Creator": creator})
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def test_uploading_a_resume_this_app_built_is_refused(tmp_path, monkeypatch):
+    """A generated PDF read back in would fold the LLM's job-tailored
+    wording into the profile, so it is turned away before anything is
+    saved or sent to the model."""
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    extract = MagicMock()
+    monkeypatch.setattr("app.profile.resume_extract.complete", extract)
+
+    resp = _client().post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("built.pdf", io.BytesIO(_pdf("Open to Work")), "application/pdf")},
+    )
+
+    assert resp.status_code == 422
+    assert "built by Open to Work" in resp.json()["detail"]
+    extract.assert_not_called()
+    assert _client().get(f"/api/resume?account_id={account_id}").json() == []
+    assert not any((tmp_path / "resumes").rglob("*.pdf"))
+
+
+def test_pdf_made_by_other_latex_tools_still_uploads(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch)
+
+    resp = _client().post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("mine.pdf", io.BytesIO(_pdf("LaTeX")), "application/pdf")},
+    )
+
+    assert resp.status_code == 200
+
+
+def test_uploading_a_download_of_an_older_build_is_refused(tmp_path, monkeypatch):
+    """Builds compiled before the Creator stamp are caught by comparing
+    the upload with the compiled PDFs already in the library."""
+    from app.core.db import Resume
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    extract = MagicMock()
+    monkeypatch.setattr("app.profile.resume_extract.complete", extract)
+    built = tmp_path / "3_generated.pdf"
+    built.write_bytes(b"%PDF-1.4 built before the stamp")
+    db = get_db()
+    db.add(
+        Resume(
+            account_id=account_id, filename="Acme.pdf", mime_type="application/pdf",
+            compiled_path=str(built),
+        )
+    )
+    db.commit()
+    db.close()
+
+    resp = _client().post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("download.pdf", io.BytesIO(built.read_bytes()), "application/pdf")},
+    )
+
+    assert resp.status_code == 422
+    extract.assert_not_called()
+
+
+def test_signup_with_a_generated_resume_creates_nothing(tmp_path):
+    _reset_db(tmp_path)
+
+    resp = _client().post(
+        "/accounts",
+        data={"first_name": "Ada", "last_name": "Lovelace", "github_username": ""},
+        files={"resume": ("built.pdf", io.BytesIO(_pdf("Open to Work")), "application/pdf")},
+    )
+
+    assert resp.status_code == 422
+    db = get_db()
+    assert db.execute(select(Account)).first() is None
+    db.close()

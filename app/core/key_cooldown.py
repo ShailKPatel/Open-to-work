@@ -1,30 +1,18 @@
-"""When an exhausted key is worth looking at again.
+"""When an exhausted key is worth checking again.
 
-A key that hit a quota is not a broken key: it is a working key inside a
-window it has already filled, and that window rolls over on its own. The
-only question is when. This module answers it and nothing else: given the
-provider and whatever the provider said when it refused the call, it
-returns the kind of limit that was hit and the earliest moment a recheck
-is worth making (app/core/api_keys_store.py stores both on the key, and
-app/core/key_refresh.py is what comes back at that moment).
+A key that hit a quota still works once its window rolls over. Given the
+provider and its refusal, plan_cooldown() returns which limit was hit and
+the earliest useful recheck; app/core/api_keys_store.py stores both and
+app/core/key_refresh.py comes back then.
 
-LiteLLM normalizes a 429 into one exception type and does not carry the
-provider's own reset information, so the per-provider reading of that
-detail happens here. Gemini is the one provider read properly today: its
-429 body names the quota that was hit (`quotaId`, whose name says whether
-it is a per-minute or a per-day limit) and often a `retryDelay`, so a
-per-minute burst comes back in a minute while a used-up daily allowance
-waits for the day to roll over. Every other provider gets
-DEFAULT_COOLDOWN, which is not a guess about its limits, only a
-reasonable interval after which asking again is cheap. Adding a provider
-means adding a branch to plan_cooldown() and nothing else.
+LiteLLM does not carry the provider's reset information, so it is read
+here. Gemini's 429 body names the quota (per minute or per day) and often
+a retryDelay, so a burst waits a minute and a spent daily allowance waits
+for the day to roll over. Other providers get DEFAULT_COOLDOWN.
 
-A cooldown elapsing is not proof the quota reset. No provider exposes
-"how much quota do I have left" on a free endpoint, and the cheap check in
-app/core/llm_providers.py lists models rather than generating, so it
-answers 200 for a key whose generation quota is still spent. The cooldown
-is therefore the moment to stop treating the key as dead and let a real
-call decide, which is exactly what record_dispatch_outcome() records.
+An elapsed cooldown does not prove the quota reset: the cheap credential
+check lists models rather than generating. It only ends treating the key
+as dead; the next real call decides.
 """
 
 from __future__ import annotations

@@ -39,15 +39,28 @@
         <div class="mt-4 grid gap-4 sm:grid-cols-2">
           <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
             Start date
-            <input x-model="draft.start_date" type="date" class="otw-input" />
+            <input x-model="draft.start_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
           </label>
           <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
             End date (blank = current)
-            <input x-model="draft.end_date" type="date" class="otw-input" />
+            <input x-model="draft.end_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
           </label>
         </div>
 
-        <div class="otw-tile p-4 mt-6 flex items-center justify-between gap-4">
+        <label class="otw-tile p-4 mt-6 flex items-start gap-3 cursor-pointer">
+          <input type="checkbox" class="otw-checkbox mt-0.5" :checked="row.exclude_from_resume" :disabled="excludeBusy" @change="toggleExclude($event.target.checked)" />
+          <span class="text-sm">
+            Archive
+            <span class="block text-xs text-[color:var(--muted)] mt-1">
+              Moves it to Archived on your Experience page: resume building never sees this
+              role or its bullets, and it is left out of your role count. A resume that lists
+              it again adds to this entry instead of creating a copy.
+            </span>
+            <span x-show="excludeError" class="otw-error block text-xs mt-1" x-text="excludeError"></span>
+          </span>
+        </label>
+
+        <div class="otw-tile p-4 mt-4 flex items-center justify-between gap-4">
           <p class="text-xs text-[color:var(--muted)]">
             <span x-show="isDirty">Unsaved changes.</span>
             <span x-show="!isDirty">No changes.</span>
@@ -170,6 +183,8 @@
       skillBusy: {},
       addingPoint: false,
       pointBusy: {},
+      excludeBusy: false,
+      excludeError: '',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -244,8 +259,31 @@
         }
       },
 
+      async toggleExclude(checked) {
+        this.excludeBusy = true;
+        this.excludeError = '';
+        try {
+          const res = await fetch(`/api/experience/${this.experienceId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exclude_from_resume: checked }),
+          });
+          if (!res.ok) {
+            this.excludeError = 'Could not save, try again.';
+            return;
+          }
+          // Only this flag: unsaved edits to the fields above stay as typed.
+          this.row.exclude_from_resume = (await res.json()).exclude_from_resume;
+        } finally {
+          this.excludeBusy = false;
+        }
+      },
+
       async removeExperience() {
-        if (!(await otwConfirm({ title: 'Delete this role?', body: 'Its points and skills go with it. This cannot be undone.' }))) return;
+        if (!(await otwConfirm({
+          title: 'Delete this role?',
+          body: 'Its bullets and skills go with it. This cannot be undone. Reprocessing a resume that lists this role adds it back; to keep it but hide it from resume building, archive it instead.',
+        }))) return;
         await fetch(`/api/experience/${this.experienceId}`, { method: 'DELETE' });
         window.location.href = '/portfolio/experience';
       },

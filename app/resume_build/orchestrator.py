@@ -1,47 +1,28 @@
-"""The piece that actually builds a tailored resume: pulls a job posting's
-text, runs it through app/retrieval/search.py (semantic search over the
-account's skill evidence and, elsewhere, experience points), asks the LLM
-to pick a project subset + write a summary + write project bullets, and
-hands everything to app/resume_build/latex.py to render into a .tex
-string. The LLM never sees or writes LaTeX, by design:
-it returns plain JSON (summary/projects/skills), and
-app/resume_build/context.py + this module's own assembly step are what
-place that JSON into the right template slots.
+"""Builds a resume tailored to one job posting. Semantic search
+(app/retrieval/search.py) narrows the account's projects, skills and
+experience points to candidates; one LLM call picks among them and
+writes the summary and project bullets as JSON; latex.py renders it. The
+model never sees or writes LaTeX.
 
-Experience *roles* are never touched by the LLM: every role
-(company/title/dates), in full, in order, is compulsory (job history
-isn't something an LLM gets to curate), enforced
-structurally by app/resume_build/context.py's build_experience_context()
-rather than by asking the model nicely. Each role's *points*, though, ARE
-semantically narrowed, the same way projects/skills are, just without an
-LLM call: _select_experience_points() below runs a per-role
-search_experience_points() query (app/retrieval/search.py) against the
-job text and keeps only that role's best-matching points, falling back
-to the role's full point list if the search comes back empty (infra
-hiccup, or points not yet indexed), never trusted to drop real content
-silently.
+Roles are never chosen by the model: every role, with its company, title
+and dates, is always included (context.py's build_experience_context).
+Points are chosen per job: _select_experience_points keeps each role's
+best search matches (or all its points if search returns nothing), and
+the model picks from that pool by number. A reworded point that states a
+number the original does not falls back to the original text.
 
-Untrusted job text handling: the
-posting's raw_text_quarantined never enters the system prompt (that's a
-fixed constant string below, zero interpolation) and is never folded into
-the same string as instructions. It's its own separate user-role message,
-clearly labeled as reference material, with an explicit instruction not
-to follow anything inside it as a command. The candidate evidence handed
-to the model (project descriptions, skill names) all comes from this
-account's own already-verified data, not from the posting.
+The posting text never enters the system prompt. It is sent as its own
+user message, labelled as reference material not to be followed.
 
-Grounding against hallucination: the model can only select from the
-candidate project ids and candidate skill names it was actually given.
-Anything it returns outside those sets is dropped by this module before
-rendering, never trusted outright. This is also why a project's LLM-
-written bullets are the only trusted-from-the-model content for that
-project; name/url/date always come from this account's own Repository
-row, never from what the model echoed back.
+The model can only select from the ids and names it was given; anything
+else it returns is dropped. Project names, URLs and dates always come
+from the Repository row, never from the model.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -51,9 +32,11 @@ from sqlalchemy.orm import Session
 from app.core.db import Account, JobPosting, Repository, SkillEvidence, SocialLink, get_db
 from app.core.llm import complete, system_message, user_message
 from app.resume_build.context import (
+    archived_skill_keys,
     build_education_context,
     build_experience_context,
     build_header_context,
+    excluded_sources,
 )
 from app.resume_build.latex import render_resume
 
@@ -68,6 +51,13 @@ _MAX_SELECTED_SKILLS = 15
 _MAX_CANDIDATE_DESCRIPTION_CHARS = 300
 _MAX_POINTS_PER_PROJECT = 3
 _MAX_POINTS_PER_ROLE = 5
+# How many of a role's points, best retrieval match first, the model gets
+# to choose from. Wider than any per-role limit so the choice is real, and
+# still bounded so a role with forty points does not flood the prompt.
+_POINT_POOL_PER_ROLE = 8
+# Points per role when the account holder leaves it on automatic.
+_DEFAULT_POINTS_PER_ROLE = {"onepage": 3, "twopage": 5}
+_MAX_POINTS_PER_ROLE_CHOICE = 8
 _MAX_RESERVE_PROJECTS = 4
 _MAX_RESERVE_SKILLS = 20
 
@@ -115,6 +105,27 @@ _SCHEMA = {
             },
         },
         "skills": {"type": "array", "items": {"type": "string"}},
+        "experience": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "role_id": {"type": "integer"},
+                    "points": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "integer"},
+                                "text": {"type": "string"},
+                            },
+                            "required": ["id", "text"],
+                        },
+                    },
+                },
+                "required": ["role_id", "points"],
+            },
+        },
     },
     "required": ["summary", "projects", "skills"],
 }
@@ -129,7 +140,16 @@ _SYSTEM_PROMPT = (
     "text actually listed for that project, never a technology, metric, "
     "or outcome not present in what you were given. Only select project "
     "ids and skill names from the candidate lists provided, never invent "
-    "new ones. Write plain, factual, resume-register prose. Never use an "
+    "new ones. For each experience role listed, choose which of its "
+    "numbered points to show, most relevant to the job first. A role "
+    "does not need every point: leave out points that do not help for "
+    "this job, even when there is room. Return each chosen point's "
+    "number with its text. You may reword a point, and a project bullet, "
+    "freely to fit the job (tighten it, lead with what the job cares "
+    "about, use the posting's terms for the same thing) as long as it "
+    "stays materially the same claim: never add a number, tool, scope, "
+    "or outcome the original does not state. Write plain, "
+    "factual, resume-register prose. Never use an "
     "em dash; use a period, comma, or colon instead. Return JSON matching "
     "the given schema, nothing else."
 )
@@ -168,15 +188,17 @@ def _candidate_projects(
             order.append(repo_id)
         best_score[repo_id] = max(best_score.get(repo_id, hit.score), hit.score)
     # The profile README's evidence is indexed like any repo's (it is a
-    # skill source), but it is never a project to put on a resume.
-    profile_ids = set(
+    # skill source), but it is never a project to put on a resume; neither
+    # is a project its owner marked exclude_from_resume.
+    skipped_ids = set(
         db.execute(
             select(Repository.id).where(
-                Repository.account_id == account_id, Repository.is_profile_readme.is_(True)
+                Repository.account_id == account_id,
+                Repository.is_profile_readme.is_(True) | Repository.exclude_from_resume.is_(True),
             )
         ).scalars()
     )
-    order = [rid for rid in order if rid not in profile_ids]
+    order = [rid for rid in order if rid not in skipped_ids]
     order.sort(key=lambda rid: best_score[rid], reverse=True)
     top_repo_ids = order[:_MAX_CANDIDATE_PROJECTS]
 
@@ -189,7 +211,11 @@ def _candidate_projects(
         all_repos = list(
             db.execute(
                 select(Repository)
-                .where(Repository.account_id == account_id, Repository.is_profile_readme.is_(False))
+                .where(
+                    Repository.account_id == account_id,
+                    Repository.is_profile_readme.is_(False),
+                    Repository.exclude_from_resume.is_(False),
+                )
                 .limit(_MAX_CANDIDATE_PROJECTS)
             ).scalars()
         )
@@ -199,14 +225,19 @@ def _candidate_projects(
         r.id: r
         for r in db.execute(
             select(Repository).where(
-                Repository.id.in_(top_repo_ids), Repository.is_profile_readme.is_(False)
+                Repository.id.in_(top_repo_ids),
+                Repository.is_profile_readme.is_(False),
+                Repository.exclude_from_resume.is_(False),
             )
         ).scalars()
     }
+    archived_skills = archived_skill_keys(db, account_id)
     skills_by_repo: dict[int, list[str]] = {}
     for e in db.execute(
         select(SkillEvidence).where(SkillEvidence.repo_id.in_(top_repo_ids))
     ).scalars():
+        if e.skill.strip().casefold() in archived_skills:
+            continue
         bucket = skills_by_repo.setdefault(e.repo_id, [])
         if e.skill not in bucket:
             bucket.append(e.skill)
@@ -231,18 +262,27 @@ def _candidate_projects(
 
 
 def _candidate_skills(
-    account_id: int, job_text: str, selected_skills: list[str] | None = None
+    db: Session, account_id: int, job_text: str, selected_skills: list[str] | None = None
 ) -> list[str]:
     from app.retrieval.search import search_skill_evidence
 
     hits = search_skill_evidence(job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS)
+    excluded_repos, excluded_roles = excluded_sources(db, account_id)
+    archived_skills = archived_skill_keys(db, account_id)
     seen: dict[str, str] = {}
     order: list[str] = []
     for hit in hits:
+        if (
+            hit.payload.get("repo_id") in excluded_repos
+            or hit.payload.get("experience_id") in excluded_roles
+        ):
+            continue
         skill = str(hit.payload.get("skill") or "").strip()
         if not skill:
             continue
         key = skill.casefold()
+        if key in archived_skills:
+            continue
         if key not in seen:
             seen[key] = skill
             order.append(key)
@@ -258,12 +298,97 @@ def _candidate_skills(
     return [seen[k] for k in order]
 
 
-def _length_guidance(template: str) -> str:
-    return _LENGTH_GUIDANCE.get(template, _LENGTH_GUIDANCE["onepage"])
+def _points_limit(template: str, points_per_role: int | None) -> int:
+    if points_per_role is not None:
+        return max(1, min(points_per_role, _MAX_POINTS_PER_ROLE_CHOICE))
+    return _DEFAULT_POINTS_PER_ROLE.get(template, _DEFAULT_POINTS_PER_ROLE["onepage"])
+
+
+def _length_guidance(template: str, points_limit: int | None = None) -> str:
+    text = _LENGTH_GUIDANCE.get(template, _LENGTH_GUIDANCE["onepage"])
+    if points_limit is not None:
+        text += (
+            f" For each experience role, pick at most {points_limit} points and at "
+            "least 1. That is a ceiling, not a target: pick fewer when the rest "
+            "do not match the job."
+        )
+    return text
+
+
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)*")
+# A reworded point may run somewhat longer than the original (a posting's
+# term for the same thing), not grow into a different bullet.
+_MAX_REWORD_GROWTH = 1.5
+
+
+def _is_faithful_reword(original: str, reworded: str) -> bool:
+    """The mechanical half of the grounding rule on a reworded experience
+    point: no number the original does not state (a metric is the claim
+    most worth inventing) and no runaway length. Anything else is left to
+    the prompt."""
+    if not reworded:
+        return False
+    if len(reworded) > _MAX_REWORD_GROWTH * len(original) + 20:
+        return False
+    return set(_NUMBER_RE.findall(reworded)) <= set(_NUMBER_RE.findall(original))
+
+
+def _pick_experience_points(
+    pool: list[dict[str, Any]], llm_picks: Any, limit: int
+) -> list[dict[str, Any]]:
+    """Each role with the points the model chose, by number, from that
+    role's pool. Grounded like projects and skills: a role id or point
+    number the model was not offered is ignored. The model may reword a
+    point; a rewording that fails _is_faithful_reword() falls back to the
+    account's own text. A role the model left out or gave nothing valid
+    for keeps its best retrieval matches instead, so no role ever renders
+    with no points when it has some.
+
+    Each role also carries source_points, the account's own text of each
+    shown point in the same order, so the reserve and a later edit can
+    tell which real points a reworded line came from.
+    """
+    chosen: dict[int, list[tuple[int, str]]] = {}
+    for item in llm_picks if isinstance(llm_picks, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            role_id = int(item.get("role_id"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        picks = []
+        for raw in item.get("points") or []:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                picks.append((int(raw["id"]), str(raw.get("text") or "").strip()))
+            except (KeyError, TypeError, ValueError):
+                continue
+        chosen.setdefault(role_id, picks)
+
+    result = []
+    for role in pool:
+        points = role["points"]
+        sources: list[str] = []
+        shown: list[str] = []
+        for n, text in chosen.get(role["id"], []):
+            if not 0 <= n < len(points) or points[n] in sources:
+                continue
+            sources.append(points[n])
+            shown.append(text if _is_faithful_reword(points[n], text) else points[n])
+        if not sources:
+            sources = shown = points[:limit]
+        result.append(
+            {**role, "points": shown[:limit], "source_points": sources[:limit]}
+        )
+    return result
 
 
 def _select_experience_points(
-    experience: list[dict[str, Any]], job_text: str, account_id: int
+    experience: list[dict[str, Any]],
+    job_text: str,
+    account_id: int,
+    top_k: int = _MAX_POINTS_PER_ROLE,
 ) -> list[dict[str, Any]]:
     """Narrows each role's points to the best-matching subset for this job
     text, per role (never across roles: a role with only weak matches
@@ -281,10 +406,10 @@ def _select_experience_points(
     result = []
     for role in experience:
         all_points = role["points"]
-        picked = all_points[:_MAX_POINTS_PER_ROLE]
+        picked = all_points[:top_k]
         if all_points:
             hits = search_experience_points(
-                job_text, account_id, top_k=_MAX_POINTS_PER_ROLE, experience_id=role["id"]
+                job_text, account_id, top_k=top_k, experience_id=role["id"]
             )
             seen: set[str] = set()
             ranked = []
@@ -304,6 +429,7 @@ def _build_candidates_message(
     candidate_skills: list[str],
     project_instructions: dict[int, str] | None = None,
     custom_instruction: str | None = None,
+    experience_pool: list[dict[str, Any]] | None = None,
 ) -> str:
     lines = ["CANDIDATE PROJECTS (pick zero or more, use only the info given):"]
     if candidates:
@@ -326,6 +452,16 @@ def _build_candidates_message(
     lines.append("")
     lines.append("CANDIDATE SKILLS (pick the most relevant subset, in relevance order):")
     lines.append(", ".join(candidate_skills) if candidate_skills else "(none available)")
+    pooled = [role for role in experience_pool or [] if role["points"]]
+    if pooled:
+        lines.append("")
+        lines.append(
+            "EXPERIENCE ROLES (pick points by number, reword only without changing the claim):"
+        )
+        for role in pooled:
+            lines.append(f"- role_id={role['id']} {role['title']!r} at {role['company']!r}:")
+            for i, point in enumerate(role["points"]):
+                lines.append(f"  [{i}] {point}")
     if custom_instruction and custom_instruction.strip():
         lines.append("")
         lines.append(
@@ -434,7 +570,7 @@ def _build_reserve(
 
     held_points: dict[str, list[str]] = {}
     for role in experience:
-        shown = role["points"]
+        shown = role.get("source_points", role["points"])
         dropped = [p for p in ctx.experience_all_points.get(role["id"], []) if p not in shown]
         if dropped:
             held_points[role["company"]] = dropped
@@ -464,6 +600,9 @@ class _DeterministicContext:
     education: list[dict[str, Any]]
     candidates: list[dict[str, Any]]
     candidate_skill_names: list[str]
+    # Each role's points narrowed to the best retrieval matches, wider than
+    # `experience` shows, for the model to choose from.
+    experience_pool: list[dict[str, Any]]
     # Every real point each role has, keyed by experience id, before
     # _select_experience_points() narrowed it. The page-fit loop draws on
     # the difference when a resume needs more content to reach its target
@@ -489,14 +628,19 @@ def _build_deterministic_context(
     )
     full_experience = build_experience_context(db, account_id)
     all_points = {role["id"]: list(role["points"]) for role in full_experience}
-    experience = _select_experience_points(full_experience, job_text, account_id)
+    pool = _select_experience_points(
+        full_experience, job_text, account_id, top_k=_POINT_POOL_PER_ROLE
+    )
+    experience = [{**role, "points": role["points"][:_MAX_POINTS_PER_ROLE]} for role in pool]
     education = build_education_context(db, account_id)
     candidates = _candidate_projects(
         db, account_id, job_text, selected_project_ids=selected_project_ids
     )
-    candidate_skill_names = _candidate_skills(account_id, job_text, selected_skills=selected_skills)
+    candidate_skill_names = _candidate_skills(
+        db, account_id, job_text, selected_skills=selected_skills
+    )
     return _DeterministicContext(
-        header, experience, education, candidates, candidate_skill_names, all_points
+        header, experience, education, candidates, candidate_skill_names, pool, all_points
     )
 
 
@@ -512,7 +656,9 @@ def _build_resume_data_for_text(
     project_instructions: dict[int, str] | None = None,
     selected_skills: list[str] | None = None,
     selected_experience_ids: list[int] | None = None,
+    selected_education_ids: list[int] | None = None,
     custom_instruction: str | None = None,
+    points_per_role: int | None = None,
 ) -> dict[str, Any]:
     ctx = _build_deterministic_context(
         db,
@@ -526,9 +672,13 @@ def _build_resume_data_for_text(
     )
     candidates_by_id = {c["repo_id"]: c for c in ctx.candidates}
 
-    experience = ctx.experience
+    pool = ctx.experience_pool
     if selected_experience_ids is not None:
-        experience = [e for e in experience if e["id"] in selected_experience_ids]
+        pool = [e for e in pool if e["id"] in selected_experience_ids]
+    points_limit = _points_limit(template, points_per_role)
+    education = ctx.education
+    if selected_education_ids is not None:
+        education = [e for e in education if e["id"] in selected_education_ids]
 
     messages = [
         system_message(_SYSTEM_PROMPT),
@@ -539,9 +689,10 @@ def _build_resume_data_for_text(
                 ctx.candidate_skill_names,
                 project_instructions=project_instructions,
                 custom_instruction=custom_instruction,
+                experience_pool=pool,
             )
         ),
-        user_message(_length_guidance(template)),
+        user_message(_length_guidance(template, points_limit)),
     ]
     response = complete(
         "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="resume_build"
@@ -551,6 +702,9 @@ def _build_resume_data_for_text(
 
     projects = _assemble_projects(response.parsed.get("projects", []), candidates_by_id)
     skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
+    experience = _pick_experience_points(
+        pool, response.parsed.get("experience"), points_limit
+    )
 
     if selected_skills:
         for sk in selected_skills:
@@ -565,7 +719,7 @@ def _build_resume_data_for_text(
         "summary": summary,
         "experience": experience,
         "projects": projects,
-        "education": ctx.education,
+        "education": education,
         "technologies": [],
         "skills": skills,
         "reserve": _build_reserve(ctx, experience, projects, skills),
@@ -582,7 +736,9 @@ def build_resume_data(
     project_instructions: dict[int, str] | None = None,
     selected_skills: list[str] | None = None,
     selected_experience_ids: list[int] | None = None,
+    selected_education_ids: list[int] | None = None,
     custom_instruction: str | None = None,
+    points_per_role: int | None = None,
 ) -> dict[str, Any]:
     """Returns the template-ready data dict itself, not a rendered
     string: app/resume_build/pagefit.py needs this shape (it re-renders
@@ -616,7 +772,9 @@ def build_resume_data(
             project_instructions=project_instructions,
             selected_skills=selected_skills,
             selected_experience_ids=selected_experience_ids,
+            selected_education_ids=selected_education_ids,
             custom_instruction=custom_instruction,
+            points_per_role=points_per_role,
         )
     finally:
         db.close()
@@ -661,6 +819,55 @@ _EDIT_SYSTEM_PROMPT = (
     "or colon instead. Return JSON matching the given schema (summary, "
     "projects, skills), nothing else."
 )
+
+
+def _keep_chosen(
+    fresh: list[dict[str, Any]], current: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """The freshly rebuilt experience or education entries, limited to the
+    ones the resume being edited actually showed, so a role or degree the
+    account holder left off it stays off after an edit, including when it
+    left all of them off. A resume with no such list, or one saved before
+    entries carried ids, has nothing to go on and gets every entry, as it
+    always did.
+    """
+    if current is None or not all(isinstance(e, dict) and "id" in e for e in current):
+        return fresh
+    shown = {e["id"] for e in current}
+    return [e for e in fresh if e["id"] in shown]
+
+
+def _keep_shown_points(
+    fresh: list[dict[str, Any]],
+    current: list[dict[str, Any]] | None,
+    all_points: dict[int, list[str]],
+) -> list[dict[str, Any]]:
+    """Each role keeps the points the edited resume already showed, as
+    long as the role still has them, so an edit to the summary does not
+    quietly reshuffle which experience points appear. A reworded point is
+    kept, in its reworded form, while the real point it came from
+    (source_points) still exists. A role whose shown points have all since
+    been edited or deleted falls back to the fresh retrieval pick."""
+    shown: dict[int, list[tuple[str, str]]] = {}
+    for e in current or []:
+        if not isinstance(e, dict) or "id" not in e:
+            continue
+        points = e.get("points") or []
+        sources = e.get("source_points")
+        if not isinstance(sources, list) or len(sources) != len(points):
+            sources = points
+        shown[e["id"]] = list(zip(points, sources, strict=True))
+    result = []
+    for role in fresh:
+        real = all_points.get(role["id"], [])
+        kept = [(p, src) for p, src in shown.get(role["id"], []) if src in real]
+        if kept:
+            result.append(
+                {**role, "points": [p for p, _ in kept], "source_points": [s for _, s in kept]}
+            )
+        else:
+            result.append(role)
+    return result
 
 
 def edit_resume_content(
@@ -724,15 +931,21 @@ def edit_resume_content(
         skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
         summary = str(response.parsed.get("summary", "")).strip() or None
 
+        experience = _keep_shown_points(
+            _keep_chosen(ctx.experience, current_content.get("experience")),
+            current_content.get("experience"),
+            ctx.experience_all_points,
+        )
+        education = _keep_chosen(ctx.education, current_content.get("education"))
         return {
             **ctx.header,
             "summary": summary,
-            "experience": ctx.experience,
+            "experience": experience,
             "projects": projects,
-            "education": ctx.education,
+            "education": education,
             "technologies": [],
             "skills": skills,
-            "reserve": _build_reserve(ctx, ctx.experience, projects, skills),
+            "reserve": _build_reserve(ctx, experience, projects, skills),
         }
     finally:
         db.close()

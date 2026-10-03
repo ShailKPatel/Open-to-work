@@ -1,22 +1,12 @@
-"""Mid-sync cancellation: "stop the sync there" from the UI.
+"""Stops a running GitHub sync between repos.
 
-A plain in-process set, not a DB table or a queue: this app is
-self-hosted, single instance, single account per device (see
-app/core/db/models.py's Account docstring); there's no second process or worker
-that needs to see a cancellation request, so nothing heavier is needed.
+An in-process set of run ids: the app is a single process, so no other
+worker needs to see the request. A run id is a SyncSource id, or a token
+the client generates per sync.
 
-Keyed by an arbitrary string "run id": a SyncSource's own id (stringified)
-for the sync-sources page (one sync per source can be in flight at a
-time, so the source's id is already a unique-enough key), or a
-client-generated token for the ad hoc /sync/github/stream path, which has
-no persistent id of its own.
-
-The generator being cancelled is responsible for checking is_cancelled()
-between units of work (per-repo here) and clearing its own flag; nothing
-here does that automatically. This does NOT abort a request already in
-flight to GitHub (the current repo's fetch still completes); it just
-stops the loop from starting the next one, same granularity as the
-rate-limit partial-progress path in sync.py.
+The sync loop checks is_cancelled() before each repo and clears its own
+flag. A fetch already in flight still completes; only the next repo is
+not started.
 """
 
 from __future__ import annotations

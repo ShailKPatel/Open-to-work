@@ -1,15 +1,4 @@
-from app.ingest.github.manifests import ecosystem_for, is_manifest, parse_dependencies
-
-
-def test_is_manifest():
-    assert is_manifest("requirements.txt")
-    assert is_manifest("package.json")
-    assert not is_manifest("README.md")
-
-
-def test_ecosystem_for():
-    assert ecosystem_for("go.mod") == "go"
-    assert ecosystem_for("unknown.xyz") is None
+from app.ingest.github.manifests import parse_dependencies
 
 
 def test_parse_requirements_txt():

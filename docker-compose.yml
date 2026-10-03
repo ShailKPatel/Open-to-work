@@ -12,6 +12,7 @@ services:
     volumes:
       - ./data:/app/data
       - hf_cache:/root/.cache/huggingface
+      - tectonic_cache:/root/.cache/tectonic
     depends_on:
       qdrant:
         condition: service_healthy
@@ -36,3 +37,4 @@ services:
 volumes:
   qdrant_storage:
   hf_cache:
+  tectonic_cache:

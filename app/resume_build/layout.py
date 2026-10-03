@@ -1,29 +1,16 @@
-"""Layout knobs the .tex templates read, plus the density ladder
-app/resume_build/pagefit.py walks to land a resume on exactly the page
-count the user asked for.
+"""Layout settings the .tex templates read, and the density ladder
+pagefit.py walks to hit the requested page count.
 
-Both templates used to hardcode their geometry (margins, section
-spacing, bullet spacing, the header name's point size). Hardcoding them
-means the only lever a page-fit loop has is deleting real content, which
-is the most expensive possible way to lose a fifth of a page, and it
-gives no lever at all in the other direction: a two-page resume whose
-content only reaches page one has no way to grow into the space it was
-asked to fill. Making them parameters turns "fit the page" into a search
-over typography first and content second.
+Margins, spacing and type size are parameters so that fitting a page can
+change typography before it has to drop content, and can grow a resume
+that is too short. A profile is the full set at density 1.0; layout_for()
+scales it, tighter below 1.0 and looser above. Whitespace moves fastest,
+type size moves in the steps LaTeX offers, and every value is clamped so
+no rung looks broken.
 
-A profile is the full knob set at density 1.0, which reproduces byte for
-byte what each template rendered before this module existed. layout_for()
-scales that profile: below 1.0 tightens (less whitespace, smaller type,
-more content per page), above 1.0 opens it up. Whitespace moves fastest,
-type size moves in the discrete steps LaTeX actually offers, and every
-knob is clamped so no rung of the ladder can produce a resume that reads
-as broken rather than merely tight or merely airy.
-
-DENSITY_LADDER is the fixed set of rungs pagefit compiles against. It is
-a list, not a continuous range, because every probe costs a real
-Tectonic run: thirteen rungs spanning roughly a 35 percent swing in
-content per page is enough resolution to hit a target exactly, and few
-enough that a binary search over it costs four compiles.
+DENSITY_LADDER is a fixed list because every probe is a real Tectonic
+run: thirteen rungs cover about a 35 percent swing in content per page,
+and a binary search over them takes four compiles.
 """
 
 from __future__ import annotations

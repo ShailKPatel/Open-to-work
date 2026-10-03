@@ -1,33 +1,25 @@
-"""Multimodal resume analysis. Given the raw bytes of an uploaded resume,
-asks the LLM (via app.core.llm's multimodal message helpers) to read the
-document and return skill/keyword tags, the kinds of roles it reads as
-suited for, a short summary, its work-history entries (company, title,
-location, dates, bullet points, skills used there), its education entries (institution, degree,
-location, dates), and its header contact block (name, location, every
-email, phone number, portfolio site and social link). Quality tier, not bulk: this runs once per
-upload/reprocess, not across a batch of repos, and misreading a person's
-own resume is a worse failure than the extra cost of the better model.
+"""Reads an uploaded resume with a multimodal LLM call and returns its
+tags, suitable roles, a summary, work history (with points and skills
+per role), education and header contact details. Quality tier: it runs
+once per upload, and misreading someone's own resume costs more than the
+better model.
 
-`tags`, `experiences`, `education` and `contact` are also what
-app/profile/resume_profile_merge.py folds into the account's actual
-Skill/Experience/Education/contact tables after a successful extraction, on top
-of the per-resume copy kept on the Resume row itself, see that module's
-docstring for the dedup rules.
+resume_profile_merge.py merges the result into the account's profile.
 
-Supports the formats app/core/llm.py's multimodal helpers actually cover: a
-PDF (sent as a file part) or an image (sent as an image part). Anything
-else, .docx, .txt, etc., raises UnsupportedResumeType rather than guessing
-at a parse; there is no local document-text extractor in this codebase
-yet, and sending arbitrary bytes to the LLM as if they were a PDF would
-either fail outright or silently misread.
+PDFs are sent as a file part and images as an image part. Any other
+format raises UnsupportedResumeType rather than sending bytes the model
+would misread.
 """
 
 from __future__ import annotations
 
-import datetime as dt
+import io
 from dataclasses import dataclass, field
 
+from pypdf import PdfReader
+
 from app.core.llm import complete, file_part, image_part, system_message
+from app.profile.month_year import normalize_or_none
 
 _SCHEMA = {
     "type": "object",
@@ -67,6 +59,8 @@ _SCHEMA = {
                     "location": {"type": "string"},
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
+                    "grade": {"type": "string"},
+                    "details": {"type": "array", "items": {"type": "string"}},
                 },
                 "required": ["institution", "degree", "start_date", "end_date"],
             },
@@ -109,11 +103,13 @@ _SYSTEM_PROMPT = (
     "recent title; `summary`, two or three sentences describing what this "
     "resume is strong at and who it's a good fit for; and `experiences`, "
     "one entry per work-history role the resume lists, each with the "
-    "exact company name, the exact job title, `location` if stated "
+    "company name as written but without any descriptor the resume adds "
+    "beside it (\"Acme (Fintech Startup)\" becomes \"Acme\"), the exact "
+    "job title, `location` if stated "
     "(city/region/country or \"Remote\", empty string otherwise), "
-    "start_date/end_date as "
-    "\"YYYY-MM-DD\" (use \"01\" for a day or month the resume doesn't "
-    "give, e.g. a resume saying only \"2021\" becomes \"2021-01-01\"), "
+    "start_date/end_date as a three-letter month and the year, e.g. "
+    "\"Mar 2021\", or the year alone, e.g. \"2021\", when the resume "
+    "gives no month (never invent one), "
     "and `points`, a list of key bullet points, accomplishments, or responsibility "
     "statements listed under that role, and `skills`, the concrete skills, "
     "tools, and technologies that role's own bullets and description show "
@@ -126,9 +122,15 @@ _SYSTEM_PROMPT = (
     "institution name, the degree or program as written (e.g. \"B.Tech in "
     "Computer Science\", including any major or specialization), "
     "`location` if stated (empty string otherwise), and start_date/"
-    "end_date in the same \"YYYY-MM-DD\" format as above; leave end_date "
+    "end_date in the same \"Mar 2021\" format as above; leave end_date "
     "empty for a program still in progress, and use the expected "
     "graduation date as end_date only when the resume gives one. "
+    "Also per school, only when the resume states them: `grade`, the "
+    "GPA, CGPA, SPI, percentage or class exactly as written (e.g. "
+    "\"CGPA: 8.9/10\"), empty string otherwise; and `details`, each "
+    "other line listed under that school (relevant coursework, rank, "
+    "honors, thesis) as written, empty list otherwise. Never infer "
+    "either one. "
     "`contact`, everything the resume says about how to reach its owner, "
     "usually in the header but also anywhere else in the document: "
     "`name`, the person's full name as written; `location`, their city/"
@@ -137,17 +139,29 @@ _SYSTEM_PROMPT = (
     "number, each exactly as written including any country code; and "
     "`links`, every personal URL (portfolio or personal websites, "
     "LinkedIn, GitHub, GitLab, X/Twitter, Instagram, LeetCode, Kaggle, "
-    "Medium, blogs, Behance, Dribbble, and so on), listing every one "
-    "separately when there is more than one portfolio or profile. For "
-    "each link give `platform`, one of \"linkedin\", \"github\", "
-    "\"instagram\", \"website\" (a personal site, portfolio, or blog) or "
-    "\"other\"; `url`, the full URL, adding \"https://\" when the resume "
-    "prints it without a scheme and expanding a bare handle only when the "
-    "platform makes the URL unambiguous; and `label`, the platform's "
-    "name for an \"other\" link (e.g. \"LeetCode\", \"X\"), empty "
-    "otherwise. Links to a specific project's repo or demo belong to that "
-    "project, not here. Read the whole document for these, including "
-    "icons with hyperlinks and footers; do not skip any. Base "
+    "Medium, blogs, Behance, Dribbble, and so on), plus every link to the "
+    "person's certificates or credentials (a Credly or Accredible badge, a "
+    "certificate verification URL, a page or folder of certificates, "
+    "including links in a Certifications section), listing every one "
+    "separately when there is more than one. For each link give "
+    "`platform`, one of \"linkedin\", \"github\", \"instagram\" or "
+    "\"other\" (\"website\" only for a site you truly can't name); "
+    "`url`, the full URL, adding \"https://\" when the resume prints it "
+    "without a scheme and expanding a bare handle only when the platform "
+    "makes the URL unambiguous; and `label`, the short name the link "
+    "goes by on a resume header, required for \"other\" and empty "
+    "otherwise: the word the resume itself shows for it when it shows "
+    "one (\"Portfolio\", \"Certificates\"), else what it is, "
+    "\"Portfolio\" for a personal or portfolio site, \"Blog\" for a "
+    "blog, \"Certificates\" for a page of certificates, the "
+    "certification's own short name for a single certificate (e.g. "
+    "\"AWS Solutions Architect\"), or the platform's name for a profile "
+    "(e.g. \"LeetCode\", \"X\"). Links to a specific project's repo or "
+    "demo, or to a paper, belong to that project, not here. Read the "
+    "whole document for these, including icons with hyperlinks and "
+    "footers; do not skip any. A link can hide behind a word or icon that "
+    "doesn't print its URL, so when the message lists the hyperlinks "
+    "embedded in the file, check each one against the page. Base "
     "every claim on what the document actually shows, do not invent "
     "experience or education it doesn't contain."
 )
@@ -167,8 +181,8 @@ class UnsupportedResumeType(Exception):
 class ExperienceClaim:
     company: str
     title: str
-    start_date: dt.date | None
-    end_date: dt.date | None
+    start_date: str | None
+    end_date: str | None
     points: list[str] = field(default_factory=list)
     location: str | None = None
     skills: list[str] = field(default_factory=list)
@@ -179,8 +193,10 @@ class EducationClaim:
     institution: str
     degree: str
     location: str | None
-    start_date: dt.date | None
-    end_date: dt.date | None
+    start_date: str | None
+    end_date: str | None
+    grade: str | None = None
+    details: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -209,14 +225,8 @@ class ResumeExtraction:
     contact: ContactClaim = field(default_factory=ContactClaim)
 
 
-def _parse_date(raw: object) -> dt.date | None:
-    text = str(raw or "").strip()
-    if not text:
-        return None
-    try:
-        return dt.date.fromisoformat(text)
-    except ValueError:
-        return None
+def _parse_date(raw: object) -> str | None:
+    return normalize_or_none(raw)
 
 
 _LINK_PLATFORMS = {"linkedin", "github", "instagram", "website", "other"}
@@ -247,6 +257,10 @@ def _parse_contact(raw: object) -> ContactClaim:
             # An unexpected platform name is still a useful label.
             label = label or (platform.title() if platform else None)
             platform = "other"
+        elif platform == "website" and label:
+            # A named site ("Portfolio") is a custom link, which is the
+            # only kind whose name shows on the resume and the Links page.
+            platform = "other"
         links.append(
             LinkClaim(platform=platform, url=url, label=label if platform == "other" else None)
         )
@@ -260,12 +274,38 @@ def _parse_contact(raw: object) -> ContactClaim:
     )
 
 
+def _embedded_links(pdf_bytes: bytes) -> list[str]:
+    """Every web URL the PDF links to, in page order, deduplicated. A link
+    behind a word like "Certificates" has no printed URL to read off the
+    page, so these go to the LLM as text alongside the file. Best effort:
+    a PDF pypdf can't parse just gets no list."""
+    try:
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        urls: list[str] = []
+        for page in reader.pages:
+            for annot in page.get("/Annots") or []:
+                obj = annot.get_object()
+                action = obj.get("/A")
+                if obj.get("/Subtype") != "/Link" or action is None:
+                    continue
+                uri = str(action.get_object().get("/URI") or "").strip()
+                if uri.lower().startswith(("http://", "https://")) and uri not in urls:
+                    urls.append(uri)
+        return urls
+    except Exception:
+        return []
+
+
 def extract_resume(
     file_bytes: bytes, mime_type: str, account_id: int | None = None
 ) -> ResumeExtraction:
     mime_type = (mime_type or "").lower()
+    intro = "Here is the resume to analyze."
     if mime_type == _PDF_MIME:
         attachment = file_part(file_bytes, mime_type=_PDF_MIME)
+        embedded = _embedded_links(file_bytes)
+        if embedded:
+            intro += "\n\nHyperlinks embedded in the file:\n" + "\n".join(embedded)
     elif mime_type in _IMAGE_MIMES:
         attachment = image_part(file_bytes, mime_type=mime_type)
     else:
@@ -278,7 +318,7 @@ def extract_resume(
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": "Here is the resume to analyze."},
+                {"type": "text", "text": intro},
                 attachment,
             ],
         },
@@ -331,6 +371,8 @@ def extract_resume(
                 location=location or None,
                 start_date=_parse_date(item.get("start_date")),
                 end_date=_parse_date(item.get("end_date")),
+                grade=str(item.get("grade", "") or "").strip() or None,
+                details=_clean_strings(item.get("details")),
             )
         )
 

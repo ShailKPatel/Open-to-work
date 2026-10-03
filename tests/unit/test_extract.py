@@ -10,9 +10,7 @@ from app.core.settings import get_settings
 from app.profile.extract import (
     _BATCH_SIZE,
     NoSourceTextError,
-    extract_links_from_repo,
     extract_repo_facts,
-    extract_skills_from_repo,
     prefetch_repo_facts,
 )
 
@@ -44,7 +42,7 @@ def test_no_readme_no_description_raises_without_calling_llm(tmp_path, monkeypat
     monkeypatch.setattr("app.profile.extract.complete", fake_complete)
 
     with pytest.raises(NoSourceTextError):
-        extract_skills_from_repo(_repo())
+        extract_repo_facts(_repo())
 
     fake_complete.assert_not_called()
 
@@ -61,9 +59,9 @@ def test_extracts_claims_from_readme(tmp_path, monkeypatch):
     fake_complete = MagicMock(return_value=fake_response)
     monkeypatch.setattr("app.profile.extract.complete", fake_complete)
 
-    claims = extract_skills_from_repo(
+    claims = extract_repo_facts(
         _repo(readme="Built with gRPC and k8s operators.", description="a project")
-    )
+    ).skills
 
     assert len(claims) == 2
     assert all(c.evidence_type == "readme_described" for c in claims)
@@ -79,7 +77,7 @@ def test_falls_back_to_description_when_no_readme(tmp_path, monkeypatch):
     fake_complete = MagicMock(return_value=fake_response)
     monkeypatch.setattr("app.profile.extract.complete", fake_complete)
 
-    claims = extract_skills_from_repo(_repo(readme=None, description="A Rust CLI tool."))
+    claims = extract_repo_facts(_repo(readme=None, description="A Rust CLI tool.")).skills
 
     assert len(claims) == 1
     assert claims[0].evidence_type == "description_described"
@@ -95,7 +93,7 @@ def test_blank_readme_falls_back_to_description(tmp_path, monkeypatch):
     fake_complete = MagicMock(return_value=fake_response)
     monkeypatch.setattr("app.profile.extract.complete", fake_complete)
 
-    extract_skills_from_repo(_repo(readme="   ", description="fallback text"))
+    extract_repo_facts(_repo(readme="   ", description="fallback text"))
 
     sent_messages = fake_complete.call_args.args[1]
     assert "fallback text" in sent_messages[1]["content"]
@@ -109,7 +107,7 @@ def test_confidence_is_clamped_to_unit_interval(tmp_path, monkeypatch):
         "app.profile.extract.complete", MagicMock(return_value=fake_response)
     )
 
-    claims = extract_skills_from_repo(_repo(readme="uses rust"))
+    claims = extract_repo_facts(_repo(readme="uses rust")).skills
     assert claims[0].confidence == 1.0
 
 
@@ -121,7 +119,7 @@ def test_null_parsed_response_returns_no_claims(tmp_path, monkeypatch):
         "app.profile.extract.complete", MagicMock(return_value=fake_response)
     )
 
-    assert extract_skills_from_repo(_repo(readme="some readme")) == []
+    assert extract_repo_facts(_repo(readme="some readme")).skills == []
 
 
 def test_readme_truncated_before_sending_to_llm(tmp_path, monkeypatch):
@@ -132,7 +130,7 @@ def test_readme_truncated_before_sending_to_llm(tmp_path, monkeypatch):
     monkeypatch.setattr("app.profile.extract.complete", fake_complete)
 
     huge_readme = "x" * 50_000
-    extract_skills_from_repo(_repo(readme=huge_readme))
+    extract_repo_facts(_repo(readme=huge_readme))
 
     sent_messages = fake_complete.call_args.args[1]
     user_content = sent_messages[1]["content"]
@@ -159,24 +157,6 @@ def test_skills_and_links_come_back_from_one_call(tmp_path, monkeypatch):
     ]
     assert fake_complete.call_count == 1
     assert fake_complete.call_args.kwargs["purpose"] == "repo_facts"
-
-
-def test_both_wrappers_ask_for_the_same_one_prompt(tmp_path, monkeypatch):
-    """The two wrappers are halves of one call, not two calls: the second
-    one sends the identical prompt, which app/core/llm.py's cache serves
-    for free."""
-    _reset_db(tmp_path)
-    fake_response = MagicMock()
-    fake_response.parsed = {"skills": [], "links": []}
-    fake_complete = MagicMock(return_value=fake_response)
-    monkeypatch.setattr("app.profile.extract.complete", fake_complete)
-
-    repo = _repo(readme="uses rust")
-    extract_skills_from_repo(repo)
-    extract_links_from_repo(repo)
-
-    first, second = fake_complete.call_args_list
-    assert first.args[1] == second.args[1]
 
 
 def test_badges_code_blocks_and_license_are_not_sent(tmp_path, monkeypatch):

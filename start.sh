@@ -13,30 +13,69 @@ step() { printf "${BOLD}%s${RESET}\n" "$1"; }
 step "Open to Work: startup"
 echo
 
-# 1. Docker: install it if missing (Linux only; unattended, uses sudo),
-# point at the download page on macOS/Windows since Docker Desktop has no
-# unattended installer.
+# 1. Docker: install it if missing on Linux (unattended, uses sudo). Docker
+# Desktop on macOS and Windows has no unattended installer, so there the
+# install page for that OS is opened instead.
+MAC_INSTALL_URL="https://docs.docker.com/desktop/setup/install/mac-install/"
+WINDOWS_INSTALL_URL="https://docs.docker.com/desktop/setup/install/windows-install/"
+LINUX_INSTALL_URL="https://docs.docker.com/engine/install/"
+
+case "$(uname -s)" in
+  Darwin) PLATFORM=mac ;;
+  MINGW*|MSYS*|CYGWIN*) PLATFORM=windows ;;
+  Linux) grep -qi microsoft /proc/version 2>/dev/null && PLATFORM=wsl || PLATFORM=linux ;;
+  *) PLATFORM=other ;;
+esac
+
+# Best effort: never fail the script over opening a page.
+open_url() {
+  case "$PLATFORM" in
+    mac) open "$1" ;;
+    windows) start "" "$1" ;;
+    wsl) explorer.exe "$1" || cmd.exe /c start "" "$1" ;;
+    *) xdg-open "$1" ;;
+  esac >/dev/null 2>&1 &
+}
+
 if ! command -v docker >/dev/null 2>&1; then
-  case "$(uname -s)" in
-    Linux)
+  case "$PLATFORM" in
+    linux)
       step "Docker not found. Installing via get.docker.com (needs sudo)..."
-      curl -fsSL https://get.docker.com | sudo sh
+      if ! curl -fsSL https://get.docker.com | sudo sh; then
+        err "Automatic install does not support this Linux distribution."
+        err "Install Docker yourself, then re-run this script: $LINUX_INSTALL_URL"
+        exit 1
+      fi
       sudo systemctl enable --now docker >/dev/null 2>&1 || sudo service docker start >/dev/null 2>&1 || true
       sudo usermod -aG docker "$USER" >/dev/null 2>&1 || true
       ok "Docker installed"
       ;;
-    Darwin)
-      err "Docker not found. macOS needs Docker Desktop (no unattended installer);"
-      err "opening the download page. Install it, then re-run this script."
-      open "https://www.docker.com/products/docker-desktop/" >/dev/null 2>&1 || true
+    mac)
+      err "Docker not found. Install Docker Desktop for Mac, open it, then re-run this script."
+      err "Opening the install page: $MAC_INSTALL_URL"
+      open_url "$MAC_INSTALL_URL"
+      exit 1
+      ;;
+    windows|wsl)
+      err "Docker not found. Install Docker Desktop for Windows, open it, then re-run this script."
+      [ "$PLATFORM" = wsl ] && err "If it is already installed, turn on Settings > Resources > WSL integration for this distro."
+      err "Opening the install page: $WINDOWS_INSTALL_URL"
+      open_url "$WINDOWS_INSTALL_URL"
       exit 1
       ;;
     *)
-      err "Docker not found. Auto-install only handled for Linux/macOS here."
-      err "Install manually: https://docs.docker.com/get-docker/"
+      err "Docker not found. Install it, then re-run this script: https://docs.docker.com/get-docker/"
       exit 1
       ;;
   esac
+fi
+
+# Docker Desktop (macOS, Windows, WSL) installed but not started: say so
+# instead of trying sudo, which cannot help there.
+if [ "$PLATFORM" != linux ] && ! docker info >/dev/null 2>&1; then
+  err "Docker is installed but not running. Open Docker Desktop, wait until it"
+  err "says Docker is running, then re-run this script."
+  exit 1
 fi
 
 # Freshly installed on Linux means the current shell isn't in the `docker`
@@ -54,6 +93,21 @@ if ! docker info >/dev/null 2>&1; then
   fi
 fi
 ok "Docker running"
+
+# `up --wait` below needs Compose v2.1 or newer, run as `docker compose`.
+# The old standalone `docker-compose` (v1) is not enough.
+COMPOSE_VERSION="$("${DOCKER[@]}" compose version --short 2>/dev/null || true)"
+COMPOSE_VERSION="${COMPOSE_VERSION#v}"
+COMPOSE_MAJOR="${COMPOSE_VERSION%%.*}"
+COMPOSE_MINOR="$(echo "$COMPOSE_VERSION" | cut -d. -f2)"
+if ! [[ "$COMPOSE_MAJOR" =~ ^[0-9]+$ && "$COMPOSE_MINOR" =~ ^[0-9]+$ ]] \
+  || [ "$COMPOSE_MAJOR" -lt 2 ] \
+  || { [ "$COMPOSE_MAJOR" -eq 2 ] && [ "$COMPOSE_MINOR" -lt 1 ]; }; then
+  err "Docker Compose v2.1 or newer is required (found: ${COMPOSE_VERSION:-none})."
+  err "Update Docker or install the Compose plugin: https://docs.docker.com/compose/install/"
+  exit 1
+fi
+ok "Docker Compose $COMPOSE_VERSION"
 
 # 2. .env only holds the optional GITHUB_TOKEN. Created on first run so
 # there is an obvious place to put it; never overwritten.
@@ -120,7 +174,5 @@ echo -e "${BOLD}${GREEN}Ready →${RESET} ${BOLD}$URL${RESET}"
 echo -e "${DIM}Stop with: docker compose down${RESET}"
 echo
 
-# 6. Best-effort auto-open (never fail the script over this)
-if command -v xdg-open >/dev/null 2>&1; then xdg-open "$URL" >/dev/null 2>&1 &
-elif command -v open >/dev/null 2>&1; then open "$URL" >/dev/null 2>&1 &
-fi
+# 6. Best-effort auto-open
+open_url "$URL"

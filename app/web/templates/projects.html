@@ -1,4 +1,5 @@
 {% extends "_base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Projects · Open to Work{% endblock %}
 {% block content %}
 <div x-data="projectsApp()" x-init="init()" class="min-h-screen flex flex-col">
@@ -80,12 +81,25 @@
       </p>
     </div>
 
-    <div x-cloak class="mt-10 otw-fill" style="--fill-min: 20rem;">
+    <div x-cloak x-show="!loading && projects.length > 0 && activeProjects.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">Every project is archived. Restore one below to bring it back.</p>
+    </div>
+
+    <div x-cloak x-show="!loading && activeProjects.length > 0" class="mt-8 flex items-center gap-4">
+      {{ ui.search("query", "Search projects", class="flex-1 min-w-0") }}
+      <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="countLabel"></span>
+    </div>
+
+    <div x-cloak x-show="!loading && activeProjects.length > 0 && filteredProjects.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No projects match that search.</p>
+    </div>
+
+    <div x-cloak class="mt-6 otw-fill" style="--fill-min: 20rem;">
       <template x-for="project in pagedProjects" :key="project.id">
         <div
           @click="goToDetail(project)"
           class="otw-tile otw-project cursor-pointer"
-          :class="project.starred ? 'otw-project-starred' : ''"
+          :class="{ 'otw-project-starred': project.starred }"
         >
           <div class="flex items-start justify-between gap-3">
             <div class="flex items-start gap-2.5 min-w-0">
@@ -145,24 +159,44 @@
               <span x-show="project.is_fork" class="otw-pill">fork</span>
               <span x-show="project.is_manual" class="otw-pill">manual</span>
             </div>
-            <button
-              @click.stop="reprocess(project)"
-              :disabled="Boolean(reprocessing[project.id])"
-              class="otw-btn-accent text-xs px-3 py-1.5 shrink-0"
-            >
-              <span x-show="!reprocessing[project.id]">Reprocess</span>
-              <span x-show="reprocessing[project.id]" class="otw-working">Working…</span>
-            </button>
+            <div class="flex items-center gap-2 shrink-0">
+              <button
+                @click.stop="reprocess(project)"
+                :disabled="Boolean(reprocessing[project.id])"
+                class="otw-btn-accent text-xs px-3 py-1.5"
+              >
+                <span x-show="!reprocessing[project.id]">Reprocess</span>
+                <span x-show="reprocessing[project.id]" class="otw-working">Working…</span>
+              </button>
+              {{ ui.archive_button("$event.stopPropagation(); setArchived(project, true)", label="Archive project", disabled="Boolean(archiveBusy[project.id])", size="sm") }}
+              {{ ui.bin_button("$event.stopPropagation(); remove(project)", label="Delete project", disabled="Boolean(deleting[project.id])", size="sm") }}
+            </div>
           </div>
         </div>
       </template>
     </div>
 
-    <div x-cloak x-show="!loading && projects.length > pageSize" class="otw-pagination">
+    <div x-cloak x-show="!loading && filteredProjects.length > pageSize" class="otw-pagination">
       <button @click="page = Math.max(1, page - 1)" :disabled="page <= 1">← Prev</button>
       <span>Page <span x-text="page"></span> of <span x-text="totalPages"></span></span>
       <button @click="page = Math.min(totalPages, page + 1)" :disabled="page >= totalPages">Next →</button>
     </div>
+
+    {% call ui.archived_section("filteredArchived", "archivedOpen", "Kept here, but resume building never sees them and they are left out of your project count. A skill only these projects show is archived with them.") %}
+      <template x-for="project in filteredArchived" :key="project.id">
+        <div class="otw-tile px-4 py-3 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <a :href="'/portfolio/projects/' + project.id" class="font-display text-base hover:underline break-words" x-text="project.name"></a>
+            <p x-show="project.description" class="text-xs text-[color:var(--muted)] mt-0.5 truncate" x-text="project.description"></p>
+            <p x-show="starError[project.id]" class="otw-error text-xs mt-1" x-text="starError[project.id]"></p>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button @click="setArchived(project, false)" :disabled="Boolean(archiveBusy[project.id])" class="otw-btn-ghost text-xs px-3 py-1.5">Restore</button>
+            {{ ui.bin_button("remove(project)", label="Delete project", disabled="Boolean(deleting[project.id])", size="sm") }}
+          </div>
+        </div>
+      </template>
+    {% endcall %}
   </main>
 </div>
 
@@ -187,13 +221,17 @@
       processedTotal: 0,
       extractionSource: null,
       reprocessing: {},
+      deleting: {},
       maxStarred: 3,
       starBusy: {},
       starError: {},
+      archiveBusy: {},
+      archivedOpen: false,
       addingOpen: false,
       adding: false,
       addError: '',
       draft: { name: '', full_name: '', url: '', description: '', primary_language: '', readme: '', is_fork: false },
+      query: '',
       page: 1,
       pageSize: 10,
 
@@ -204,6 +242,8 @@
           window.location.href = '/';
           return;
         }
+        this.query = new URLSearchParams(window.location.search).get('q') || '';
+        this.$watch('query', () => { this.page = 1; });
         await this.load();
         // Auto-start only for never-attempted repos. NOT for
         // "rate_limited": those already got explicitly stopped once;
@@ -222,13 +262,37 @@
         return this.projects.filter((p) => p.skill_extraction_status === 'rate_limited').length;
       },
 
+      // Archived projects stay in this.projects (extraction still runs on
+      // them) but only show in the Archived section.
+      get activeProjects() {
+        return this.projects.filter((p) => !p.exclude_from_resume);
+      },
+
+      searchFields(p) {
+        return [p.name, p.full_name, p.description, p.primary_language];
+      },
+
+      get filteredProjects() {
+        return otwSearch(this.activeProjects, this.query, this.searchFields);
+      },
+
+      get filteredArchived() {
+        return otwSearch(this.projects.filter((p) => p.exclude_from_resume), this.query, this.searchFields);
+      },
+
+      get countLabel() {
+        const shown = this.filteredProjects.length;
+        const total = this.activeProjects.length;
+        return shown === total ? `${total} project${total !== 1 ? 's' : ''}` : `${shown} of ${total}`;
+      },
+
       get totalPages() {
-        return Math.max(1, Math.ceil(this.projects.length / this.pageSize));
+        return Math.max(1, Math.ceil(this.filteredProjects.length / this.pageSize));
       },
 
       get pagedProjects() {
         const start = (this.page - 1) * this.pageSize;
-        return this.projects.slice(start, start + this.pageSize);
+        return this.filteredProjects.slice(start, start + this.pageSize);
       },
 
       async continueProcessing() {
@@ -359,6 +423,20 @@
         }
       },
 
+      async remove(project) {
+        const body = project.is_manual
+          ? 'Its skills and links go with it. This cannot be undone.'
+          : 'Its skills and links go with it. The next GitHub sync fetches this repo again; to keep it but hide it from resume building, archive it instead.';
+        if (!(await otwConfirm({ title: `Delete "${project.name}"?`, body }))) return;
+        this.deleting[project.id] = true;
+        try {
+          const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' });
+          if (res.ok) this.projects = this.projects.filter((p) => p.id !== project.id);
+        } finally {
+          this.deleting[project.id] = false;
+        }
+      },
+
       async patchProject(project, body) {
         const res = await fetch(`/api/projects/${project.id}`, {
           method: 'PATCH',
@@ -375,6 +453,16 @@
         const idx = this.projects.findIndex((p) => p.id === project.id);
         if (idx !== -1) this.projects[idx] = updated;
         return updated;
+      },
+
+      async setArchived(project, archived) {
+        this.archiveBusy[project.id] = true;
+        try {
+          await this.patchProject(project, { exclude_from_resume: archived });
+          if (this.page > this.totalPages) this.page = this.totalPages;
+        } finally {
+          this.archiveBusy[project.id] = false;
+        }
       },
 
       // Reordering to reflect the new star happens on next full

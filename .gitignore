@@ -3,14 +3,12 @@ __pycache__/
 .venv/
 .env
 data/
-!data/.gitkeep
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
 .coverage
 htmlcov/
 *.egg-info/
-.claude/
 *.log
 .DS_Store
 .idea/

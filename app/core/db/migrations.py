@@ -216,7 +216,7 @@ def _migrate_rate_limit_events_account_column(engine: Engine) -> None:
 
 def _migrate_job_postings_tracking_columns(engine: Engine) -> None:
     """Add job_postings.applied/applied_at/applied_notes/role_family_id/
-    screenshot_path to an already-existing job_postings table, same
+    screenshot_path/screenshot_paths to an already-existing job_postings table, same
     reasoning and pattern as _migrate_job_postings_account_id above.
     """
     if engine.dialect.name != "sqlite":
@@ -237,6 +237,8 @@ def _migrate_job_postings_tracking_columns(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE job_postings ADD COLUMN role_family_id INTEGER"))
         if "screenshot_path" not in existing:
             conn.execute(text("ALTER TABLE job_postings ADD COLUMN screenshot_path TEXT"))
+        if "screenshot_paths" not in existing:
+            conn.execute(text("ALTER TABLE job_postings ADD COLUMN screenshot_paths JSON"))
         conn.commit()
 
 
@@ -421,6 +423,174 @@ def _migrate_repositories_profile_readme_column(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_repositories_readme_sha_column(engine: Engine) -> None:
+    """Add repositories.readme_sha, same idempotent PRAGMA-check pattern
+    as the migrations above. Rows synced before it existed stay NULL; the
+    sync then hashes the stored README text instead (sync.py's
+    _known_readme_sha), so an upgrade doesn't reprocess every repo.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(repositories)"))}
+        if "readme_sha" not in existing:
+            conn.execute(text("ALTER TABLE repositories ADD COLUMN readme_sha TEXT"))
+        conn.commit()
+
+
+def _migrate_exclude_from_resume_columns(engine: Engine) -> None:
+    """Add exclude_from_resume to repositories, experiences and education, same
+    idempotent PRAGMA-check pattern as the migrations above. Existing rows
+    default to included, which is how they behaved before.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        for table in ("repositories", "experiences", "education"):
+            existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            if "exclude_from_resume" not in existing:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE {table} ADD COLUMN "
+                        "exclude_from_resume BOOLEAN NOT NULL DEFAULT 0"
+                    )
+                )
+        conn.commit()
+
+
+def _migrate_resumes_build_state_column(engine: Engine) -> None:
+    """Add resumes.build_state_json, same idempotent PRAGMA-check pattern
+    as the migrations above. Existing rows read as finished, which they
+    are."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(resumes)"))}
+        if "build_state_json" not in existing:
+            conn.execute(text("ALTER TABLE resumes ADD COLUMN build_state_json JSON"))
+        conn.commit()
+
+
+def _migrate_education_extras_columns(engine: Engine) -> None:
+    """Add education.grade/details, same idempotent PRAGMA-check pattern
+    as the migrations above. Existing rows read as no grade and no
+    details, which renders exactly as before."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(education)"))}
+        if "grade" not in existing:
+            conn.execute(text("ALTER TABLE education ADD COLUMN grade TEXT"))
+        if "details" not in existing:
+            conn.execute(
+                text("ALTER TABLE education ADD COLUMN details JSON NOT NULL DEFAULT '[]'")
+            )
+        conn.commit()
+
+
+def _migrate_month_year_date_column_types(engine: Engine) -> None:
+    """Retype experiences/education start_date and end_date from DATE to
+    VARCHAR on databases created before the month-and-year change. SQLite
+    gives a DATE column numeric affinity, so a year-only "2023" was stored
+    and read back as the integer 2023. SQLite cannot change a column's type
+    in place, so each one is copied into a new text column that takes its
+    name.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        for table in ("experiences", "education"):
+            types = {
+                row[1]: str(row[2]).upper()
+                for row in conn.execute(text(f"PRAGMA table_info({table})"))
+            }
+            for column in ("start_date", "end_date"):
+                if types.get(column) != "DATE":
+                    continue
+                tmp = f"{column}_text"
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {tmp} VARCHAR"))
+                conn.execute(text(f"UPDATE {table} SET {tmp} = CAST({column} AS TEXT)"))
+                conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+                conn.execute(text(f"ALTER TABLE {table} RENAME COLUMN {tmp} TO {column}"))
+        conn.commit()
+
+
+def _migrate_month_year_dates(engine: Engine) -> None:
+    """Rewrite experiences/education start_date and end_date, and the
+    dates inside each resume's experiences_json/education_json snapshot,
+    from the ISO dates they were once stored as ("2026-03-01") to the
+    month-and-year form they are stored as now ("mar 2026", see
+    app/profile/month_year.py). Runs on every startup; a value already in
+    that form normalizes to itself, so only old rows get written. An
+    unreadable value is left alone rather than dropped.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    from app.profile.month_year import normalize_or_none
+
+    def fixed(value: object) -> object:
+        return normalize_or_none(value) or value
+
+    with engine.connect() as conn:
+        for table in ("experiences", "education"):
+            rows = conn.execute(text(f"SELECT id, start_date, end_date FROM {table}")).all()
+            for row_id, start, end in rows:
+                new_start, new_end = fixed(start), fixed(end)
+                if (new_start, new_end) != (start, end):
+                    conn.execute(
+                        text(f"UPDATE {table} SET start_date = :s, end_date = :e WHERE id = :id"),
+                        {"s": new_start, "e": new_end, "id": row_id},
+                    )
+
+        rows = conn.execute(
+            text("SELECT id, experiences_json, education_json FROM resumes")
+        ).all()
+        for resume_id, *columns in rows:
+            updates = {}
+            for column, raw in zip(("experiences_json", "education_json"), columns, strict=True):
+                try:
+                    items = json.loads(raw) if isinstance(raw, str) else raw
+                except ValueError:
+                    continue
+                if not isinstance(items, list):
+                    continue
+                changed = False
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ("start_date", "end_date"):
+                        if item.get(key) and fixed(item[key]) != item[key]:
+                            item[key] = fixed(item[key])
+                            changed = True
+                if changed:
+                    updates[column] = json.dumps(items)
+            for column, value in updates.items():
+                conn.execute(
+                    text(f"UPDATE resumes SET {column} = :v WHERE id = :id"),
+                    {"v": value, "id": resume_id},
+                )
+        conn.commit()
+
+
+# Tables an older database may still carry that no model declares any more.
+# auth_sources held encrypted job-site logins, so it is dropped rather than
+# left on disk; the other two were never written to.
+_RETIRED_TABLES = ("auth_sources", "detections", "match_results")
+
+
+def _drop_retired_tables(engine: Engine) -> None:
+    with engine.connect() as conn:
+        for table in _RETIRED_TABLES:
+            conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        conn.commit()
+
+
 def init_db() -> None:
     _backup_sqlite_file(get_settings().database_url)
     engine = get_engine()
@@ -441,3 +611,10 @@ def init_db() -> None:
     _migrate_api_keys_exhaustion_columns(engine)
     _migrate_skills_source_resume_column(engine)
     _migrate_repositories_profile_readme_column(engine)
+    _migrate_repositories_readme_sha_column(engine)
+    _migrate_exclude_from_resume_columns(engine)
+    _migrate_resumes_build_state_column(engine)
+    _migrate_education_extras_columns(engine)
+    _migrate_month_year_date_column_types(engine)
+    _migrate_month_year_dates(engine)
+    _drop_retired_tables(engine)

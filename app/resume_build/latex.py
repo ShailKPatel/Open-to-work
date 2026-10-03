@@ -26,6 +26,11 @@ from jinja2 import Environment, FileSystemLoader
 
 from app.resume_build.layout import default_layout
 
+# Written into every generated PDF's Creator field, so an upload can tell a
+# resume this app built from one the person wrote
+# (app/profile/resume_ingest.py's is_generated_pdf).
+GENERATED_PDF_CREATOR = "Open to Work"
+
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Order matters: backslash isn't in this map because every other
@@ -61,12 +66,28 @@ _URL_ESCAPE_CHARS = {"%": r"\%", "#": r"\#", "&": r"\&"}
 _URL_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _URL_ESCAPE_CHARS))
 
 
+# An em dash reads as a comma on a resume. Stripped here, at the one
+# place every piece of text passes through, rather than by asking the
+# model, since the account's own points and descriptions carry them too.
+# Any comma or space already beside it is absorbed so "a, \u2014 b" does
+# not become "a, , b".
+_EM_DASH_RE = re.compile(r"[\s,]*\u2014[\s,]*")
+
+
+def strip_em_dashes(text: str) -> str:
+    if "\u2014" not in text:
+        return text
+    return _EM_DASH_RE.sub(", ", text).strip(", ")
+
+
 def escape_latex(text: str) -> str:
     """Escapes a plain string for use as LaTeX body text (names, bullet
     points, company names, skill names, ...). Never apply this to a
     literal LaTeX command string the template itself constructs (e.g. an
-    icon macro like \\faGithub): only to actual data.
+    icon macro like \\faGithub): only to actual data. Em dashes are
+    replaced with commas (strip_em_dashes()).
     """
+    text = strip_em_dashes(text)
     return _LATEX_ESCAPE_RE.sub(lambda m: _LATEX_SPECIAL_CHARS[m.group()], text)
 
 
@@ -111,6 +132,7 @@ def render_resume(template_name: str, data: dict[str, Any]) -> str:
     when the numbers were still hardcoded in the .tex.j2 file.
     """
     payload = dict(data)
+    payload["pdf_creator"] = GENERATED_PDF_CREATOR
     if not payload.get("layout"):
         payload["layout"] = default_layout(template_name)
     return _get_env().get_template(template_name).render(**payload)

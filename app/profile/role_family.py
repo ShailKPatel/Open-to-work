@@ -138,13 +138,3 @@ def resolve_role_family(title: str, account_id: int | None = None) -> RoleFamily
         logger.warning("could not index new role family id=%s", row.id, exc_info=True)
 
     return row
-
-
-def list_role_families() -> list[RoleFamily]:
-    db = get_db()
-    try:
-        return list(
-            db.execute(select(RoleFamily).order_by(RoleFamily.canonical_name)).scalars()
-        )
-    finally:
-        db.close()

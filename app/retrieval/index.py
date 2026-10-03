@@ -1,24 +1,12 @@
-"""Embedding writers for every Qdrant collection the app searches: skill
-evidence, experience points, resumes, role families, and job postings.
+"""Writers for every Qdrant collection the app searches: skill evidence,
+experience points, resumes, role families and job postings.
 
-What gets embedded is not the raw README, see
-`app/profile/extract.py`'s docstring. Each evidence row already reduced a
-repo down to one skill claim; that's what's embedded, not the source text.
+What is embedded is the reduced record, not the source: a skill claim
+with its context rather than a README, a resume's summary and tags rather
+than the file. Each experience point is its own vector, so resume
+building can retrieve the points that match a job.
 
-index_resume() below is the same idea applied to `Resume` rows (see
-app/profile/resume_extract.py): the reduced summary/tags/target_roles get
-embedded, not the raw resume file, into their own collection.
-
-index_experience_points() is the newest of these, and the one the whole
-"one paragraph vs many points" redesign was for: each ExperiencePoint is
-its own embedded unit in its own collection, so a resume-building pass
-can pull back whichever points actually match a target job instead of
-reading one fixed block of text. See app/core/db/models.py's ExperiencePoint
-docstring.
-
-app/retrieval/search.py is the read side of all of this: the query layer
-that actually pulls hits back out, account-scoped. Every payload written
-below carries account_id for exactly that filtering.
+Every payload carries account_id, which app/retrieval/search.py filters on.
 """
 
 from __future__ import annotations

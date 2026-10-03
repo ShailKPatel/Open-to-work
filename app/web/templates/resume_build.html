@@ -38,6 +38,38 @@
           <a href="/jobs" class="text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)] underline mt-2 inline-block">Pick a different job →</a>
         </section>
 
+        <!-- Closest existing resumes -->
+        <section x-cloak x-show="closest.length > 0" class="otw-tile p-6 mt-6">
+          <h2 class="font-display text-xl">Already have a close one?</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1" x-show="closest[0] && closest[0].match_pct !== null">
+            Match is the share of this job's required skills a resume lists: an exact skill counts fully, a closely related one counts half.
+          </p>
+          <template x-if="closest[0] && closest[0].match_pct >= 80">
+            <p class="text-sm mt-3">
+              <span class="font-medium" x-text="resumeLabel(closest[0].resume)"></span> already covers
+              <span class="font-medium" x-text="closest[0].match_pct + '%'"></span> of what this job asks for. Use it as is, or build a new one below.
+            </p>
+          </template>
+          <div class="mt-4 space-y-3">
+            <template x-for="hit in closest" :key="hit.resume.id">
+              <div class="otw-tile p-4">
+                <div class="flex items-center gap-3 flex-wrap">
+                  <span class="font-medium text-sm text-[color:var(--ink)] flex-1 min-w-0 truncate" x-text="resumeLabel(hit.resume)"></span>
+                  <span x-show="hit.match_pct !== null" class="text-sm font-medium tabular-nums" :class="matchClass(hit.match_pct, 'text')" x-text="hit.match_pct + '% match'"></span>
+                  <a :href="resumeFileUrl(hit.resume)" target="_blank" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">Open</a>
+                  <a href="/portfolio/resume" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0">Library</a>
+                </div>
+                <div x-show="hit.match_pct !== null" class="mt-2 h-1.5 rounded-full bg-[color:var(--line)] overflow-hidden">
+                  <div class="h-full rounded-full" :class="matchClass(hit.match_pct, 'bg')" :style="'width:' + hit.match_pct + '%'"></div>
+                </div>
+                <p x-show="hit.missing.length > 0" class="text-xs text-[color:var(--muted)] mt-2">
+                  Missing: <span x-text="hit.missing.join(', ')"></span>
+                </p>
+              </div>
+            </template>
+          </div>
+        </section>
+
         <p x-show="loadingOptions" class="text-sm text-[color:var(--muted)] mt-6 animate-pulse">Loading recommended skills, projects, and options for this job…</p>
 
         <div x-cloak x-show="!loadingOptions" class="space-y-6 mt-6">
@@ -52,7 +84,7 @@
               <div>
                 <p class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)] mb-2">Email Address</p>
                 <template x-if="options.emails.length === 0">
-                  <p class="text-xs text-[color:var(--muted)] italic">No email saved. <a href="/portfolio/contact" class="underline">Add one in links</a></p>
+                  <p class="text-xs text-[color:var(--muted)] italic">No email saved. <a href="/portfolio/contact-links" class="underline">Add one in Contact &amp; Links</a></p>
                 </template>
                 <div class="space-y-2">
                   <template x-for="e in options.emails" :key="e.id">
@@ -69,7 +101,7 @@
               <div>
                 <p class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)] mb-2">Phone Number</p>
                 <template x-if="options.phones.length === 0">
-                  <p class="text-xs text-[color:var(--muted)] italic">No phone saved. <a href="/portfolio/contact" class="underline">Add one in links</a></p>
+                  <p class="text-xs text-[color:var(--muted)] italic">No phone saved. <a href="/portfolio/contact-links" class="underline">Add one in Contact &amp; Links</a></p>
                 </template>
                 <div class="space-y-2">
                   <template x-for="p in options.phones" :key="p.id">
@@ -135,24 +167,37 @@
             <div class="flex items-center justify-between flex-wrap gap-2">
               <div>
                 <h2 class="font-display text-xl">3. Skills</h2>
-                <p class="text-xs text-[color:var(--muted)] mt-1">Select the skills to highlight on this resume.</p>
+                <p class="text-xs text-[color:var(--muted)] mt-1">Exact matches to the job are picked for you. Related skills are picked when a check against the job keeps them; hover one to see why.</p>
               </div>
               <span class="text-xs text-[color:var(--muted)]" x-text="selectedSkills.length + ' selected'"></span>
             </div>
 
-            <div class="mt-4 flex flex-wrap gap-2">
-              <template x-for="sk in options.skills" :key="sk.name">
-                <button
-                  type="button"
-                  @click="toggleSkill(sk.name)"
-                  class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-all border"
-                  :class="isSkillSelected(sk.name) ? 'bg-[color:var(--ink)] text-white border-transparent font-medium' : 'bg-transparent text-[color:var(--muted)] border-[color:var(--line)] hover:border-[color:var(--line-strong)]'"
-                >
-                  <span x-text="sk.name"></span>
-                  <span x-show="sk.recommended && !isSkillSelected(sk.name)" class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                </button>
-              </template>
-            </div>
+            <template x-for="group in skillGroups()" :key="group.tier">
+              <div class="mt-4" x-show="group.skills.length > 0">
+                <p class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)]" x-text="group.label"></p>
+                <p class="text-xs text-[color:var(--muted)] mt-0.5" x-text="group.hint"></p>
+                <div class="mt-2 flex flex-wrap gap-2">
+                  <template x-for="sk in group.skills" :key="sk.name">
+                    <button
+                      type="button"
+                      @click="toggleSkill(sk.name)"
+                      :title="skillTitle(sk)"
+                      class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs transition-all border"
+                      :class="isSkillSelected(sk.name) ? 'bg-[color:var(--ink)] text-[color:var(--paper)] border-transparent font-medium' : 'bg-transparent text-[color:var(--muted)] border-[color:var(--line)] hover:border-[color:var(--line-strong)]'"
+                    >
+                      <span x-text="sk.name"></span>
+                      <span x-show="sk.recommended && !isSkillSelected(sk.name)" class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                      <span x-show="verdicts[sk.name] && !verdicts[sk.name].keep" class="w-1.5 h-1.5 rounded-full bg-[color:var(--muted)]"></span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+            </template>
+            <p x-show="reviewingSkills" class="text-xs text-[color:var(--muted)] mt-3 otw-working">Checking related skills against this job…</p>
+            <p x-show="reviewError" x-text="reviewError" class="text-xs otw-error mt-3"></p>
+            <p x-show="options.missing_required.length > 0" class="text-xs text-[color:var(--muted)] mt-3">
+              The job asks for, and nothing on file covers: <span x-text="options.missing_required.join(', ')"></span>
+            </p>
 
             <!-- Add custom skill -->
             <div class="mt-4 flex items-center gap-2 max-w-sm">
@@ -184,9 +229,35 @@
             </div>
           </section>
 
+          <!-- Education Selection -->
+          <section class="otw-tile p-6">
+            <h2 class="font-display text-xl">5. Education</h2>
+            <p class="text-xs text-[color:var(--muted)] mt-1">Every entry is included unless you untick it.</p>
+
+            <template x-if="options.education.length === 0">
+              <p class="text-xs text-[color:var(--muted)] italic mt-4">No education saved. <a href="/portfolio/education" class="underline">Add it in Education</a></p>
+            </template>
+            <div class="mt-4 space-y-2">
+              <template x-for="edu in options.education" :key="edu.id">
+                <label class="otw-tile p-3 flex items-center gap-3 cursor-pointer hover:border-[color:var(--line-strong)]">
+                  <input
+                    type="checkbox"
+                    :checked="selectedEducationIds.includes(edu.id)"
+                    @change="toggleEducation(edu.id)"
+                    class="otw-checkbox shrink-0"
+                  />
+                  <div class="min-w-0 flex-1">
+                    <span class="font-medium text-sm text-[color:var(--ink)]" x-text="[edu.degree, edu.institution, edu.grade].filter(Boolean).join(' · ')"></span>
+                    <span class="text-xs text-[color:var(--muted)] ml-2" x-text="edu.date_range"></span>
+                  </div>
+                </label>
+              </template>
+            </div>
+          </section>
+
           <!-- Custom Instruction / Comments -->
           <section class="otw-tile p-6">
-            <h2 class="font-display text-xl">5. Custom Generator Instructions</h2>
+            <h2 class="font-display text-xl">6. Custom Generator Instructions</h2>
             <p class="text-xs text-[color:var(--muted)] mt-1">
               Add any overall comments or instructions for the AI resume writer (e.g. "Focus summary on senior tech lead roles", "Emphasize cloud infrastructure experience").
             </p>
@@ -214,7 +285,21 @@
                   <span class="text-sm">Two pages</span>
                 </label>
               </div>
+              <label class="mt-3 flex items-center gap-2">
+                <span class="text-xs text-[color:var(--muted)]">Points per experience role</span>
+                <select x-model="pointsPerRole" class="otw-input text-xs py-1">
+                  <option value="">Auto (3 for one page, 5 for two)</option>
+                  <template x-for="n in [1, 2, 3, 4, 5, 6]" :key="n">
+                    <option :value="String(n)" x-text="'Up to ' + n"></option>
+                  </template>
+                </select>
+              </label>
             </div>
+
+            <label class="flex-1 min-w-[14rem]">
+              <span class="text-xs uppercase font-medium tracking-wide text-[color:var(--muted)]">Resume name</span>
+              <input x-model="resumeName" :placeholder="defaultResumeName()" class="otw-input text-sm w-full mt-2 py-1.5" />
+            </label>
 
             <button
               type="button"
@@ -223,12 +308,29 @@
               @click="generate()"
             >
               <span x-show="!generating">Generate Tailored Resume →</span>
-              <span x-show="generating" class="otw-working">Generating resume… this can take a minute</span>
+              <span x-show="generating" class="otw-working">Building in the background…</span>
             </button>
           </section>
 
           <p x-show="generateError" x-text="generateError" class="text-sm otw-error mt-2"></p>
+          <div x-show="incompleteResumeId && !generating" class="flex items-center gap-3 flex-wrap mt-3">
+            <p class="text-sm text-[color:var(--muted)]">
+              What was done is saved as an incomplete resume in your
+              <a href="/portfolio/resume" class="underline hover:text-[color:var(--ink)]">resume library</a>.
+            </p>
+            <button type="button" @click="retryIncomplete()" class="otw-btn-ghost text-sm px-4 py-2">Retry from where it stopped</button>
+          </div>
         </div>
+
+        <!-- Build in progress: the server owns it, so this only reports -->
+        <section x-cloak x-show="generating && build" class="otw-tile p-6 mt-8">
+          <p class="text-sm text-[color:var(--ink)] otw-working" x-text="(build && build.stage) || 'Starting'"></p>
+          <p class="text-xs text-[color:var(--muted)] mt-2">
+            This runs in the background and can take a minute or two. Close this tab or open another page if you like;
+            it keeps going, and a note shows up on whatever page you are on when it is done.
+          </p>
+          <p x-show="notifyHint" class="text-xs text-[color:var(--muted)] mt-1" x-text="notifyHint"></p>
+        </section>
 
         <!-- Compiled PDF Result Section -->
         <section x-cloak x-show="resultUrl" class="otw-tile p-6 mt-8">
@@ -241,6 +343,19 @@
               <a :href="resultUrl" target="_blank" class="otw-btn-ghost text-sm px-4 py-2">Open in new tab</a>
               <a :href="resultUrl" download="resume.pdf" class="otw-btn text-sm px-4 py-2">Download PDF</a>
             </div>
+          </div>
+          <div x-show="matchPct !== null" class="mt-4">
+            <p class="text-sm">
+              This resume is a
+              <span class="font-medium tabular-nums" :class="matchClass(matchPct, 'text')" x-text="matchPct + '% match'"></span>
+              for this job.
+            </p>
+            <div class="mt-2 h-1.5 rounded-full bg-[color:var(--line)] overflow-hidden">
+              <div class="h-full rounded-full" :class="matchClass(matchPct, 'bg')" :style="'width:' + matchPct + '%'"></div>
+            </div>
+            <p x-show="matchMissing.length > 0" class="text-xs text-[color:var(--muted)] mt-2">
+              Missing: <span x-text="matchMissing.join(', ')"></span>
+            </p>
           </div>
           <p x-show="pageFitAchieved === false && pageCount > pageTarget" class="text-sm otw-error mt-3">
             Could not fit this down to <span x-text="pageTarget"></span> page<span x-show="pageTarget !== 1">s</span> automatically
@@ -272,7 +387,12 @@
       postingError: '',
 
       loadingOptions: true,
-      options: { emails: [], phones: [], projects: [], skills: [], experience: [] },
+      options: { emails: [], phones: [], projects: [], skills: [], experience: [], education: [], required_skills: [], missing_required: [] },
+      closest: [],
+      verdicts: {},
+      reviewingSkills: false,
+      reviewError: '',
+      resumeName: '',
 
       selectedEmail: '',
       selectedPhone: '',
@@ -281,17 +401,25 @@
       selectedSkills: [],
       customSkillInput: '',
       selectedExperienceIds: [],
+      selectedEducationIds: [],
       customInstruction: '',
 
       template: 'onepage',
+      pointsPerRole: '',
       generating: false,
       generateError: '',
       resultUrl: null,
       resultResumeId: null,
+      incompleteResumeId: null,
       pageFitAchieved: null,
       pageFitNote: null,
       pageCount: null,
       pageTarget: null,
+      matchPct: null,
+      matchMissing: [],
+      build: null,
+      buildTimer: null,
+      notifyHint: '',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -305,8 +433,99 @@
         if (id) {
           this.jobPostingId = Number(id);
           await this.loadPosting();
+          this.loadClosest();
+          this.attachBuild(params.get('build_id'));
           await this.loadOptions();
+          this.reviewSkills();
         }
+      },
+
+      // Picks up a build started earlier for this job, from a link in a
+      // notification or by coming back to the page, so a closed tab
+      // loses nothing: running, it shows progress; done, the result.
+      async attachBuild(buildId) {
+        try {
+          let build = null;
+          if (buildId) {
+            const res = await fetch(`/api/resume-build/builds/${encodeURIComponent(buildId)}`);
+            if (res.ok) build = await res.json();
+          } else {
+            const res = await fetch(`/api/resume-build/builds?account_id=${this.accountId}&job_posting_id=${this.jobPostingId}`);
+            if (res.ok) build = (await res.json())[0] || null;
+          }
+          if (build && build.job_posting_id === this.jobPostingId) this.followBuild(build);
+        } catch (e) {
+          // nothing to pick up; the page works as if no build ran
+        }
+      },
+
+      followBuild(build) {
+        this.build = build;
+        clearTimeout(this.buildTimer);
+        if (build.running) {
+          this.generating = true;
+          this.buildTimer = setTimeout(() => this.pollBuild(), 2000);
+          return;
+        }
+        this.generating = false;
+        if (build.state === 'error') {
+          this.generateError = build.detail || 'The build failed.';
+          this.incompleteResumeId = build.incomplete_resume_id || null;
+        } else {
+          this.showResult(build);
+          this.loadClosest();
+        }
+        // Seen here, so the header reminder has nothing left to say about it.
+        fetch(`/api/resume-build/builds/${build.id}/dismiss`, { method: 'POST' }).catch(() => {});
+      },
+
+      async pollBuild() {
+        try {
+          const res = await fetch(`/api/resume-build/builds/${this.build.id}`);
+          if (res.status === 404) {
+            this.generating = false;
+            this.generateError = 'The app restarted before this build finished. Start it again.';
+            return;
+          }
+          if (res.ok) {
+            this.followBuild(await res.json());
+            return;
+          }
+        } catch (e) {
+          // server unreachable for a moment; try again
+        }
+        this.buildTimer = setTimeout(() => this.pollBuild(), 3000);
+      },
+
+      showResult(build) {
+        this.pageFitAchieved = build.page_fit_achieved;
+        this.pageFitNote = build.page_fit_note || null;
+        this.pageCount = build.page_count;
+        this.pageTarget = build.page_target;
+        this.resultResumeId = build.resume_id;
+        this.matchPct = build.match_pct ?? null;
+        this.matchMissing = build.missing || [];
+        this.resultUrl = `/api/resume-build/builds/${build.id}/pdf`;
+      },
+
+      matchClass(pct, kind) {
+        if (pct >= 80) return kind === 'bg' ? 'bg-emerald-500' : 'text-emerald-600';
+        if (pct >= 50) return kind === 'bg' ? 'bg-amber-500' : 'text-amber-600';
+        return kind === 'bg' ? 'bg-[color:var(--muted)]' : 'text-[color:var(--muted)]';
+      },
+
+      async askToNotify() {
+        if (!('Notification' in window)) return;
+        if (Notification.permission === 'default') {
+          try {
+            await Notification.requestPermission();
+          } catch (e) {
+            // older browsers take a callback instead; the in-page note still works
+          }
+        }
+        this.notifyHint = Notification.permission === 'granted'
+          ? 'You will also get a desktop notification.'
+          : '';
       },
 
       async loadPosting() {
@@ -345,17 +564,97 @@
             // Initialize empty notes for projects
             data.projects.forEach((p) => { this.projectInstructions[p.repo_id] = ''; });
 
-            // Pre-select recommended skills
+            // Pre-select exact matches (and, for a posting with no
+            // extracted skills, the evidence search's picks); related
+            // ones wait for reviewSkills()
             this.selectedSkills = data.skills.filter((s) => s.recommended).map((s) => s.name);
 
             // Pre-select all experiences
             this.selectedExperienceIds = data.experience.map((e) => e.id);
+
+            // Pre-select all education
+            this.selectedEducationIds = data.education.map((e) => e.id);
           }
         } catch (e) {
           console.error('Failed to load resume options:', e);
         } finally {
           this.loadingOptions = false;
         }
+      },
+
+      async loadClosest() {
+        try {
+          const res = await fetch(`/api/resume/search?account_id=${this.accountId}&job_posting_id=${this.jobPostingId}&top_k=3`);
+          if (res.ok) this.closest = await res.json();
+        } catch (e) {
+          console.error('Failed to load closest resumes:', e);
+        }
+      },
+
+      async reviewSkills() {
+        if (this.options.required_skills.length === 0) return;
+        const related = this.options.skills.filter((s) => s.tier === 'related');
+        if (related.length === 0) return;
+        this.reviewingSkills = true;
+        this.reviewError = '';
+        try {
+          const res = await fetch('/api/resume-build/skill-review', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              account_id: Number(this.accountId),
+              job_posting_id: this.jobPostingId,
+              skills: related.map((s) => ({ name: s.name, suggested_for: s.suggested_for })),
+            }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            this.reviewError = (err.detail || `Skill check failed (${res.status}).`) + ' Related skills are left for you to pick.';
+            return;
+          }
+          const verdicts = {};
+          (await res.json()).forEach((v) => { verdicts[v.name] = v; });
+          this.verdicts = verdicts;
+          related.forEach((s) => {
+            if (verdicts[s.name] && verdicts[s.name].keep && !this.isSkillSelected(s.name)) {
+              this.selectedSkills.push(s.name);
+            }
+          });
+        } catch (e) {
+          this.reviewError = 'Could not reach the server. Related skills are left for you to pick.';
+        } finally {
+          this.reviewingSkills = false;
+        }
+      },
+
+      skillGroups() {
+        const by = (tier) => this.options.skills.filter((s) => (s.tier || 'other') === tier);
+        return [
+          { tier: 'exact', label: 'Asked for by the job', hint: 'Same skill as a requirement, matched by name.', skills: by('exact') },
+          { tier: 'related', label: 'Related', hint: 'Close to a requirement or to the job text; picked when the check keeps them.', skills: by('related') },
+          { tier: 'other', label: 'Everything else you have', hint: '', skills: by('other') },
+        ];
+      },
+
+      skillTitle(sk) {
+        const bits = [];
+        if (sk.suggested_for && sk.suggested_for.length) bits.push('Related to: ' + sk.suggested_for.join(', '));
+        const v = this.verdicts[sk.name];
+        if (v) bits.push((v.keep ? 'Kept: ' : 'Left out: ') + v.reason);
+        return bits.join('\n');
+      },
+
+      resumeLabel(resume) {
+        return resume.name || resume.filename;
+      },
+
+      resumeFileUrl(resume) {
+        return '/api/resume/' + resume.id + (resume.has_ai_edited_version ? '/compiled-file' : '/file') + '?disposition=inline';
+      },
+
+      defaultResumeName() {
+        if (!this.posting) return 'Resume name';
+        return [this.posting.title, this.posting.company].filter(Boolean).join(' - ');
       },
 
       isProjectSelected(id) {
@@ -385,7 +684,7 @@
       addCustomSkill() {
         const sk = this.customSkillInput.trim();
         if (sk && !this.isSkillSelected(sk)) {
-          this.options.skills.push({ name: sk, recommended: true });
+          this.options.skills.push({ name: sk, tier: 'other', suggested_for: [], recommended: true });
           this.selectedSkills.push(sk);
           this.customSkillInput = '';
         }
@@ -403,12 +702,46 @@
         }
       },
 
-      async generate() {
-        if (!this.jobPostingId) return;
+      toggleEducation(id) {
+        if (this.selectedEducationIds.includes(id)) {
+          this.selectedEducationIds = this.selectedEducationIds.filter((eId) => eId !== id);
+        } else {
+          this.selectedEducationIds.push(id);
+        }
+      },
+
+      // Carries on the build that just stopped, from the saved
+      // checkpoint, with the choices it was started with.
+      async retryIncomplete() {
+        if (!this.incompleteResumeId || this.generating) return;
         this.generating = true;
         this.generateError = '';
+        try {
+          const res = await fetch(`/api/resume-build/retry/${this.incompleteResumeId}`, { method: 'POST' });
+          const build = await res.json();
+          if (!res.ok) {
+            this.generateError = build.detail || `Retry failed (${res.status}).`;
+            this.generating = false;
+            return;
+          }
+          this.incompleteResumeId = null;
+          this.followBuild(build);
+        } catch (e) {
+          this.generateError = 'Could not reach the server.';
+          this.generating = false;
+        }
+      },
+
+      async generate() {
+        if (!this.jobPostingId || this.generating) return;
+        this.generating = true;
+        this.generateError = '';
+        this.incompleteResumeId = null;
         this.resultUrl = null;
         this.resultResumeId = null;
+        this.matchPct = null;
+        this.matchMissing = [];
+        this.askToNotify();
 
         // Clean project instructions to only send non-empty notes for selected projects
         const cleanProjInstructions = {};
@@ -419,7 +752,7 @@
         });
 
         try {
-          const res = await fetch('/api/resume-build/generate', {
+          const res = await fetch('/api/resume-build/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -432,26 +765,21 @@
               project_instructions: cleanProjInstructions,
               selected_skills: this.selectedSkills,
               selected_experience_ids: this.selectedExperienceIds,
+              selected_education_ids: this.selectedEducationIds,
+              name: this.resumeName.trim() || this.defaultResumeName(),
+              points_per_role: this.pointsPerRole ? Number(this.pointsPerRole) : null,
               custom_instruction: this.customInstruction.trim() || null,
             }),
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             this.generateError = err.detail || `Generation failed (${res.status}).`;
+            this.generating = false;
             return;
           }
-          this.pageFitAchieved = res.headers.get('X-Page-Fit-Achieved') === 'true';
-          // Set only when the fit fell short for a reason worth naming,
-          // e.g. every API key for the provider ran out mid-build.
-          this.pageFitNote = res.headers.get('X-Page-Fit-Note') || null;
-          this.pageCount = Number(res.headers.get('X-Page-Count') || '0');
-          this.pageTarget = Number(res.headers.get('X-Page-Target') || '0');
-          this.resultResumeId = res.headers.get('X-Resume-Id') || null;
-          const blob = await res.blob();
-          this.resultUrl = URL.createObjectURL(blob);
+          this.followBuild(await res.json());
         } catch (e) {
           this.generateError = 'Could not reach the server.';
-        } finally {
           this.generating = false;
         }
       },

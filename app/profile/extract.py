@@ -1,45 +1,22 @@
-"""Text-based skill extraction, covering what manifest parsing can't get:
-technologies/practices described in prose (architecture, protocols, patterns)
-that never show up as a declared dependency. Bulk tier (runs across every
-repo).
+"""Skill and link extraction from a repo's prose: the technologies and
+practices a README describes that never appear as a declared dependency.
+Bulk tier, since it runs across every repo.
 
-Source text, in order: README (best signal) → GitHub's short "About"
-description (repo metadata, not repo content, free with the repo-list
-call, no extra fetch) → nothing. A repo with neither raises
-NoSourceTextError rather than making an LLM call on empty input: an LLM
-call on nothing burns tokens for a response that can only be noise, and
-build.py needs to tell "nothing to extract" apart from "extraction failed"
-so the UI can show "no README" instead of a retry-suggesting error.
-Does not walk the rest of the repo tree looking for something else to feed
-the model, for the same reason at a higher cost.
+The source is the README, else GitHub's "About" description. A repo with
+neither raises NoSourceTextError instead of calling the model on nothing,
+so the UI can say "no README" rather than suggest a retry. Skills and
+links come back from one call, extract_repo_facts.
 
-Skills and links come back from one call, not two. Both read the same
-README with the same fallback chain, so asking separately sent every
-README twice and paid for it twice. `extract_repo_facts` is the real
-entrypoint; `extract_skills_from_repo`/`extract_links_from_repo` stay as
-thin wrappers for callers (and tests) that want one half of the answer.
+The README is cleaned before it is sent (_clean_source_text): badges, raw
+HTML, code blocks and boilerplate tail sections carry no skill signal and
+often outweigh the prose. prefetch_repo_facts covers several repos per
+call, so the fixed instructions are sent once per group rather than once
+per repo, which also makes the shared prefix long enough for provider
+prompt caching.
 
-What actually reaches the model is the cleaned README
-(`_clean_source_text`), not the raw one: badges, raw HTML, fenced code
-blocks and boilerplate tail sections carry no skill signal this prompt can
-use, and they routinely take up more of a README than the prose does.
-Cleaning first is why the character limit can be as low as it is without
-cutting into real content.
-
-Batching: `prefetch_repo_facts` covers several repos in one call, which
-build.py runs before its per-repo loop. The fixed instructions in front of
-a per-repo prompt are longer than most repos' cleaned READMEs, so sending
-them once per group instead of once per repo is most of the saving; it also
-pushes the shared prefix past the size providers need before prompt
-caching engages (see app/core/llm.py's _with_prompt_caching).
-
-Narrow claim: this reads README/description text only, not
-source files. "declared_dependency" (manifest_skills.py),
-"readme_described", and "description_described" (here) are the evidence
-types this ingestion supports. A stronger evidence type ("imported and
-used across N files") would need scanning source file imports, which isn't
-ingested yet. Don't let a prompt
-tempt the model into claiming that tier of evidence for data we don't have.
+Evidence from here is "readme_described" or "description_described".
+Source files are not scanned, so the prompt must never let the model
+claim that a skill is used in code.
 """
 
 from __future__ import annotations
@@ -439,17 +416,3 @@ def _extract_group(repos: list[Repository]) -> dict[int, RepoFacts]:
             links=_link_claims(entry.get("links", [])),
         )
     return facts
-
-
-def extract_skills_from_repo(repo: Repository) -> list[SkillClaim]:
-    """The skills half of extract_repo_facts(). Kept as its own function
-    for callers that want only skills; it is the same one call, so asking
-    for both halves separately costs one call, not two (the second one
-    hits app/core/llm.py's response cache)."""
-    return extract_repo_facts(repo).skills
-
-
-def extract_links_from_repo(repo: Repository) -> list[LinkClaim]:
-    """The links half of extract_repo_facts(), same one call and same
-    fallback chain (README → description → NoSourceTextError)."""
-    return extract_repo_facts(repo).links

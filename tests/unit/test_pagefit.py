@@ -20,6 +20,7 @@ nothing real left to add, and never let the page-fit loop's own working
 state leak into the resume it returns.
 """
 
+import contextlib
 import math
 import re
 from unittest.mock import MagicMock
@@ -30,6 +31,8 @@ from app.resume_build.latex import render_resume
 from app.resume_build.pagefit import (
     _MAX_PLANNED_CUTS,
     PageFitNotAchievedError,
+    _apply_rewrite,
+    _is_faithful_shortening,
     fit_to_page_limit,
 )
 
@@ -83,7 +86,12 @@ def _density_of(tex, base_margin_cm):
 
 
 def _install(
-    monkeypatch, capacity_at_base, cut_suggestions=None, base_margin_cm=1.0, broken=()
+    monkeypatch,
+    capacity_at_base,
+    cut_suggestions=None,
+    base_margin_cm=1.0,
+    broken=(),
+    rewrite_suggestions=None,
 ):
     """capacity_at_base is how many lines fit on one page at density 1.0.
     Tighter layouts hold proportionally more, which is the whole point of
@@ -96,6 +104,7 @@ def _install(
     not one per call: the real call asks for a plan of several at a time
     (see pagefit's _plan_cuts), so the fake below hands out the next
     _MAX_PLANNED_CUTS of them per call and an empty plan once they run out.
+    `rewrite_suggestions` is what the rewording call returns, once.
     """
 
     def _compile(tex):
@@ -115,15 +124,20 @@ def _install(
 
     monkeypatch.setattr("app.resume_build.pagefit.page_count", _pages)
 
-    if cut_suggestions is None:
+    if cut_suggestions is None and rewrite_suggestions is None:
         no_llm = MagicMock()
         monkeypatch.setattr("app.resume_build.pagefit.complete", no_llm)
         return no_llm
 
-    remaining_cuts = list(cut_suggestions)
+    remaining_cuts = list(cut_suggestions or [])
+    remaining_rewrites = list(rewrite_suggestions or [])
 
     def _fake_complete(tier, messages, schema=None, account_id=None, purpose=None):
         resp = MagicMock()
+        if purpose == "pagefit_rewrite":
+            resp.parsed = {"rewrites": list(remaining_rewrites)}
+            remaining_rewrites.clear()
+            return resp
         resp.parsed = {"cuts": remaining_cuts[:_MAX_PLANNED_CUTS]}
         del remaining_cuts[:_MAX_PLANNED_CUTS]
         return resp
@@ -503,8 +517,9 @@ def test_one_plan_covers_several_cuts(monkeypatch):
     result = fit_to_page_limit(data, "onepage", max_pages=1, max_compiles=80)
 
     assert result.cuts_made > 1
-    assert len(calls) == 1
-    args, kwargs = calls[0]
+    trims = [c for c in calls if c[1]["purpose"] == "pagefit_trim"]
+    assert len(trims) == 1
+    args, kwargs = trims[0]
     assert kwargs["purpose"] == "pagefit_trim"
     # Bulk tier: ranking items it was handed, not writing anything.
     assert args[0] == "bulk"
@@ -534,3 +549,134 @@ def test_an_empty_plan_raises_rather_than_looping(monkeypatch):
 
     with pytest.raises(PageFitNotAchievedError):
         fit_to_page_limit(_BASE_DATA, "onepage", max_pages=1)
+
+
+# --- rewording before cutting ---------------------------------------
+
+_LONG_POINT = "Designed and built the internal billing service handling 40 requests per second"
+
+
+@pytest.mark.parametrize(
+    "shorter, ok",
+    [
+        ("Built the internal billing service handling 40 requests per second", True),
+        ("Building the billing service, 40 requests per second", True),
+        # Not shorter.
+        (_LONG_POINT + " reliably", False),
+        # A number the original never had.
+        ("Built the internal billing service handling 400 requests per second", False),
+        # A word the original never used: a new claim.
+        ("Built the Kubernetes billing service handling 40 requests per second", False),
+        # Gutted: a cut wearing a rewording's clothes.
+        ("Built billing", False),
+        ("Built the billing service \u2014 40 requests per second", False),
+        ("", False),
+    ],
+)
+def test_faithful_shortening_check(shorter, ok):
+    assert _is_faithful_shortening(_LONG_POINT, shorter) is ok
+
+
+def test_rewrite_needs_the_original_quoted_exactly():
+    data = {
+        "summary": "A summary.",
+        "experience": [{"company": "Acme", "points": [_LONG_POINT]}],
+        "projects": [],
+    }
+    shorter = "Built the internal billing service handling 40 requests per second"
+    misquoted = {
+        "target": "experience_point", "owner": "Acme",
+        "original": _LONG_POINT.lower(), "shorter": shorter,
+    }
+    wrong_owner = {**misquoted, "original": _LONG_POINT, "owner": "Initech"}
+    assert not _apply_rewrite(data, misquoted)
+    assert not _apply_rewrite(data, wrong_owner)
+
+    assert _apply_rewrite(data, {**wrong_owner, "owner": "Acme"})
+    assert data["experience"][0]["points"] == [shorter]
+
+
+def test_rewording_runs_once_before_any_cut(monkeypatch):
+    """Rewording loses nothing, so it is tried first; it is a model call
+    with the PDF attached, so it is tried once. The checked wording lands
+    in the resume, and the cut plan is still asked for when the
+    rewording alone did not get the page count down."""
+    data = {
+        **_BASE_DATA,
+        "experience": [
+            {**_BASE_DATA["experience"][0], "points": [_LONG_POINT, "Did another thing"]}
+        ],
+    }
+    shorter = "Built the internal billing service handling 40 requests per second"
+    fake_complete = _install(
+        monkeypatch,
+        capacity_at_base=8,
+        cut_suggestions=[{"cut_type": "skill", "skill": "Extra Word Skill"}],
+        rewrite_suggestions=[
+            {"target": "experience_point", "owner": "Acme", "original": _LONG_POINT,
+             "shorter": shorter},
+            {"target": "summary", "owner": "", "original": "A summary.",
+             "shorter": "A brand new claim."},
+        ],
+    )
+    purposes: list = []
+
+    def _recording(*args, **kwargs):
+        purposes.append(kwargs["purpose"])
+        return fake_complete(*args, **kwargs)
+
+    monkeypatch.setattr("app.resume_build.pagefit.complete", _recording)
+
+    result = fit_to_page_limit(data, "onepage", max_pages=1, max_compiles=80)
+
+    assert purposes[0] == "pagefit_rewrite"
+    assert purposes.count("pagefit_rewrite") == 1
+    assert "pagefit_trim" in purposes
+    assert result.rewrites_made == 1
+    assert shorter in result.tex
+    assert "A summary." in result.tex
+
+
+def test_progress_reports_each_model_change_and_a_resumed_fit_skips_rewording(monkeypatch):
+    """Every change a model call made is reported with the state needed to
+    carry on from it, and a fit started again from that state does not
+    ask for the rewording a second time."""
+    data = {
+        **_BASE_DATA,
+        "experience": [
+            {**_BASE_DATA["experience"][0], "points": [_LONG_POINT, "Did another thing"]}
+        ],
+    }
+    shorter = "Built the internal billing service handling 40 requests per second"
+    fake_complete = _install(
+        monkeypatch,
+        capacity_at_base=8,
+        cut_suggestions=[{"cut_type": "skill", "skill": "Extra Word Skill"}],
+        rewrite_suggestions=[
+            {"target": "experience_point", "owner": "Acme", "original": _LONG_POINT,
+             "shorter": shorter},
+        ],
+    )
+    reports: list = []
+    fit_to_page_limit(data, "onepage", max_pages=1, max_compiles=80, on_progress=reports.append)
+
+    assert reports[0]["reworded"] is True
+    assert reports[0]["cuts_made"] == 0
+    assert shorter in str(reports[0]["data"]["experience"])
+    assert "reserve" in reports[0]["data"]
+
+    purposes: list = []
+
+    def _recording(*args, **kwargs):
+        purposes.append(kwargs["purpose"])
+        return fake_complete(*args, **kwargs)
+
+    monkeypatch.setattr("app.resume_build.pagefit.complete", _recording)
+    # The fake's one cut went to the first fit, so this one may run out.
+    with contextlib.suppress(PageFitNotAchievedError):
+        fit_to_page_limit(
+            reports[0]["data"], "onepage", max_pages=1, max_compiles=80,
+            reworded=True, cuts_made=reports[0]["cuts_made"],
+        )
+
+    assert "pagefit_rewrite" not in purposes

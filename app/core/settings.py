@@ -32,11 +32,9 @@ class _DotEnvAllowlist(DotEnvSettingsSource):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # Optional. Raises the GitHub API rate limit from 60/hr to 5,000/hr.
-    # Public repo, README, manifest, and commit-stats data is readable
-    # without auth. There is no GITHUB_USERNAME setting: the username is a
-    # per-request input (POST /sync/github body, or a CLI arg), not
-    # deployment config.
+    # Optional. Raises the GitHub API rate limit from 60/hr to 5,000/hr;
+    # public data is readable without it. Which accounts to sync is chosen
+    # in the app, not configured here.
     github_token: str = ""
 
     database_url: str = "sqlite:///./data/open_to_work.db"
@@ -63,6 +61,11 @@ class Settings(BaseSettings):
     # off by tests, which must not make provider calls; the /apis page can
     # still run the same pass on demand.
     key_refresh_on_start: bool = True
+
+    # Re-syncs every GitHub source that hasn't been synced for a while, in
+    # a background thread (app/ingest/github/auto_sync.py). Turned off by
+    # tests, which must not call GitHub.
+    github_auto_sync_on_start: bool = True
 
     # Eval harness (app/evals/). Kept outside data/, which is gitignored,
     # so golden labels and result reports can be committed.

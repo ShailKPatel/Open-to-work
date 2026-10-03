@@ -336,3 +336,43 @@ def test_migrate_repositories_profile_readme_column_recategorizes_every_startup(
     with engine.connect() as conn:
         flags = dict(conn.execute(text("SELECT id, is_profile_readme FROM repositories")).all())
     assert flags == {1: 1, 2: 0}
+
+
+def test_migrate_exclude_from_resume_columns_adds_flag_to_every_archivable_table(tmp_path):
+    """Tables from before archiving existed get the flag, defaulting to
+    included, and a second run is a no-op."""
+    from sqlalchemy import create_engine, text
+
+    from app.core.db.migrations import _migrate_exclude_from_resume_columns
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
+    tables = ("repositories", "experiences", "education")
+    with engine.connect() as conn:
+        for table in tables:
+            conn.execute(text(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
+            conn.execute(text(f"INSERT INTO {table} (id) VALUES (1)"))
+        conn.commit()
+
+    _migrate_exclude_from_resume_columns(engine)
+    _migrate_exclude_from_resume_columns(engine)
+
+    with engine.connect() as conn:
+        for table in tables:
+            assert conn.execute(text(f"SELECT exclude_from_resume FROM {table}")).scalar() == 0
+
+
+def test_drop_retired_tables_removes_them_and_is_idempotent(tmp_path):
+    from sqlalchemy import create_engine, inspect, text
+
+    from app.core.db.migrations import _drop_retired_tables
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
+    with engine.connect() as conn:
+        for table in ("auth_sources", "detections", "match_results", "accounts"):
+            conn.execute(text(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
+        conn.commit()
+
+    _drop_retired_tables(engine)
+    _drop_retired_tables(engine)
+
+    assert inspect(engine).get_table_names() == ["accounts"]

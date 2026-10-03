@@ -13,11 +13,13 @@ drift apart.
 from __future__ import annotations
 
 import datetime as dt
+import io
 import logging
 import mimetypes
 from pathlib import Path
 
 from fastapi import UploadFile
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import Account, Resume
@@ -34,17 +36,13 @@ from app.profile.resume_extract import (
 logger = logging.getLogger(__name__)
 
 
-def _iso(value: dt.date | None) -> str | None:
-    return value.isoformat() if value else None
-
-
 def _experience_dict(claim: ExperienceClaim) -> dict:
     return {
         "company": claim.company,
         "title": claim.title,
         "location": claim.location,
-        "start_date": _iso(claim.start_date),
-        "end_date": _iso(claim.end_date),
+        "start_date": claim.start_date,
+        "end_date": claim.end_date,
         "points": list(claim.points),
     }
 
@@ -54,8 +52,10 @@ def _education_dict(claim: EducationClaim) -> dict:
         "institution": claim.institution,
         "degree": claim.degree,
         "location": claim.location,
-        "start_date": _iso(claim.start_date),
-        "end_date": _iso(claim.end_date),
+        "start_date": claim.start_date,
+        "end_date": claim.end_date,
+        "grade": claim.grade,
+        "details": list(claim.details),
     }
 
 
@@ -70,6 +70,84 @@ def _contact_dict(claim: ContactClaim) -> dict:
             for link in claim.links
         ],
     }
+
+
+class DuplicateResumeError(Exception):
+    """The uploaded file is byte-for-byte one this account already has."""
+
+    def __init__(self, existing: Resume) -> None:
+        super().__init__(f"same file as resume id={existing.id}")
+        self.existing = existing
+
+
+def find_same_file(db: Session, account_id: int, data: bytes) -> Resume | None:
+    """This account's stored resume whose file holds exactly `data`, if
+    any. Only same-size files are read back, so an upload costs at most a
+    read of the one or two files it could possibly equal.
+    """
+    candidates = db.execute(
+        select(Resume).where(Resume.account_id == account_id, Resume.file_size == len(data))
+    ).scalars()
+    for row in candidates:
+        try:
+            if row.stored_path and Path(row.stored_path).read_bytes() == data:
+                return row
+        except OSError:
+            continue
+    return None
+
+
+class GeneratedResumeError(Exception):
+    """The upload is a resume this app built. Its wording was tailored to
+    one job by the LLM, so reading it back would fold that wording into
+    the profile as if the person had written it."""
+
+    def __init__(self, existing: Resume | None = None) -> None:
+        super().__init__(
+            "This PDF was built by Open to Work, so its wording was tailored to one job. "
+            "Reading it back would add that wording to your profile as if you wrote it. "
+            "Generated resumes are already in your library; upload a resume you wrote instead."
+        )
+        self.existing = existing
+
+
+def is_generated_pdf(data: bytes) -> bool:
+    """True for a PDF this app compiled, by the Creator field every
+    template sets (app/resume_build/latex.py's GENERATED_PDF_CREATOR)."""
+    if not data.startswith(b"%PDF"):
+        return False
+    from pypdf import PdfReader
+
+    from app.resume_build.latex import GENERATED_PDF_CREATOR
+
+    try:
+        metadata = PdfReader(io.BytesIO(data)).metadata
+    except Exception:
+        return False
+    return metadata is not None and metadata.creator == GENERATED_PDF_CREATOR
+
+
+def find_built_copy(db: Session, account_id: int, data: bytes) -> Resume | None:
+    """This account's resume whose compiled PDF is exactly `data`. Catches
+    a download of a build made before generated PDFs carried a Creator."""
+    rows = db.execute(
+        select(Resume).where(Resume.account_id == account_id, Resume.compiled_path.is_not(None))
+    ).scalars()
+    for row in rows:
+        try:
+            path = Path(row.compiled_path or "")
+            if path.stat().st_size == len(data) and path.read_bytes() == data:
+                return row
+        except OSError:
+            continue
+    return None
+
+
+def check_not_generated(db: Session, account_id: int, data: bytes) -> None:
+    """Raises GeneratedResumeError when `data` is a resume this app built."""
+    built = find_built_copy(db, account_id, data)
+    if built is not None or is_generated_pdf(data):
+        raise GeneratedResumeError(built)
 
 
 def ingest_resume(
@@ -91,11 +169,20 @@ def ingest_resume(
     unset when not given rather than defaulting to the filename, the UI
     falls back to filename for display on its own.
 
+    Raises DuplicateResumeError, before anything is saved, when the file
+    is identical to one already in this account's library: a second copy
+    would only repeat the same extraction and profile merge. Raises
+    GeneratedResumeError, also before saving, for a resume this app built.
+
     Caller owns opening/closing `db` (same convention as every other
     router in this app).
     """
     safe_name = Path(upload.filename or "resume").name
     data = upload.file.read()
+    existing = find_same_file(db, account_id, data)
+    if existing is not None:
+        raise DuplicateResumeError(existing)
+    check_not_generated(db, account_id, data)
     mime_type = (
         upload.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
     )

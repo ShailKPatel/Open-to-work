@@ -757,3 +757,36 @@ def test_github_profile_not_synced_yet(tmp_path):
     body = _client().get(f"/api/github-profile?account_id={account}").json()
 
     assert body["state"] == "not_synced"
+
+
+def test_exclude_from_resume_round_trips(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    repo_id = _make_repo(account_id)
+    client = _client()
+
+    resp = client.patch(f"/api/projects/{repo_id}", json={"exclude_from_resume": True})
+    assert resp.status_code == 200
+    assert resp.json()["exclude_from_resume"] is True
+    (listed,) = client.get(f"/api/projects?account_id={account_id}").json()
+    assert listed["exclude_from_resume"] is True
+
+
+def test_delete_project_removes_its_skills_and_links(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    repo_id = _make_repo(account_id)
+    other_id = _make_repo(account_id, github_id=2, name="other", full_name="octocat/other")
+    client = _client()
+    client.post(f"/api/projects/{repo_id}/skills", json={"skill": "React"})
+    client.post(f"/api/projects/{repo_id}/links", json={"label": "Demo", "url": "https://d.dev"})
+    client.post(f"/api/projects/{other_id}/skills", json={"skill": "Go"})
+
+    resp = client.delete(f"/api/projects/{repo_id}")
+
+    assert resp.status_code == 200
+    assert client.get(f"/api/projects/{repo_id}").status_code == 404
+    db = get_db()
+    assert {e.skill for e in db.query(SkillEvidence).all()} == {"Go"}
+    db.close()
+    assert client.delete(f"/api/projects/{repo_id}").status_code == 404

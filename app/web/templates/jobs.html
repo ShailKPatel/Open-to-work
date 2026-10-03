@@ -11,86 +11,64 @@
     {% set jobs_active = 'postings' %}
     {% include "_jobs_subnav.html" %}
 
-    <h1 class="font-display text-4xl mt-8">Jobs</h1>
+    <div class="flex items-center justify-between gap-4 mt-8">
+      <h1 class="font-display text-4xl">Jobs</h1>
+      <button type="button" class="otw-btn-ghost text-xs px-3 py-1.5 shrink-0" @click="showAddForm = !showAddForm">
+        <span x-text="showAddForm ? 'Close' : '+ Add job'"></span>
+      </button>
+    </div>
 
-    <section class="otw-tile p-6 mt-8">
-      <div class="flex items-center justify-between">
+    <section x-cloak x-show="showAddForm || composeWarnings.length > 0" class="otw-tile p-6 mt-6">
+      <div x-show="showAddForm" class="space-y-3">
         <h2 class="font-display text-xl">Add a job posting</h2>
-        <button type="button" class="otw-btn-ghost text-sm px-4 py-2" @click="showAddForm = !showAddForm">
-          <span x-text="showAddForm ? 'Cancel' : '+ New'"></span>
+        <p class="text-xs text-[color:var(--muted)]">Paste the description, add screenshots, or both. Include the link to the posting and it is kept as the apply link.</p>
+        <div class="otw-drop" :class="dragging && 'otw-drop-active'"
+             @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false" @drop.prevent="dragging = false; addFiles($event.dataTransfer.files)">
+          <textarea x-model="composeText" rows="7" class="otw-input" @paste="pasteImages($event)"
+                    placeholder="Paste the job description and its link. You can also paste or drop screenshots here."></textarea>
+          <div x-show="composeFiles.length > 0" class="flex items-center gap-2 flex-wrap mt-3">
+            <template x-for="(f, i) in composeFiles" :key="f.url">
+              <div class="otw-thumb" :title="f.file.name" @click="otwViewImage(f.url, f.file.name)">
+                <img :src="f.url" :alt="f.file.name" />
+                <button type="button" class="otw-thumb-remove" @click.stop="removeFile(i)" aria-label="Remove screenshot">×</button>
+              </div>
+            </template>
+          </div>
+          <div class="mt-3">
+            <label class="otw-btn-ghost text-xs px-3 py-1.5 cursor-pointer inline-block">
+              + Screenshots
+              <input type="file" multiple accept="image/png,image/jpeg,image/webp,image/gif" class="hidden" @change="addFiles($event.target.files); $event.target.value = ''" />
+            </label>
+          </div>
+        </div>
+
+        <p x-show="foundLinks().length > 0 && !hasDescription()" class="text-xs text-[color:var(--muted)]">
+          Links are not opened. Paste the description or add a screenshot as well.
+        </p>
+
+        <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(saving) || !canCompose()" @click="compose()">
+          <span x-show="!saving">Save job</span>
+          <span x-show="saving" class="otw-working" x-text="savingLabel()"></span>
         </button>
+        <p x-show="composeError" x-text="composeError" class="text-sm otw-error"></p>
       </div>
-
-      <div x-cloak x-show="showAddForm" class="mt-4">
-        <div class="flex gap-2 flex-wrap text-xs">
-          <button type="button" class="otw-chip" :class="addMode === 'paste' ? 'otw-chip-active' : ''" @click="addMode = 'paste'">Paste text</button>
-          <button type="button" class="otw-chip" :class="addMode === 'url' ? 'otw-chip-active' : ''" @click="addMode = 'url'">From URL</button>
-          <button type="button" class="otw-chip" :class="addMode === 'screenshot' ? 'otw-chip-active' : ''" @click="addMode = 'screenshot'">From screenshot</button>
-          <button type="button" class="otw-chip" :class="addMode === 'auth' ? 'otw-chip-active' : ''" @click="addMode = 'auth'; loadAuthSources()">From a site you're signed into</button>
-        </div>
-
-        <!-- Paste text -->
-        <div x-show="addMode === 'paste'" class="mt-4 space-y-3">
-          <div class="flex gap-3 flex-wrap">
-            <input x-model="pasteCompany" class="otw-input flex-1" placeholder="Company (optional, we'll try to read it from the text)" />
-            <input x-model="pasteTitle" class="otw-input flex-1" placeholder="Job title (optional)" />
-          </div>
-          <textarea x-model="pasteText" rows="8" class="otw-input" placeholder="Paste the full job posting text here."></textarea>
-          <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(pasting) || !pasteText.trim()" @click="pasteJob()">
-            <span x-show="!pasting">Save job posting</span>
-            <span x-show="pasting" class="otw-working">Saving…</span>
-          </button>
-        </div>
-
-        <!-- From URL -->
-        <div x-show="addMode === 'url'" class="mt-4 space-y-3">
-          <p class="text-xs text-[color:var(--muted)]">Works for most public career pages and job-board listings. If the page needs you to be signed in, use "From a site you're signed into" instead.</p>
-          <input x-model="urlValue" class="otw-input" placeholder="https://company.com/careers/some-role" />
-          <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(fetching) || !urlValue.trim()" @click="fetchFromUrl()">
-            <span x-show="!fetching">Fetch and save</span>
-            <span x-show="fetching" class="otw-working">Fetching…</span>
-          </button>
-        </div>
-
-        <!-- From screenshot -->
-        <div x-show="addMode === 'screenshot'" class="mt-4 space-y-3">
-          <p class="text-xs text-[color:var(--muted)]">Upload a screenshot of the posting; the text is read out of the image automatically.</p>
-          <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" @change="screenshotFile = $event.target.files[0]" class="otw-input" />
-          <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(fetching) || !screenshotFile" @click="uploadScreenshot()">
-            <span x-show="!fetching">Read and save</span>
-            <span x-show="fetching" class="otw-working">Reading…</span>
-          </button>
-        </div>
-
-        <!-- From an authenticated source -->
-        <div x-show="addMode === 'auth'" class="mt-4 space-y-3">
-          <p class="text-xs otw-error" style="opacity:0.85;">
-            This logs into a site on your behalf using a stored login profile. Automated login can get an account
-            flagged or banned if overused. Use an alternate account, never your primary one.
-            <a href="/settings/auth-sources" class="underline">Manage authenticated sources →</a>
-          </p>
-          <div x-show="authSources.length === 0" class="text-sm text-[color:var(--muted)]">
-            No authenticated sources configured yet. <a href="/settings/auth-sources" class="underline">Add one in Settings</a> first.
-          </div>
-          <div x-show="authSources.length > 0" class="space-y-3">
-            {{ ui.select("authSourceId", "authSources.map(s => ({ value: s.id, label: s.label + ' (' + s.site_domain + ')' }))", placeholder="Choose a signed-in source…", class="w-full", label="Signed-in source") }}
-            <input x-model="urlValue" class="otw-input" placeholder="Full link to the posting on that site" />
-            <button type="button" class="otw-btn px-4 py-2 text-sm" :disabled="Boolean(fetching) || !urlValue.trim() || !authSourceId" @click="fetchFromAuthSource()">
-              <span x-show="!fetching">Log in, fetch, and save</span>
-              <span x-show="fetching" class="otw-working">Logging in…</span>
-            </button>
-          </div>
-        </div>
-
-        <p x-show="pasteError" x-text="pasteError" class="text-sm otw-error mt-3"></p>
+      <div x-show="composeWarnings.length > 0" :class="showAddForm && 'mt-3'" class="text-xs text-[color:var(--muted)] space-y-1">
+        <p class="text-[color:var(--ink)]">Saved, with a note:</p>
+        <template x-for="w in composeWarnings" :key="w"><p x-text="w"></p></template>
       </div>
     </section>
 
     <div x-cloak x-show="!loading && postings.length === 0" class="mt-16 text-center">
-      <p class="text-[color:var(--muted)]">No job postings yet, add one above to get started.</p>
+      <p class="text-[color:var(--muted)]">No job postings yet. Use + Add job to save your first one.</p>
     </div>
 
-    <div x-cloak x-show="postings.length > 0" class="mt-8 flex items-center gap-3 flex-wrap">
+    <div x-cloak x-show="postings.length > 0" class="mt-8">
+      {{ ui.search("query", "Search by role, company, location or skill") }}
+    </div>
+
+    <div x-cloak x-show="postings.length > 0" class="mt-5 flex items-center gap-3 flex-wrap">
+      {{ ui.select("place", "locationOptions()", class="w-52", label="Location") }}
+      {{ ui.select("mode", "modeOptions()", class="w-44", label="Work mode") }}
       <input x-model.number="minSalary" type="number" min="0" step="10000" class="otw-input text-sm w-56" placeholder="Min salary per year" aria-label="Minimum salary per year" />
       {{ ui.select("sortBy", [("newest", "Newest first"), ("salary", "Highest salary")], class="w-48", label="Sort") }}
       <label class="flex items-center gap-2 text-xs text-[color:var(--muted)]">
@@ -99,12 +77,19 @@
       <span class="otw-count ml-auto" x-text="visiblePostings().length + ' of ' + postings.length"></span>
     </div>
 
+    <div x-cloak x-show="postings.length > 0 && visiblePostings().length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No jobs match these filters.</p>
+    </div>
+
     <div x-cloak class="mt-5 grid gap-5" style="grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));">
       <template x-for="p in visiblePostings()" :key="p.id">
         <a :href="'/jobs/' + p.id" class="otw-tile otw-job-card p-5 flex flex-col gap-3">
-          <div>
-            <h3 class="font-display text-lg leading-snug" x-text="p.title"></h3>
-            <p class="text-sm text-[color:var(--muted)]" x-text="p.company + (p.location ? ' · ' + p.location : '')"></p>
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <h3 class="font-display text-lg leading-snug" x-text="p.title"></h3>
+              <p class="text-sm text-[color:var(--muted)]" x-text="p.company + (p.location ? ' · ' + p.location : '')"></p>
+            </div>
+            {{ ui.bin_button("$event.preventDefault(); $event.stopPropagation(); remove(p)", label="Delete posting", disabled="deleting === p.id", size="sm", class="shrink-0") }}
           </div>
           <p class="text-sm" :class="!hasSalary(p) && 'text-[color:var(--muted)]'" x-text="hasSalary(p) ? otwSalary(p.salary_min_annual, p.salary_max_annual, p.salary_currency) : 'Salary not stated'"></p>
           <p x-show="factsLine(p)" class="text-xs text-[color:var(--muted)]" x-text="factsLine(p)"></p>
@@ -140,6 +125,8 @@
     background: var(--ink);
     color: var(--paper);
   }
+  .otw-drop { border: 1px dashed transparent; transition: border-color 0.15s ease; }
+  .otw-drop-active { border-color: var(--line-strong); }
   .otw-job-card { color: inherit; text-decoration: none; transition: border-color 0.15s ease; }
   .otw-job-card:hover { border-color: var(--line-strong); }
 </style>
@@ -152,20 +139,23 @@
       postings: [],
       loading: true,
       showAddForm: false,
-      addMode: 'paste',
-      pasteText: '',
-      pasteCompany: '',
-      pasteTitle: '',
-      urlValue: '',
-      screenshotFile: null,
-      authSources: [],
-      authSourceId: '',
-      pasting: false,
-      fetching: false,
-      pasteError: '',
+      composeText: '',
+      // { file, url }: url is an object URL for the thumbnail, revoked
+      // when the image is removed or the form is reset.
+      composeFiles: [],
+      dragging: false,
+      saving: false,
+      deleting: null,
+      composeError: '',
+      composeWarnings: [],
       minSalary: '',
       sortBy: 'newest',
       hideApplied: false,
+      query: '',
+      // '' for all, 'remote' for jobs that can be done from anywhere,
+      // 'none' for no location given, else a city's lowercase name.
+      place: '',
+      mode: '',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -174,6 +164,8 @@
           window.location.href = '/';
           return;
         }
+        // The analytics page links here with ?place= to open one place.
+        this.place = new URLSearchParams(window.location.search).get('place') || '';
         await this.loadPostings();
       },
 
@@ -187,116 +179,78 @@
         }
       },
 
-      async loadAuthSources() {
-        try {
-          const res = await fetch(`/api/auth-sources?account_id=${this.accountId}`);
-          this.authSources = (await res.json()).filter((s) => s.enabled);
-        } catch {
-          this.authSources = [];
+      // Same pattern the server uses to pick links out of the text.
+      foundLinks() {
+        const found = this.composeText.match(/https?:\/\/[^\s<>"'\])]+/gi) || [];
+        return [...new Set(found.map((u) => u.replace(/[.,;:!?]+$/, '')))];
+      },
+      hasDescription() {
+        return this.composeText.replace(/https?:\/\/[^\s<>"'\])]+/gi, '').trim().length > 0 || this.composeFiles.length > 0;
+      },
+      addFiles(list) {
+        for (const f of Array.from(list || [])) {
+          if (f.type.startsWith('image/')) this.composeFiles.push({ file: f, url: URL.createObjectURL(f) });
         }
+      },
+      removeFile(i) {
+        URL.revokeObjectURL(this.composeFiles[i].url);
+        this.composeFiles.splice(i, 1);
+      },
+      pasteImages(event) {
+        const items = Array.from(event.clipboardData?.items || []);
+        const images = items.filter((i) => i.type.startsWith('image/')).map((i) => i.getAsFile()).filter(Boolean);
+        if (images.length) {
+          event.preventDefault();
+          this.addFiles(images.map((f, i) => new File([f], f.name && f.name !== 'image.png' ? f.name : `pasted-${Date.now()}-${i}.png`, { type: f.type })));
+        }
+      },
+      canCompose() {
+        return this.composeText.trim().length > 0 || this.composeFiles.length > 0;
+      },
+      savingLabel() {
+        if (this.composeFiles.length) return 'Reading screenshots…';
+        return 'Reading…';
       },
 
       resetAddForm() {
-        this.pasteText = '';
-        this.pasteCompany = '';
-        this.pasteTitle = '';
-        this.urlValue = '';
-        this.screenshotFile = null;
-        this.authSourceId = '';
+        this.composeText = '';
+        for (const f of this.composeFiles) URL.revokeObjectURL(f.url);
+        this.composeFiles = [];
         this.showAddForm = false;
       },
 
-      async pasteJob() {
-        this.pasting = true;
-        this.pasteError = '';
-        try {
-          const res = await fetch('/api/job-postings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              account_id: Number(this.accountId),
-              raw_text: this.pasteText,
-              company: this.pasteCompany || null,
-              title: this.pasteTitle || null,
-            }),
-          });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            this.pasteError = err.detail || 'Could not save this job posting.';
-            return;
-          }
-          await this.loadPostings();
-          this.resetAddForm();
-        } finally {
-          this.pasting = false;
-        }
-      },
-
-      async fetchFromUrl() {
-        this.fetching = true;
-        this.pasteError = '';
-        try {
-          const res = await fetch('/api/job-postings/from-url', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ account_id: Number(this.accountId), url: this.urlValue }),
-          });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            this.pasteError = err.detail || 'Could not fetch that URL.';
-            return;
-          }
-          await this.loadPostings();
-          this.resetAddForm();
-        } finally {
-          this.fetching = false;
-        }
-      },
-
-      async uploadScreenshot() {
-        if (!this.screenshotFile) return;
-        this.fetching = true;
-        this.pasteError = '';
+      async compose() {
+        this.saving = true;
+        this.composeError = '';
+        this.composeWarnings = [];
         try {
           const form = new FormData();
           form.append('account_id', this.accountId);
-          form.append('file', this.screenshotFile);
-          const res = await fetch('/api/job-postings/from-screenshot', { method: 'POST', body: form });
+          form.append('text', this.composeText);
+          for (const f of this.composeFiles) form.append('files', f.file);
+          const res = await fetch('/api/job-postings/compose', { method: 'POST', body: form });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            this.pasteError = err.detail || 'Could not read that screenshot.';
+            this.composeError = typeof err.detail === 'string' ? err.detail : 'Could not save this job.';
             return;
           }
+          const saved = await res.json();
+          this.composeWarnings = saved.warnings || [];
           await this.loadPostings();
           this.resetAddForm();
         } finally {
-          this.fetching = false;
+          this.saving = false;
         }
       },
 
-      async fetchFromAuthSource() {
-        if (!this.authSourceId) return;
-        this.fetching = true;
-        this.pasteError = '';
+      async remove(p) {
+        if (!(await otwConfirm({ title: 'Delete this job posting?' }))) return;
+        this.deleting = p.id;
         try {
-          const res = await fetch('/api/job-postings/from-authenticated-url', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              account_id: Number(this.accountId),
-              url: this.urlValue,
-              auth_source_id: Number(this.authSourceId),
-            }),
-          });
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            this.pasteError = err.detail || 'Could not log in and fetch that URL.';
-            return;
-          }
-          await this.loadPostings();
-          this.resetAddForm();
+          const res = await fetch(`/api/job-postings/${p.id}`, { method: 'DELETE' });
+          if (res.ok) this.postings = this.postings.filter((x) => x.id !== p.id);
         } finally {
-          this.fetching = false;
+          this.deleting = null;
         }
       },
 
@@ -307,13 +261,58 @@
         return p.salary_max_annual ?? p.salary_min_annual ?? null;
       },
       factsLine(p) {
-        return [p.employment_type, p.work_mode, p.experience_required]
+        return [p.employment_type, this.modeLabel(p), p.experience_required]
           .filter(Boolean).join(' · ');
       },
       // Same rule as GET /api/job-postings?min_salary=: the best stated
       // figure has to reach the minimum; unstated pay is filtered out.
+      // Remote postings are a place of their own, never filed under the
+      // city they mention (see app/profile/job_place.py).
+      placeKeys(p) {
+        if (p.work_mode_kind === 'remote') return ['remote'];
+        const named = (p.cities || []).map((c) => c.toLowerCase());
+        return named.length ? named : ['none'];
+      },
+
+      locationOptions() {
+        const counts = new Map();
+        const names = new Map();
+        for (const p of this.postings) {
+          if (p.work_mode_kind !== 'remote') {
+            for (const c of p.cities || []) names.set(c.toLowerCase(), c);
+          }
+          for (const key of this.placeKeys(p)) counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        const cityKeys = [...names.keys()].sort((a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b));
+        const opts = [{ value: '', label: 'All locations' }];
+        if (counts.get('remote')) opts.push({ value: 'remote', label: `Remote, anywhere (${counts.get('remote')})` });
+        for (const key of cityKeys) opts.push({ value: key, label: `${names.get(key)} (${counts.get(key)})` });
+        if (counts.get('none')) opts.push({ value: 'none', label: `Not stated (${counts.get('none')})` });
+        return opts;
+      },
+
+      modeOptions() {
+        const counts = {};
+        for (const p of this.postings) counts[p.work_mode_kind] = (counts[p.work_mode_kind] || 0) + 1;
+        const opts = [{ value: '', label: 'Any work mode' }];
+        for (const [value, label] of [['remote', 'Remote'], ['hybrid', 'Hybrid'], ['on_site', 'On-site'], ['unknown', 'Not stated']]) {
+          if (counts[value]) opts.push({ value, label: `${label} (${counts[value]})` });
+        }
+        return opts;
+      },
+
+      modeLabel(p) {
+        return { remote: 'Remote', hybrid: 'Hybrid', on_site: 'On-site' }[p.work_mode_kind] || '';
+      },
+
       visiblePostings() {
-        let rows = this.postings;
+        let rows = otwSearch(this.postings, this.query, (p) => [
+          p.title, p.company, p.location, p.role_family && p.role_family.canonical_name,
+          p.role_summary, p.employment_type, p.work_mode, p.seniority,
+          (p.skills_required || []).map((s) => s.skill),
+        ]);
+        if (this.place) rows = rows.filter((p) => this.placeKeys(p).includes(this.place));
+        if (this.mode) rows = rows.filter((p) => p.work_mode_kind === this.mode);
         if (this.hideApplied) rows = rows.filter((p) => !p.applied);
         if (this.minSalary !== '' && this.minSalary != null) {
           rows = rows.filter((p) => (this.bestSalary(p) ?? -1) >= Number(this.minSalary));

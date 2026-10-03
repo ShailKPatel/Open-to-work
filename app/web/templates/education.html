@@ -27,13 +27,19 @@
         <input x-model="draft.location" placeholder="Location (optional)" class="otw-input sm:col-span-2" />
         <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
           Start date
-          <input x-model="draft.start_date" type="date" class="otw-input" />
+          <input x-model="draft.start_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
         </label>
         <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
           End date (leave blank if in progress)
-          <input x-model="draft.end_date" type="date" class="otw-input" />
+          <input x-model="draft.end_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
+        </label>
+        <input x-model="draft.grade" placeholder="Grade (optional, e.g. CGPA 8.9/10)" class="otw-input sm:col-span-2" />
+        <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)] sm:col-span-2">
+          Details (optional, one per line: coursework, rank, honors)
+          <textarea x-model="draft.details" rows="3" placeholder="Relevant coursework: Data Structures, Operating Systems&#10;Ranked 1st in university" class="otw-input"></textarea>
         </label>
       </div>
+      <p class="text-xs text-[color:var(--muted)] mt-3">Grade and details appear on generated resumes only when filled in.</p>
       <p x-show="addError" class="otw-error text-xs mt-3" x-text="addError"></p>
       <div class="flex items-center justify-end gap-2 mt-4">
         <button @click="cancelAdd" class="otw-btn-ghost text-sm px-4 py-2">Cancel</button>
@@ -52,20 +58,42 @@
       <p class="text-[color:var(--muted)]">No education added yet.</p>
     </div>
 
-    <div x-cloak x-show="rows.length > 0" class="mt-10 otw-timeline">
-      <template x-for="row in rows" :key="row.id">
+    <div x-cloak x-show="!loading && rows.length > 0 && activeRows.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">Every entry is archived. Restore one below to bring it back.</p>
+    </div>
+
+    <div x-cloak x-show="!loading && activeRows.length > 0" class="mt-8 flex items-center gap-4">
+      {{ ui.search("query", "Search education", class="flex-1 min-w-0") }}
+      <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="countLabel"></span>
+    </div>
+
+    <div x-cloak x-show="!loading && activeRows.length > 0 && filteredRows.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]">No entries match that search.</p>
+    </div>
+
+    <div x-cloak x-show="filteredRows.length > 0" class="mt-8 otw-timeline">
+      <template x-for="row in filteredRows" :key="row.id">
         <div class="otw-timeline-item" :class="{ 'is-current': otwDates.isOngoing(row.start_date, row.end_date) }">
           <div x-show="!editing[row.id]" class="otw-tile otw-entry">
             <div class="otw-monogram" x-text="otwMonogram(row.institution)"></div>
             <div class="min-w-0">
               <p class="otw-entry-title" x-text="row.degree"></p>
               <p class="otw-entry-org" x-text="row.institution"></p>
+              <p x-show="row.grade" class="text-sm mt-1" x-text="row.grade"></p>
+              <ul x-show="row.details && row.details.length" class="mt-2 list-disc pl-5 text-sm space-y-0.5">
+                <template x-for="(line, i) in row.details" :key="i">
+                  <li x-text="line"></li>
+                </template>
+              </ul>
               <div class="otw-meta">
                 <span x-show="row.location" class="otw-meta-item">
                   <span x-html="otwIcon('pin')"></span><span x-text="row.location"></span>
                 </span>
                 <button @click="startEdit(row)" class="otw-meta-item hover:text-[color:var(--ink)] transition-colors">
                   <span x-html="otwIcon('pencil')"></span>Edit
+                </button>
+                <button @click="setArchived(row, true)" :disabled="Boolean(archiveBusy[row.id])" class="otw-meta-item hover:text-[color:var(--ink)] transition-colors">
+                  <span x-html="otwIcon('archive')"></span>Archive
                 </button>
                 {{ ui.bin_button("remove(row)", label="Delete education", disabled="Boolean(deleting[row.id])", size="sm") }}
               </div>
@@ -86,11 +114,16 @@
                 <input x-model="edit[row.id].location" placeholder="Location (optional)" class="otw-input sm:col-span-2" />
                 <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
                   Start date
-                  <input x-model="edit[row.id].start_date" type="date" class="otw-input" />
+                  <input x-model="edit[row.id].start_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
                 </label>
                 <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)]">
                   End date (leave blank if in progress)
-                  <input x-model="edit[row.id].end_date" type="date" class="otw-input" />
+                  <input x-model="edit[row.id].end_date" type="text" placeholder="mar 2026" autocomplete="off" class="otw-input" />
+                </label>
+                <input x-model="edit[row.id].grade" placeholder="Grade (optional, e.g. CGPA 8.9/10)" class="otw-input sm:col-span-2" />
+                <label class="flex flex-col gap-1 text-xs text-[color:var(--muted)] sm:col-span-2">
+                  Details (optional, one per line: coursework, rank, honors)
+                  <textarea x-model="edit[row.id].details" rows="3" class="otw-input"></textarea>
                 </label>
               </div>
             </template>
@@ -110,6 +143,22 @@
         </div>
       </template>
     </div>
+
+    {% call ui.archived_section("filteredArchived", "archivedOpen", "Kept here, but left off every resume and out of your education count.") %}
+      <template x-for="row in filteredArchived" :key="row.id">
+        <div class="otw-tile px-4 py-3 flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <p class="font-display text-base break-words" x-text="row.degree"></p>
+            <p class="text-xs text-[color:var(--muted)] mt-0.5" x-text="row.institution"></p>
+            <p x-show="saveError[row.id]" class="otw-error text-xs mt-1" x-text="saveError[row.id]"></p>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button @click="setArchived(row, false)" :disabled="Boolean(archiveBusy[row.id])" class="otw-btn-ghost text-xs px-3 py-1.5">Restore</button>
+            {{ ui.bin_button("remove(row)", label="Delete education", disabled="Boolean(deleting[row.id])", size="sm") }}
+          </div>
+        </div>
+      </template>
+    {% endcall %}
   </main>
 </div>
 
@@ -123,12 +172,15 @@
       addingOpen: false,
       adding: false,
       addError: '',
-      draft: { institution: '', degree: '', location: '', start_date: '', end_date: '' },
+      draft: { institution: '', degree: '', location: '', start_date: '', end_date: '', grade: '', details: '' },
       edit: {},
       editing: {},
       saving: {},
       saveError: {},
       deleting: {},
+      archiveBusy: {},
+      archivedOpen: false,
+      query: '',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -137,7 +189,30 @@
           window.location.href = '/';
           return;
         }
+        this.query = new URLSearchParams(window.location.search).get('q') || '';
         await this.load();
+      },
+
+      get activeRows() {
+        return this.rows.filter((r) => !r.exclude_from_resume);
+      },
+
+      searchFields(r) {
+        return [r.degree, r.institution, r.location, r.grade, ...(r.details || [])];
+      },
+
+      get filteredRows() {
+        return otwSearch(this.activeRows, this.query, this.searchFields);
+      },
+
+      get filteredArchived() {
+        return otwSearch(this.rows.filter((r) => r.exclude_from_resume), this.query, this.searchFields);
+      },
+
+      get countLabel() {
+        const shown = this.filteredRows.length;
+        const total = this.activeRows.length;
+        return shown === total ? `${total} entr${total !== 1 ? 'ies' : 'y'}` : `${shown} of ${total}`;
       },
 
       async load() {
@@ -155,7 +230,12 @@
         this.edit[row.id] = {
           institution: row.institution, degree: row.degree, location: row.location || '',
           start_date: row.start_date || '', end_date: row.end_date || '',
+          grade: row.grade || '', details: (row.details || []).join('\n'),
         };
+      },
+
+      detailLines(text) {
+        return text.split('\n').map((l) => l.trim()).filter(Boolean);
       },
 
       startEdit(row) {
@@ -173,7 +253,7 @@
       cancelAdd() {
         this.addingOpen = false;
         this.addError = '';
-        this.draft = { institution: '', degree: '', location: '', start_date: '', end_date: '' };
+        this.draft = { institution: '', degree: '', location: '', start_date: '', end_date: '', grade: '', details: '' };
       },
 
       async submitAdd() {
@@ -190,6 +270,8 @@
               location: this.draft.location || null,
               start_date: this.draft.start_date || null,
               end_date: this.draft.end_date || null,
+              grade: this.draft.grade || null,
+              details: this.detailLines(this.draft.details),
             }),
           });
           if (!res.ok) {
@@ -218,6 +300,8 @@
               location: e.location || null,
               start_date: e.start_date || null,
               end_date: e.end_date || null,
+              grade: e.grade || null,
+              details: this.detailLines(e.details),
             }),
           });
           if (!res.ok) {
@@ -232,6 +316,26 @@
           this.editing[row.id] = false;
         } finally {
           this.saving[row.id] = false;
+        }
+      },
+
+      // Only the flag: an open edit form for this row keeps what was typed.
+      async setArchived(row, archived) {
+        this.archiveBusy[row.id] = true;
+        this.saveError[row.id] = '';
+        try {
+          const res = await fetch(`/api/education/${row.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ exclude_from_resume: archived }),
+          });
+          if (!res.ok) {
+            this.saveError[row.id] = 'Could not save, try again.';
+            return;
+          }
+          row.exclude_from_resume = (await res.json()).exclude_from_resume;
+        } finally {
+          this.archiveBusy[row.id] = false;
         }
       },
 

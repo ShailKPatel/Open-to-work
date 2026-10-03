@@ -1,7 +1,7 @@
 """Runs the LLM skill review (app/profile/skill_review.py) over skills
 already in the database, for every account, and deletes the evidence rows
-for names it rejects. Extraction runs this on its own from now on; this is
-for data extracted before review existed.
+for names it rejects. Extraction already reviews new names as it goes; this
+covers skills stored before a run that did not review them.
 
 Only names without a verdict are sent, in batches of 50, so running it again
 costs nothing unless new names appeared. Hand-added skills are never touched.

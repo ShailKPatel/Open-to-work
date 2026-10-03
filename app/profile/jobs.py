@@ -205,7 +205,7 @@ def resume_rate_limited_extractions() -> list[int]:
     for the person to press Continue, since each call costs money."""
     db = get_db()
     try:
-        account_ids = sorted(
+        account_ids: list[int] = sorted(
             {
                 account_id
                 for account_id in db.execute(
@@ -214,6 +214,7 @@ def resume_rate_limited_extractions() -> list[int]:
                         Repository.account_id.is_not(None),
                     )
                 ).scalars()
+                if account_id is not None
             }
         )
     finally:

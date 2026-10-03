@@ -7,9 +7,9 @@ with it. Now the worker thread owns the sync (app/core/jobs.py) and an SSE
 stream only follows its event log: leaving the page stops the following,
 not the fetching, and coming back replays the log and keeps following.
 
-One job per target (a GitHub account or a single repo), shared by /sync
-and the fetch-data page, so both pages show the same run and a second
-click joins it instead of starting a parallel one against the same quota.
+One job per target (a GitHub account or a single repo), so every page
+shows the same run and a second click joins it instead of starting a
+parallel one against the same quota.
 
 Each target's latest outcome is kept in the github_sync_runs table. When
 GitHub's hourly limit cuts a sync off part way, that row remembers how far
@@ -468,8 +468,8 @@ def restore_after_restart() -> None:
             if row.state == "running":
                 row.state = "error"
                 row.detail = "The app stopped while this sync was running."
-            elif row.resume_at is not None:
-                to_schedule.append((row.key, _utc(row.resume_at)))
+            elif (resume_at := _utc(row.resume_at)) is not None:
+                to_schedule.append((row.key, resume_at))
         db.commit()
     finally:
         db.close()

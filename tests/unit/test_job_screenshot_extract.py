@@ -67,3 +67,20 @@ def test_unparseable_llm_response_raises(monkeypatch):
 
     with pytest.raises(ScreenshotExtractionError):
         extract_job_posting_from_image(b"fake-png-bytes", "image/png")
+
+
+def test_several_images_and_context_text_go_in_one_call(monkeypatch):
+    from app.profile.job_screenshot_extract import extract_job_posting_from_images
+
+    fake_complete = MagicMock(return_value=_fake_response(raw_text_transcribed=""))
+    monkeypatch.setattr("app.profile.job_screenshot_extract.complete", fake_complete)
+
+    # No text in the images is fine when the person also typed some.
+    result = extract_job_posting_from_images(
+        [(b"a", "image/png"), (b"b", "image/jpeg")], context_text="Pays 20 LPA."
+    )
+
+    parts = fake_complete.call_args.args[1][1]["content"]
+    assert [p["type"] for p in parts] == ["text", "image_url", "image_url", "text"]
+    assert parts[-1]["text"].endswith("Pays 20 LPA.")
+    assert result.extraction.company == "Acme"

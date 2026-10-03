@@ -1,11 +1,8 @@
-"""Detected-projects page backend: list synced repos with skill-extraction
-status, and manual (re)process triggers.
+"""Projects: synced and hand-added repos with their skill-extraction
+status, edits, links, and the (re)process triggers.
 
-Extraction isn't bundled into POST /sync/github. A sync just fetches; this
-router is the separate, explicit step that turns fetched repos into skill
-evidence. Keeps /sync/github's duration predictable regardless of how many
-repos need an LLM call, and matches the page split: /sync fetches, /projects
-shows and manages extraction.
+Syncing only fetches; extraction is this router's separate step, so a
+sync takes the same time however many repos need an LLM call.
 """
 
 from __future__ import annotations
@@ -18,7 +15,7 @@ from collections.abc import Iterator
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -76,6 +73,7 @@ class ProjectSummary(BaseModel):
     # Repository.starred). Drives list ordering below; no other behavior
     # reads it yet.
     starred: bool
+    exclude_from_resume: bool
 
     @classmethod
     def from_repo(cls, repo: Repository, skill_count: int) -> ProjectSummary:
@@ -94,6 +92,7 @@ class ProjectSummary(BaseModel):
             skill_count=skill_count,
             is_manual=repo.github_id < 0,
             starred=repo.starred,
+            exclude_from_resume=repo.exclude_from_resume,
         )
 
 
@@ -168,6 +167,7 @@ class ProjectDetail(BaseModel):
     links: list[ProjectLinkItem]
     is_manual: bool
     starred: bool
+    exclude_from_resume: bool
 
     @classmethod
     def from_repo(
@@ -197,6 +197,7 @@ class ProjectDetail(BaseModel):
             links=links,
             is_manual=repo.github_id < 0,
             starred=repo.starred,
+            exclude_from_resume=repo.exclude_from_resume,
         )
 
 
@@ -305,6 +306,7 @@ class ProjectUpdate(BaseModel):
     readme: str | None = None
     is_fork: bool | None = None
     starred: bool | None = None
+    exclude_from_resume: bool | None = None
 
 
 @router.patch("/{repo_id}", response_model=ProjectDetail)
@@ -324,6 +326,9 @@ def update_project(repo_id: int, body: ProjectUpdate, *, db: DbSession) -> Proje
         raise HTTPException(status_code=422, detail="name is required")
     if "full_name" in fields and not fields["full_name"]:
         raise HTTPException(status_code=422, detail="full_name is required")
+    for key in ("is_fork", "starred", "exclude_from_resume"):
+        if key in fields and fields[key] is None:
+            del fields[key]
 
     repo = db.get(Repository, repo_id)
     if repo is None:
@@ -354,6 +359,27 @@ def update_project(repo_id: int, body: ProjectUpdate, *, db: DbSession) -> Proje
         ) from e
     db.refresh(repo)
     return _detail_for(db, repo)
+
+
+@router.delete("/{repo_id}")
+def delete_project(repo_id: int, *, db: DbSession) -> dict:
+    """Removes the project with its skill evidence and links. A synced
+    repo is fetched again by the next GitHub sync, so the page offers
+    exclude_from_resume as the lasting way to keep one off resumes.
+    """
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repo with id={repo_id}")
+
+    evidence_ids = list(
+        db.execute(select(SkillEvidence.id).where(SkillEvidence.repo_id == repo_id)).scalars()
+    )
+    _delete_qdrant_points(evidence_ids)
+    db.execute(delete(SkillEvidence).where(SkillEvidence.repo_id == repo_id))
+    db.execute(delete(ProjectLink).where(ProjectLink.repo_id == repo_id))
+    db.delete(repo)
+    db.commit()
+    return {"deleted": True, "id": repo_id}
 
 
 class SkillEvidenceCreate(BaseModel):

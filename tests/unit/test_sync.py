@@ -2,11 +2,14 @@ import datetime as dt
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 import app.core.db as db_module
 from app.core.db import Account, Repository, init_db, is_profile_repo
 from app.core.settings import get_settings
 from app.ingest.github.cancellation import is_cancelled, request_cancel
 from app.ingest.github.sync import (
+    git_blob_sha,
     sync_account,
     sync_account_progress,
     sync_single_repo,
@@ -14,11 +17,19 @@ from app.ingest.github.sync import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_vector_indexing(monkeypatch):
+    """A pushed repo's evidence is reweighted and re-indexed in Qdrant;
+    indexing loads an embedding model, which no test here is about."""
+    monkeypatch.setattr("app.retrieval.index.index_skill_evidence", lambda *a, **k: None)
+
+
 @dataclass
 class FakeContentEntry:
     type: str
     name: str
     path: str
+    sha: str | None = None
 
 
 @dataclass
@@ -47,6 +58,8 @@ class FakeClient:
         self._repos = repos
         self._manifest_files = manifest_files or {}
         self.stats_calls = 0
+        self.readme: str | None = None  # None: "# {repo.name}"
+        self.entry_reads: list[str] = []
         # simulates GitHub cutting us off partway through pagination:
         # yields `raise_after` repos, then raises `raise_exc`
         self._raise_after = raise_after
@@ -68,7 +81,7 @@ class FakeClient:
         raise AssertionError(f"get_repo called unexpectedly for {full_name!r}")
 
     def readme_text(self, repo):
-        return f"# {repo.name}"
+        return self.readme if self.readme is not None else f"# {repo.name}"
 
     def root_contents(self, repo):
         return [
@@ -80,6 +93,7 @@ class FakeClient:
         return self._manifest_files.get(path)
 
     def entry_text(self, repo, entry):
+        self.entry_reads.append(entry.path)
         return self.file_text(repo, entry.path)
 
     def authored_commits(self, repo, username: str):
@@ -269,8 +283,9 @@ def test_sync_refetch_resets_stale_extraction_status(tmp_path, monkeypatch):
     db.commit()
     db.close()
 
-    # content changed -> refetch -> prior extraction is stale
+    # README changed -> refetch -> prior extraction is stale
     repo.pushed_at = dt.datetime(2024, 7, 1, tzinfo=dt.UTC)
+    client.readme = "# proj, now with a new feature"
     sync_account("octocat", client=client)
 
     db = db_module.get_db()
@@ -768,3 +783,158 @@ def test_sync_flags_profile_readme_repo(tmp_path, monkeypatch):
     assert profile.readme == "# octocat"
     assert profile.skill_extraction_status == "pending"
     db.close()
+
+
+def _extracted_repo_with_evidence(client: FakeClient, repo: FakeRepo) -> None:
+    """Syncs repo once, then marks it extracted with one README-derived
+    skill, as a finished extraction would leave it."""
+    from app.core.db import SkillEvidence
+
+    sync_account("octocat", client=client)
+    db = db_module.get_db()
+    stored = db.query(Repository).filter_by(github_id=repo.id).one()
+    stored.skill_extraction_status = "extracted"
+    db.add(
+        SkillEvidence(
+            skill="FastAPI",
+            repo_id=stored.id,
+            evidence_type="readme_described",
+            weight=0.01,
+            confidence=1.0,
+            source_files_json=["README.md"],
+        )
+    )
+    db.commit()
+    db.close()
+
+
+def test_push_without_readme_change_refreshes_stats_and_manifests_without_reprocess(
+    tmp_path, monkeypatch
+):
+    from app.core.db import SkillEvidence
+
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+    client = FakeClient([repo])
+    _extracted_repo_with_evidence(client, repo)
+
+    repo.pushed_at = dt.datetime(2024, 7, 1, tzinfo=dt.UTC)
+    client._manifest_files = {"requirements.txt": "django\n"}
+    second = sync_account("octocat", client=client)
+
+    assert (second.fetched, second.cache_hits) == (1, 0)
+    db = db_module.get_db()
+    stored = db.query(Repository).one()
+    assert stored.skill_extraction_status == "extracted"
+    assert stored.commits_authored == 5
+    rows = {row.skill: row for row in db.query(SkillEvidence)}
+    assert set(rows) == {"FastAPI", "Django"}
+    assert rows["Django"].evidence_type == "declared_dependency"
+    # reweighted from the fresh commit stats, not the stale stored weight
+    assert rows["FastAPI"].weight != 0.01
+    db.close()
+
+
+class _ShaListingClient(FakeClient):
+    """Root README listed with its git blob SHA, as GitHub's listing has it."""
+
+    def __init__(self, repos, readme: str):
+        super().__init__(repos)
+        self.readme = readme
+
+    def root_contents(self, repo):
+        sha = git_blob_sha(self.readme or "")
+        return [FakeContentEntry(type="file", name="README.md", path="README.md", sha=sha)]
+
+    def file_text(self, repo, path):
+        return self.readme if path == "README.md" else None
+
+
+def test_unchanged_root_readme_sha_skips_the_download(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+    client = _ShaListingClient([repo], "# proj\n")
+    _extracted_repo_with_evidence(client, repo)
+    assert client.entry_reads == ["README.md"]
+
+    repo.pushed_at = dt.datetime(2024, 7, 1, tzinfo=dt.UTC)
+    sync_account("octocat", client=client)
+
+    assert client.entry_reads == ["README.md"]
+    db = db_module.get_db()
+    stored = db.query(Repository).one()
+    assert stored.readme == "# proj\n"
+    assert stored.readme_sha == git_blob_sha("# proj\n")
+    assert stored.skill_extraction_status == "extracted"
+    db.close()
+
+
+def test_changed_root_readme_sha_downloads_and_reprocesses(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+    client = _ShaListingClient([repo], "# proj\n")
+    _extracted_repo_with_evidence(client, repo)
+
+    repo.pushed_at = dt.datetime(2024, 7, 1, tzinfo=dt.UTC)
+    client.readme = "# proj\n\nNow with a plugin system.\n"
+    sync_account("octocat", client=client)
+
+    assert client.entry_reads == ["README.md", "README.md"]
+    db = db_module.get_db()
+    stored = db.query(Repository).one()
+    assert stored.readme == client.readme
+    assert stored.skill_extraction_status == "pending"
+    db.close()
+
+
+def test_repo_synced_before_readme_sha_existed_matches_on_stored_text(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    repo = _make_repos(1)[0]
+    client = _ShaListingClient([repo], "# proj\n")
+    _extracted_repo_with_evidence(client, repo)
+    db = db_module.get_db()
+    db.query(Repository).one().readme_sha = None
+    db.commit()
+    db.close()
+
+    repo.pushed_at = dt.datetime(2024, 7, 1, tzinfo=dt.UTC)
+    sync_account("octocat", client=client)
+
+    assert client.entry_reads == ["README.md"]
+    db = db_module.get_db()
+    assert db.query(Repository).one().skill_extraction_status == "extracted"
+    db.close()
+
+
+def test_description_change_reprocesses_only_a_repo_without_readme(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    with_readme, without_readme = _make_repos(2)
+    client = FakeClient([with_readme, without_readme])
+    original = client.readme_text
+    client.readme_text = lambda repo: original(repo) if repo.id == 1 else None
+    sync_account("octocat", client=client)
+    db = db_module.get_db()
+    for stored in db.query(Repository):
+        stored.skill_extraction_status = "extracted"
+    db.commit()
+    db.close()
+
+    for repo in (with_readme, without_readme):
+        repo.pushed_at = dt.datetime(2024, 7, 1, tzinfo=dt.UTC)
+        repo.description = "now does something else"
+    sync_account("octocat", client=client)
+
+    db = db_module.get_db()
+    statuses = {r.github_id: r.skill_extraction_status for r in db.query(Repository)}
+    assert statuses == {1: "extracted", 2: "pending"}
+    db.close()
+
+
+def test_git_blob_sha_matches_git():
+    # `printf 'hello\n' | git hash-object --stdin`
+    assert git_blob_sha("hello\n") == "ce013625030ba8dba906f756967f9e9ca394464a"

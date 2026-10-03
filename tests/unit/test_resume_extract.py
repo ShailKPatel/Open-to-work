@@ -5,6 +5,21 @@ import pytest
 from app.profile.resume_extract import UnsupportedResumeType, extract_resume
 
 
+def _pdf_with_links(*uris: str) -> bytes:
+    import io
+
+    from pypdf import PdfWriter
+    from pypdf.annotations import Link
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    for uri in uris:
+        writer.add_annotation(0, Link(rect=(10, 10, 50, 20), url=uri))
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
 def test_unsupported_type_raises_without_calling_llm(monkeypatch):
     fake_complete = MagicMock()
     monkeypatch.setattr("app.profile.resume_extract.complete", fake_complete)
@@ -77,7 +92,7 @@ def test_extracts_experiences_with_dates(monkeypatch):
     assert claim.company == "Acme Corp"
     assert claim.title == "Software Engineer"
     assert claim.location == "Berlin, Germany"
-    assert claim.start_date.isoformat() == "2020-01-01"
+    assert claim.start_date == "jan 2020"
     assert claim.end_date is None  # empty string means "still there" / unknown
     assert claim.points == ["Developed API services", "Implemented unit tests"]
     assert claim.skills == ["FastAPI", "pytest"]
@@ -109,7 +124,7 @@ def test_extracts_education_with_dates(monkeypatch):
             {
                 "institution": "Nirma University",
                 "degree": "B.Tech in Computer Science",
-                "location": "Ahmedabad",
+                "location": "Springfield",
                 "start_date": "2022-08-01",
                 "end_date": "",
             },
@@ -127,8 +142,8 @@ def test_extracts_education_with_dates(monkeypatch):
     claim = extraction.education[0]
     assert claim.institution == "Nirma University"
     assert claim.degree == "B.Tech in Computer Science"
-    assert claim.location == "Ahmedabad"
-    assert claim.start_date.isoformat() == "2022-08-01"
+    assert claim.location == "Springfield"
+    assert claim.start_date == "aug 2022"
     assert claim.end_date is None  # empty string means in progress / unknown
 
 
@@ -168,7 +183,7 @@ def test_extracts_contact_block(monkeypatch):
             "phones": ["+44 20 7946 0958"],
             "links": [
                 {"platform": "LinkedIn", "url": "linkedin.com/in/ada", "label": ""},
-                {"platform": "website", "url": "https://ada.dev", "label": "ignored"},
+                {"platform": "website", "url": "https://ada.dev", "label": "Portfolio"},
                 {"platform": "website", "url": "https://blog.ada.dev"},
                 {"platform": "leetcode", "url": "https://leetcode.com/ada"},
                 {"platform": "github", "url": ""},
@@ -187,7 +202,7 @@ def test_extracts_contact_block(monkeypatch):
     assert contact.phones == ["+44 20 7946 0958"]
     assert [(link.platform, link.url, link.label) for link in contact.links] == [
         ("linkedin", "https://linkedin.com/in/ada", None),
-        ("website", "https://ada.dev", None),
+        ("other", "https://ada.dev", "Portfolio"),  # a named site is a custom link
         ("website", "https://blog.ada.dev", None),
         ("other", "https://leetcode.com/ada", "Leetcode"),
     ]
@@ -204,3 +219,34 @@ def test_contact_defaults_to_empty_when_field_missing(monkeypatch):
 
     assert contact.name is None
     assert contact.emails == [] and contact.phones == [] and contact.links == []
+
+
+def test_pdf_hyperlinks_are_listed_for_the_llm(monkeypatch):
+    fake_response = MagicMock()
+    fake_response.parsed = {"tags": [], "target_roles": [], "summary": "x"}
+    fake_complete = MagicMock(return_value=fake_response)
+    monkeypatch.setattr("app.profile.resume_extract.complete", fake_complete)
+
+    pdf = _pdf_with_links(
+        "https://www.credly.com/badges/abc",
+        "mailto:ada@example.com",
+        "https://www.credly.com/badges/abc",
+    )
+    extract_resume(pdf, "application/pdf")
+
+    text = fake_complete.call_args.args[1][1]["content"][0]["text"]
+    assert "Hyperlinks embedded in the file:\nhttps://www.credly.com/badges/abc" in text
+    assert text.count("credly") == 1  # deduplicated
+    assert "mailto:" not in text
+
+
+def test_unreadable_pdf_still_extracts(monkeypatch):
+    fake_response = MagicMock()
+    fake_response.parsed = {"tags": [], "target_roles": [], "summary": "x"}
+    fake_complete = MagicMock(return_value=fake_response)
+    monkeypatch.setattr("app.profile.resume_extract.complete", fake_complete)
+
+    extract_resume(b"%PDF-1.4 fake", "application/pdf")
+
+    text = fake_complete.call_args.args[1][1]["content"][0]["text"]
+    assert text == "Here is the resume to analyze."

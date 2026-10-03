@@ -1,8 +1,4 @@
-"""Every ORM model in the app, one table per class.
-
-A few tables (Detection, MatchResult) are declared ahead of the features
-that will write to them.
-"""
+"""Every ORM model in the app, one table per class."""
 
 from __future__ import annotations
 
@@ -41,45 +37,23 @@ class Account(Base):
     first_name: Mapped[str] = mapped_column(String)
     last_name: Mapped[str] = mapped_column(String)
     github_username: Mapped[str] = mapped_column(String, index=True)
-    # Legacy single-file mirror: the most recently ingested Resume row's
-    # filename/path (app/profile/resume_ingest.py keeps these in sync on
-    # every upload, signup or from /resume). Real resume data now lives in
-    # the `resumes` table below, this pair only exists so AccountSummary.
-    # has_resume stays a cheap column read instead of a join, and so an
-    # older deployment upgrading in place doesn't lose the file it already
-    # collected at signup.
+    # The latest uploaded resume's file, mirrored from the resumes table so
+    # "has a resume" is a column read. Resume rows are the real record.
     resume_filename: Mapped[str | None] = mapped_column(String, nullable=True)
     resume_path: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Contact info, added via _migrate_accounts_contact_columns() below
-    # rather than a fresh table, since this is data ABOUT the account
-    # itself (resume header material), same tier as first/last name.
-    # Nullable: collected progressively, not required at signup.
+    # Resume header details, filled in over time rather than at signup.
     contact_email: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_location: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-    @property
-    def display_name(self) -> str:
-        return f"{self.first_name} {self.last_name}".strip()
-
 
 class SyncSource(Base):
-    """One thing to fetch GitHub data from, for a given account, kept
-    separate from Account.github_username. That field is identity (who this
-    profile is, used for commit attribution); a SyncSource is purely
-    "where do we pull evidence from," and an account can have any number of
-    them: their own username, a second GitHub account, or a single repo they
-    contributed to but don't own (kind="repo": commit attribution then
-    credits Account.github_username, not the repo's owner, since it's a
-    project someone else's account holds but this person worked on).
-
-    One is auto-created at account signup (kind="user", the signup
-    username) so the fetch-data page isn't empty on first visit; from there
-    it's just one row among any others the person adds.
-
-    Parsed by app/ingest/github/source_parser.py from whatever raw text
-    they paste: bare username, profile URL, or repo URL.
+    """A GitHub user or single repo an account pulls evidence from. Separate
+    from Account.github_username, which is identity: commits are always
+    credited to that login, so a repo the person contributed to but does
+    not own (kind="repo") still counts as their work. One "user" source is
+    created at signup. Parsed by app/ingest/github/source_parser.py.
     """
 
     __tablename__ = "sync_sources"
@@ -158,51 +132,41 @@ class Repository(Base):
     primary_language: Mapped[str | None] = mapped_column(String, nullable=True)
     stars: Mapped[int] = mapped_column(Integer, default=0)
     readme: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # GitHub's short "About" one-liner: repo metadata, not repo content;
-    # comes free with the repo-list call, no extra API request. Fallback
-    # extraction source when there's no README, per app/profile/extract.py.
+    # GitHub's "About" line; the extraction source when there is no README.
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     manifests_json: Mapped[dict] = mapped_column(JSON, default=dict)
     commits_authored: Mapped[int] = mapped_column(Integer, default=0)
     last_commit_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # caching: skip refetch of readme/manifests/stats when unchanged
+    # Unchanged since the last sync means README, manifests and stats are not refetched.
     pushed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Git blob SHA of the stored README. An unchanged SHA in the root listing
+    # means the README did not change, so it is neither downloaded nor sent
+    # back to the LLM.
+    readme_sha: Mapped[str | None] = mapped_column(String, nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
 
-    # Per-repo skill-extraction status: lets a mid-batch LLM failure (auth
-    # revoked, malformed input) fail one repo without losing progress on
-    # every other repo, and gives the UI something to show a retry button
-    # against. "pending": never attempted (or pushed_at changed since last
-    # attempt, on sync.py's cache-miss path). "extracted": succeeded.
-    # "failed": LLM call raised for reasons specific to this repo, see
-    # skill_extraction_error. "no_signal": no README and no description,
-    # skipped by design, not a failure (see extract.py's NoSourceTextError).
-    # "rate_limited": the provider rate limit or the budget cap was hit.
-    # Distinct from "failed": this repo didn't do anything wrong, and every
-    # repo after it in the same batch would fail the same way right now, so
-    # build.py stops the batch here instead of continuing (see build.py's
-    # module docstring). Retried on the next process-pending call, same as
-    # "pending"/"failed".
-    #
-    # Both "failed" and "rate_limited" are retried on the next non-forced
-    # build_profile()/process-pending call, neither is in _SKIP_STATUSES.
+    # Skill extraction, tracked per repo so one failure does not lose the
+    # rest of a batch:
+    #   pending       not attempted, or the README changed since
+    #   extracted     done
+    #   failed        this repo's call errored (skill_extraction_error)
+    #   no_signal     no README and no description, skipped on purpose
+    #   rate_limited  provider limit or budget hit; build.py stops the batch,
+    #                 since every later repo would fail the same way
+    # failed and rate_limited are retried on the next run.
     skill_extraction_status: Mapped[str] = mapped_column(String, default="pending")
     skill_extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     skills_extracted_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
-    # Manual curation, optional and independent of sync/extraction: "which
-    # of my projects should a resume lead with." Capped at 3 per account,
-    # enforced in app/api/projects.py (not here: the ORM layer doesn't see
-    # "this account's other repos" without a query). Feeds project
-    # ordering, not skill extraction. (A 1-10 `rating` column used to sit
-    # beside this; it was dropped from the model as too much manual work.
-    # Older databases still carry the unused column, nothing reads it.)
+    # "Lead with this project" on a resume. At most 3 per account, enforced
+    # in app/api/projects.py. Older databases may still carry an unused
+    # `rating` column.
     starred: Mapped[bool] = mapped_column(default=False)
 
     # The owner's GitHub profile README: the repo named after its owner
@@ -213,29 +177,25 @@ class Repository(Base):
     # overview instead. Set by app/ingest/github/sync.py on every upsert.
     is_profile_readme: Mapped[bool] = mapped_column(default=False)
 
+    # Kept on the Projects page but left out of resume building entirely:
+    # no candidate list, no picker, no skill suggestion drawn only from it.
+    # For a small utility repo that is real work but not resume material.
+    # Sync never touches it, so it survives every re-fetch.
+    exclude_from_resume: Mapped[bool] = mapped_column(default=False)
+
 
 class ProjectLink(Base):
-    """One outbound link on a project: GitHub, a YouTube demo video, a live
-    deployed version, docs, etc. `platform` is free-form on purpose (same
-    reasoning as SocialLink.platform above), not an enum: a project can have
-    any number of these, with whatever label fits.
-
-    `source` distinguishes a link a person typed in by hand from one the
-    first-pass README extraction found (app/profile/extract.py's
-    extract_links_from_repo), mirrors SkillEvidence.evidence_type's
-    manual-vs-derived split, for the same reason: Reprocess deletes and
-    re-derives "readme_extracted" rows without touching "manual" ones (see
-    build.py's _process_repo), and editing an extracted link's label/url
-    flips it to "manual" so a later Reprocess can't silently overwrite
-    someone's correction.
+    """A link on a project (demo video, live site, docs). source is
+    "readme_extracted" for one the README extraction found and "manual"
+    otherwise. Reprocess replaces only extracted links, and editing an
+    extracted link makes it manual, so a correction is never overwritten.
     """
 
     __tablename__ = "project_links"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     repo_id: Mapped[int] = mapped_column(ForeignKey("repositories.id"), index=True)
-    # e.g. "GitHub", "YouTube Video", "Live Demo", "Documentation", free text,
-    # not an enum, same reasoning as SocialLink.platform.
+    # Free text: "YouTube Video", "Live Demo", "Documentation", ...
     label: Mapped[str] = mapped_column(String)
     url: Mapped[str] = mapped_column(String)
     # "manual" | "readme_extracted"
@@ -257,12 +217,9 @@ class SkillEvidence(Base):
 
 
 class SocialLink(Base):
-    """One contact-adjacent link for an account: LinkedIn, a second GitHub
-    profile (separate from Account.github_username, which is sync
-    identity, not a display link), Instagram, a personal site, etc.
-    `platform` is free-form on purpose (not an enum column) so a new kind
-    of link never needs a migration; `label` is only meaningful when
-    platform == "other", for a link that doesn't fit the common set.
+    """A contact link (LinkedIn, GitHub, a personal site). platform is free
+    text so a new kind of link needs no migration; label is only used when
+    platform is "other".
     """
 
     __tablename__ = "social_links"
@@ -277,10 +234,7 @@ class SocialLink(Base):
 
 
 class ContactEmail(Base):
-    """Direct contact email address for an account. An account can have
-    multiple contact emails; `is_primary` indicates the primary/starred
-    email used by default in resume building.
-    """
+    """A contact email. The primary one goes on generated resumes."""
 
     __tablename__ = "contact_emails"
 
@@ -292,10 +246,7 @@ class ContactEmail(Base):
 
 
 class ContactPhone(Base):
-    """Direct contact phone number for an account. An account can have
-    multiple contact phone numbers; `is_primary` indicates the primary/starred
-    phone number used by default in resume building.
-    """
+    """A contact phone number. The primary one goes on generated resumes."""
 
     __tablename__ = "contact_phones"
 
@@ -306,22 +257,13 @@ class ContactPhone(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
-
 class Experience(Base):
-    """A job/role, entered manually, there's no GitHub-shaped source to
-    sync this from, so unlike Repository there's no is_manual flag or
-    synthetic-id trick: every row here is manual. account_id is NOT NULL
-    (unlike Repository/Profile's nullable account_id, which is nullable
-    only for pre-account-era compatibility this table has no need for).
-    end_date left null means "current role", no separate is_current flag,
-    one source of truth for the same fact.
+    """A role the person held, entered by hand or read from an uploaded
+    resume. end_date left null means "current role".
 
-    No free-text `description` field on purpose (dropped in the same pass
-    that added ExperiencePoint's Qdrant indexing, see
-    scripts/migrate_experience_description_to_points.py for the one-time
-    backfill). A single paragraph is one blob that resume-building semantic
-    search can only take or leave whole. ExperiencePoint rows are the only
-    place detail goes, each one its own retrievable unit.
+    There is no free-text description: a paragraph is one blob that
+    resume-building search can only take or leave whole, so detail lives
+    in ExperiencePoint rows, each one its own retrievable unit.
     """
 
     __tablename__ = "experiences"
@@ -331,8 +273,11 @@ class Experience(Base):
     title: Mapped[str] = mapped_column(String)
     company: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
-    start_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    end_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    # "mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
+    start_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    end_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Archived: kept in the profile, never used in resume building.
+    exclude_from_resume: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -340,14 +285,9 @@ class Experience(Base):
 
 
 class ExperienceSkillEvidence(Base):
-    """SkillEvidence's exact shape, FK'd to Experience instead of
-    Repository. Kept as a separate table rather than widening
-    SkillEvidence itself: SkillEvidence.repo_id is NOT NULL and SQLite
-    can't relax a NOT NULL constraint without a full table rebuild, which
-    would put existing synced data at risk. evidence_type is "manual" for
-    one added by hand or "resume" for one a resume tied to that role
-    (app/profile/resume_profile_merge.py); there is no analog to
-    "failed"/"rate_limited"/"no_signal".
+    """SkillEvidence for a role instead of a repo. A separate table because
+    SkillEvidence.repo_id is NOT NULL, and SQLite cannot relax that without
+    rebuilding the table. evidence_type is "manual" or "resume".
     """
 
     __tablename__ = "experience_skill_evidence"
@@ -358,26 +298,15 @@ class ExperienceSkillEvidence(Base):
     evidence_type: Mapped[str] = mapped_column(String, default="manual")
     weight: Mapped[float] = mapped_column(Float, default=1.0)
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
-    # unused today, kept so this row shares SkillEvidence's exact shape,
-    # see app/profile/evidence.py, the helper both tables' routers share.
+    # Unused; keeps the shape identical for app/profile/evidence.py.
     source_files_json: Mapped[list] = mapped_column(JSON, default=list)
     manual_override: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class ExperiencePoint(Base):
-    """One bullet point under an Experience: "increased X", "led team of
-    Y." This is the only place experience detail lives (Experience has
-    no description field, see its docstring). Every row here is its own
-    unit, embedded and upserted into Qdrant on create/update
-    (app/retrieval/index.py's index_experience_points, wired from
-    app/api/experience.py) so a resume-building LLM pass can semantically
-    search across a person's whole point history and pull back whichever
-    ones actually match a given job, instead of being handed one
-    take-it-or-leave-it paragraph. More points, covering more angles
-    (a shipped feature, a leadership moment, a metric-backed win), means
-    more get found later. Encouraged in the UI, not enforced here.
-    order_index is append-only (set to current max+1 on create); there's
-    no reorder endpoint yet, so it only ever reflects insertion order.
+    """One bullet under a role. Each point is embedded on its own
+    (app/retrieval/index.py), so resume building can pick the ones that fit
+    a job instead of a whole paragraph. order_index is insertion order.
     """
 
     __tablename__ = "experience_points"
@@ -393,19 +322,10 @@ class ExperiencePoint(Base):
 
 
 class Education(Base):
-    """A school/degree entry, entered manually, same posture as Experience:
-    no GitHub-shaped source to sync this from, every row is manual,
-    account_id is NOT NULL. No points sub-table like Experience has: a
-    degree line doesn't split into independently retrievable units the way
-    job-history detail does. end_date left null means "in progress" (an
-    expected graduation date is start_date's counterpart, not this),
-    same one-source-of-truth reasoning as Experience.end_date.
-
-    Included in a generated resume the same way Experience is: full,
-    unconditional, every row, sequential, never picked or trimmed by the
-    LLM (app/resume_build/context.py's build_education_context). A
-    person's own degree history isn't something semantic search gets to
-    curate any more than a job history is.
+    """A degree. end_date left null means "in progress". Every entry that
+    is not archived goes on a generated resume unchanged; the LLM never
+    picks or trims education. grade ("CGPA 8.9/10") and details
+    (coursework, honors) are optional and take no space when empty.
     """
 
     __tablename__ = "education"
@@ -415,8 +335,13 @@ class Education(Base):
     institution: Mapped[str] = mapped_column(String)
     degree: Mapped[str] = mapped_column(String)
     location: Mapped[str | None] = mapped_column(String, nullable=True)
-    start_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
-    end_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    # "mar 2026", or "2026" when only the year is known (app/profile/month_year.py).
+    start_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    end_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    grade: Mapped[str | None] = mapped_column(String, nullable=True)
+    details: Mapped[list] = mapped_column(JSON, default=list)
+    # Archived: kept on the page, never on a resume or in the counts.
+    exclude_from_resume: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
@@ -424,12 +349,9 @@ class Education(Base):
 
 
 class Skill(Base):
-    """A skill with NO evidence link at all, not backed by any project or
-    experience: either added by hand or pulled from a resume's tags. A
-    skill that DOES have evidence is never rowed here; it's derived at
-    read time by GET /api/skills from SkillEvidence +
-    ExperienceSkillEvidence. This table exists purely so "I have this
-    skill but nothing in here demonstrates it yet" has somewhere to live.
+    """A skill nothing in the profile demonstrates yet, added by hand or
+    read from a resume. Skills with evidence are derived from the evidence
+    tables at read time (GET /api/skills) and never stored here.
     """
 
     __tablename__ = "skills"
@@ -437,10 +359,8 @@ class Skill(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     name: Mapped[str] = mapped_column(String)
-    # The resume whose extraction added this row, null for one typed in
-    # by hand. An id, not a copied name, so the Skills page always shows
-    # the resume's current name after a rename. Cleared when that resume
-    # is deleted (app/api/resume.py), leaving the skill in place.
+    # The resume that added this skill, null when typed in by hand. Cleared,
+    # not cascaded, when that resume is deleted.
     source_resume_id: Mapped[int | None] = mapped_column(
         ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True, index=True
     )
@@ -450,22 +370,14 @@ class Skill(Base):
 
 
 class ResumeProfileLink(Base):
-    """One profile row a resume's extraction landed on: the experience,
-    bullet point, experience skill, education entry or freestanding skill
-    that merging that resume created or matched
-    (app/profile/resume_profile_merge.py). Lets a resume answer "what in
-    my profile came from this file?" from the database alone, without
-    re-reading the file or guessing by name.
+    """A profile row that merging a resume created or matched
+    (app/profile/resume_profile_merge.py), so a resume can answer "what in
+    my profile came from this file?" without re-reading it.
 
-    kind is "experience", "experience_point", "experience_skill",
-    "education" or "skill"; ref_id is the id in that kind's table
-    (experiences, experience_points, experience_skill_evidence,
-    education, skills). created is true when this resume's merge added
-    the row and false when the row already existed and the resume only
-    matched it. A plain id rather than a foreign key per kind, so rows are
-    removed by hand wherever their target is deleted (unlink_profile_rows
-    in app/profile/resume_profile_merge.py), same as the other manual
-    cleanups SQLite needs here without foreign key enforcement.
+    kind names the table ref_id points into: experience, experience_point,
+    experience_skill, education or skill. created is false when the row
+    already existed. A plain id rather than a foreign key per kind, so
+    unlink_profile_rows() cleans these up wherever a target is deleted.
     """
 
     __tablename__ = "resume_profile_links"
@@ -483,12 +395,9 @@ class ResumeProfileLink(Base):
 
 
 class SkillStar(Base):
-    """A starred skill. Skills are a display-time union (see
-    app/api/skills.py), so there's no single skill row to put a `starred`
-    flag on; instead a star is keyed the same way GET /api/skills groups:
-    account + name.strip().casefold(). A star whose skill later disappears
-    (evidence deleted) is simply never matched, and comes back if the
-    skill does.
+    """A starred skill. Skills are a union computed at read time, so a star
+    is keyed by account and casefolded name rather than a row id; it comes
+    back if the skill disappears and returns.
     """
 
     __tablename__ = "skill_stars"
@@ -500,6 +409,25 @@ class SkillStar(Base):
 
     __table_args__ = (
         UniqueConstraint("account_id", "name_key", name="uq_skill_stars_account_name_key"),
+    )
+
+
+class SkillArchive(Base):
+    """An archived skill: kept on the Skills page under Archived, but left
+    out of resume building, the skill map, the portfolio counts and job
+    analytics' "have it" check. Keyed by account + casefolded name for the
+    same reason as SkillStar, which this mirrors.
+    """
+
+    __tablename__ = "skill_archives"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    name_key: Mapped[str] = mapped_column(String)
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    __table_args__ = (
+        UniqueConstraint("account_id", "name_key", name="uq_skill_archives_account_name_key"),
     )
 
 
@@ -527,17 +455,10 @@ class SkillVerdict(Base):
 
 
 class SkillMapCache(Base):
-    """The finished 2D skill map for an account (see
-    app/profile/skill_map.py). Stored whole, as the JSON the map endpoint
-    returns, because building it costs an embedding-model load and a
-    t-SNE fit, and the answer only changes when the skills do.
-
-    fingerprint hashes everything that went into the layout: the layout
-    version, the embedding model, and the exact text each skill was
-    embedded as (which carries its evidence context). A request whose
-    fingerprint does not match this row rebuilds and replaces it, so
-    there is one row per account and never a stale map served by
-    mistake.
+    """The finished 2D skill map for an account (app/profile/skill_map.py),
+    stored whole because building it means loading the embedding model and
+    fitting t-SNE. fingerprint covers the layout version, the model and
+    each skill's embedded text; a mismatch rebuilds the row.
     """
 
     __tablename__ = "skill_map_cache"
@@ -552,26 +473,11 @@ class SkillMapCache(Base):
 
 
 class Resume(Base):
-    """One uploaded resume file for an account. Any number per account:
-    a later job-application flow picks one (or, further out, an LLM
-    builds a custom one) from this list rather than the account having
-    exactly one "the" resume. Every field below stays manually editable
-    after upload, whether or not extraction ever ran, same "extraction
-    produces a starting point, not a lock" pattern as SkillEvidence/
-    ProjectLink elsewhere in this file: editing tags/target_roles/summary
-    by hand does not get silently overwritten except by an explicit
-    reprocess.
-
-    Distinct from Account.resume_filename/resume_path, kept only as a
-    mirror of the most recent upload for backward compatibility (see that
-    field's docstring); nothing reads from those two columns to decide
-    what resumes exist, only this table does.
-
-    Storage: one file on disk per row, under
-    `{resume_storage_dir}/{account_id}/{id}_{original filename}` (the id
-    prefix keeps two uploads of, say, "resume.pdf" for the same account
-    from colliding), written and cleaned up by
-    app/profile/resume_ingest.py.
+    """A resume in the account's library: an uploaded file, one this app
+    generated, or both. Every extracted field stays editable, and only an
+    explicit reprocess overwrites it. Uploaded files are stored under
+    {resume_storage_dir}/{account_id}/{id}_{filename}
+    (app/profile/resume_ingest.py).
     """
 
     __tablename__ = "resumes"
@@ -579,12 +485,7 @@ class Resume(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
     filename: Mapped[str] = mapped_column(String)
-    # Person-chosen label, e.g. "Backend, 2026 batch", "for Acme". Separate
-    # from filename: the file's own name is often something generic like
-    # "resume.pdf" or "resume (3).pdf", not something anyone can tell
-    # versions apart by at a glance. Nullable, stays unset until someone
-    # types one in; the UI falls back to filename when it's empty, this
-    # column is never auto-filled from it.
+    # Display name such as "Backend, for Acme"; the UI falls back to filename.
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     stored_path: Mapped[str] = mapped_column(String, default="")
     mime_type: Mapped[str] = mapped_column(String)
@@ -594,58 +495,33 @@ class Resume(Base):
     # Manual, always editable, never touched by (re)extraction.
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # LLM-extracted (multimodal, see app/profile/resume_extract.py) on
-    # upload and on demand via POST /api/resume/{id}/reprocess; each field
-    # independently editable afterward through PATCH /api/resume/{id}.
+    # Read from the file by app/profile/resume_extract.py; editable via PATCH.
     tags_json: Mapped[list] = mapped_column(JSON, default=list)
     target_roles_json: Mapped[list] = mapped_column(JSON, default=list)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # What this particular file says about work history and schooling, as
-    # extracted: list of {company, title, start_date, end_date, points} and
-    # {institution, degree, location, start_date, end_date} dicts, dates as
-    # ISO strings or null. A read-only snapshot of this one version; the
-    # editable, deduplicated copies live in the Experience/Education tables
-    # (app/profile/resume_profile_merge.py), so these are only rewritten by
-    # a reprocess, never by PATCH /api/resume/{id}.
+    # What this file says about work history and education, as extracted
+    # ({company, title, dates, points} / {institution, degree, dates}).
+    # A snapshot of this version only: the editable copies live in the
+    # Experience and Education tables, and only a reprocess rewrites these.
     experiences_json: Mapped[list] = mapped_column(JSON, default=list)
     education_json: Mapped[list] = mapped_column(JSON, default=list)
-    # Same read-only snapshot for the header contact block: {name,
-    # location, emails, phones, links: [{platform, url, label}]}. The
-    # editable copies are Account.contact_location and the ContactEmail/
-    # ContactPhone/SocialLink rows it gets merged into.
+    # The same snapshot for the header: {name, location, emails, phones,
+    # links}. Merged into the account's contact rows.
     contact_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
-    # "pending": not yet run. "extracted": succeeded, the fields
-    # above reflect it. "failed": the LLM call itself errored (rate limit,
-    # bad response), retryable. "unsupported_type": the file's mime type
-    # isn't one app/core/llm.py's multimodal helpers can read today (only
-    # PDF and common image types), not retryable without a different
-    # upload, kept distinct from "failed" so the UI can say why instead of
-    # offering a Retry that will just fail the same way again.
+    # pending | extracted | failed (retryable) | unsupported_type (the model
+    # cannot read this file type, so Retry would fail the same way).
     extraction_status: Mapped[str] = mapped_column(String, default="pending")
     extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     extracted_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 
-    # Structured content + compiled artifact, added for the AI-editable
-    # resume library (app/resume_build/orchestrator.py's
-    # edit_resume_content). Distinct from the extraction fields above,
-    # which describe an *uploaded* file; these describe a resume this app
-    # itself renders. job_posting_id is set for a resume that originated
-    # from POST /api/resume-build/generate (see app/api/resume_build.py),
-    # left null for one that started as a plain upload and, if ever, was
-    # later "adopted" (see content_json below). template/content_json are
-    # both null until a compiled version exists at all. content_json is
-    # the same header/summary/experience/projects/education/technologies/
-    # skills dict build_resume_data() returns: the one and only piece of
-    # this row an LLM edit is allowed to touch is content_json's
-    # summary/projects/skills, never experience/education/header, see
-    # that module's docstring. compiled_path/compiled_at are the PDF
-    # rendered from content_json, kept separate from stored_path (the
-    # original upload, if this row started as one, never overwritten by
-    # an edit) so "layout unchanged, only facts" holds literally: the
-    # original file a person uploaded is never touched.
+    # A resume this app renders. content_json is what build_resume_data()
+    # returns; an LLM edit may change only its summary, projects and skills,
+    # never experience, education or the header. compiled_path is the PDF
+    # built from it, kept apart from stored_path so an uploaded original is
+    # never overwritten. job_posting_id is set when it was built for a job.
     job_posting_id: Mapped[int | None] = mapped_column(
         ForeignKey("job_postings.id"), nullable=True
     )
@@ -654,6 +530,14 @@ class Resume(Base):
     compiled_path: Mapped[str | None] = mapped_column(String, nullable=True)
     compiled_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # Set while a build is unfinished (model busy, Tectonic timeout) and
+    # cleared when a retry completes it: the request, any tailored content,
+    # page-fit progress and the error. content_json stays null until then,
+    # so nothing reading finished resumes sees half-built content.
+    build_state_json: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
     )
 
 
@@ -676,22 +560,14 @@ class Profile(Base):
 
 
 class RoleFamily(Base):
-    """A canonical job-title cluster: "ML Engineer", "Machine Learning
-    Engineer", "Applied ML Engineer" all resolve to one row here, so
-    analytics (app/api/job_analytics.py) roll up by what a role actually
-    is, not by exact title string. Global, not per-account, same posture
-    as JobPosting.content_hash's shared-cache reasoning: a title's
-    canonical family doesn't depend on which local profile pasted it.
+    """A canonical job-title cluster: "ML Engineer" and "Machine Learning
+    Engineer" resolve to one row, so analytics group by role rather than
+    exact title. Shared across accounts.
 
-    Resolution (app/profile/role_family.py) is retrieval-first, not an LLM
-    guess every time: a new title is embedded and searched against the
-    `role_families` Qdrant collection (index_role_family in
-    app/retrieval/index.py); a close-enough existing row is reused, and
-    only a new cluster costs one cheap bulk-tier LLM call to
-    produce a clean canonical name. canonical_name is unique so two
-    concurrent "no match found" resolutions for near-identical titles
-    can't both insert; the loser's IntegrityError is caught and re-reads
-    the winner's row instead (see role_family.py).
+    app/profile/role_family.py embeds a new title and reuses the nearest
+    existing family when it is close enough; only a new cluster costs an
+    LLM call to name it. canonical_name is unique, so two concurrent
+    resolutions of near-identical titles cannot both insert.
     """
 
     __tablename__ = "role_families"
@@ -702,24 +578,19 @@ class RoleFamily(Base):
 
 
 class JobPosting(Base):
-    """content_hash is globally unique on purpose, not per-account: a real
-    job posting's text is the same regardless of which local account
-    pastes or fetches it, so this table is a shared content cache, not a
-    per-account list. account_id (added via _migrate_job_postings_account_id,
-    see below) records whichever account first created a given row; a
-    second account pasting byte-identical text gets that same row back
-    (app/api/job_postings.py's create_posting) rather than a duplicate, but
-    then won't see it in their own GET /api/job-postings?account_id= list
-    since ownership didn't transfer. This edge case (two accounts pasting
-    identical text) is accepted rather than solved with a composite unique
-    constraint, which would need a table-recreating migration.
+    """A saved job posting. content_hash is unique across accounts: the
+    same text is one row, owned by whichever account saved it first. A
+    second account saving identical text gets that row back but will not
+    see it in its own list; accepted rather than paying for a
+    table-rebuilding migration to a per-account constraint.
     """
 
     __tablename__ = "job_postings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
-    # "pasted" | "url" | "screenshot" | "authenticated"
+    # "pasted" | "screenshot" | "mixed"; older rows may also say "url" or
+    # "authenticated", from when links were fetched
     source: Mapped[str] = mapped_column(String, index=True)
     external_id: Mapped[str] = mapped_column(String)
     company: Mapped[str] = mapped_column(String, index=True)
@@ -732,17 +603,10 @@ class JobPosting(Base):
     apply_url: Mapped[str | None] = mapped_column(String, nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
-    # Structured extraction (app/profile/job_extract.py) of
-    # raw_text_quarantined into extracted_json: salary_range,
-    # employment_type, work_mode, seniority, experience_required, skills_required
-    # (now a list of {"skill", "level"} dicts, level in ""/junior/mid/
-    # senior/expert, see job_extract.py; an older row's list[str]
-    # shape is still read correctly, see JobPostingSummary.from_posting),
-    # other_requirements, role_summary. Same three-column status pattern
-    # as Resume's own extraction_status/extraction_error/extracted_at
-    # above it in this file, run once on create (best-effort, a failed
-    # extraction never blocks saving the posting itself) and again on
-    # demand via POST /api/job-postings/{id}/reprocess.
+    # Fields read from the text by app/profile/job_extract.py into
+    # extracted_json (salary, seniority, skills_required as {skill, level}
+    # dicts, ...). Runs on save without ever blocking it, and again on
+    # POST /api/job-postings/{id}/reprocess.
     extraction_status: Mapped[str] = mapped_column(String, default="pending")
     extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     extracted_at: Mapped[dt.datetime | None] = mapped_column(
@@ -758,53 +622,21 @@ class JobPosting(Base):
     salary_max_annual: Mapped[int | None] = mapped_column(Integer, nullable=True)
     salary_currency: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    # Application tracker: a plain manual record, never touched by
-    # extraction/reprocess. applied_at defaults to the moment it's marked,
-    # but stays editable (PATCH) for someone logging an application after
-    # the fact. Unmarking clears both, one source of truth, same
-    # null-means-unset pattern as Experience.end_date elsewhere in this file.
+    # Application tracking, entered by hand. Marking applied stamps today;
+    # unmarking clears the date and notes.
     applied: Mapped[bool] = mapped_column(default=False)
     applied_at: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
     applied_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Canonical role cluster (app/profile/role_family.py), set best-effort
-    # right after a successful title extraction, same posture as every
-    # other post-extraction enrichment in this file (never blocks saving
-    # the posting itself). Null until resolved, or if resolution failed.
+    # Set after extraction when a role family resolves; null otherwise.
     role_family_id: Mapped[int | None] = mapped_column(
         ForeignKey("role_families.id"), nullable=True
     )
 
-    # Set only for source == "screenshot": the uploaded image, kept on disk
-    # (same per-account storage convention as Resume.stored_path) so the
-    # original can be viewed later, distinct from raw_text_quarantined
-    # (the LLM's own transcription of it, used everywhere text is needed).
+    # Screenshots attached to the posting, kept on disk in the order given.
+    # screenshot_path is the first one, and the only record on older rows.
     screenshot_path: Mapped[str | None] = mapped_column(String, nullable=True)
-
-
-class Detection(Base):
-    __tablename__ = "detections"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    posting_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"))
-    kind: Mapped[str] = mapped_column(String)
-    span: Mapped[str] = mapped_column(String)
-    snippet: Mapped[str] = mapped_column(Text)
-    detected_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
-
-
-class MatchResult(Base):
-    __tablename__ = "match_results"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    posting_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"))
-    profile_id: Mapped[int] = mapped_column(ForeignKey("profiles.id"))
-    score: Mapped[float] = mapped_column(Float)
-    gaps_json: Mapped[list] = mapped_column(JSON, default=list)
-    bullets_json: Mapped[list] = mapped_column(JSON, default=list)
-    citations_json: Mapped[list] = mapped_column(JSON, default=list)
-    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
-    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    screenshot_paths: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class LLMCall(Base):
@@ -823,45 +655,24 @@ class LLMCall(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     latency_ms: Mapped[int] = mapped_column(Integer, default=0)
     cached: Mapped[bool] = mapped_column(default=False)
-    # Attribution, added for the /monitor per-key/per-account usage
-    # breakdown (app/api/monitor.py). Both nullable: a cache hit or a
-    # call with no account context (account_id=None passed to complete())
-    # legitimately has no account; key_id is only set on a real dispatch,
-    # and is the key that actually answered, which after a failover is not
-    # the first one tried (app/core/llm.py's _dispatch_over_keys). It also
-    # backs each key's own budget cap, so a cap and the number /monitor
-    # shows beside it are the same figure. A test's injected
-    # _completion_fn never resolves a key, so key_id stays NULL for mocked
-    # calls and for rows written before this column existed.
-    # No FK constraint to api_keys/accounts (informational ids, not
-    # enforced), so a since-deleted account or key doesn't break old rows.
+    # Who the call was for and which key answered it (after a failover, not
+    # the first one tried). Both back /monitor's breakdowns and per-key
+    # budget caps. Null for cache hits, calls with no account, and test
+    # fakes. Plain ids, no foreign keys, so deleting an account or key
+    # leaves the history readable.
     account_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     key_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
-    # Which feature spent this call: "repo_facts", "resume_build",
-    # "pagefit_trim", "skill_review", and so on, passed by every call site
-    # through app/core/llm.py's complete(). A model name and a tier say how
-    # a call was routed, not what it was for, so without this the usage
-    # page can show that spend went up without showing where. Grouped as
-    # /monitor's by_purpose breakdown (app/api/monitor.py). Nullable: rows
-    # written before this column existed, and any call site that passes
-    # nothing, land in an "unattributed" bucket rather than being dropped.
+    # Which feature spent the call ("repo_facts", "resume_build", ...), so
+    # /monitor can show where spend went. Null lands in "unattributed".
     purpose: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class RateLimitEvent(Base):
-    """One row per time an outbound call got rate-limited or budget-capped,
-    a key dropped out of rotation, or a multi-step run stopped: GitHub
-    (app/ingest/github/client.py) or the LLM provider / our own monthly cap
-    / key failover (app/core/llm.py, app/core/pipeline.py). Distinct from
-    Repository.
-    skill_extraction_status == "rate_limited": that field is per-repo,
-    transient, and overwritten on the next retry, this table is an
-    append-only log, so the monitor page (app/api/monitor.py) can show
-    "how often has this actually happened" instead of only "is it
-    happening right now". Written via app/core/rate_limits.py's
-    record_event(), which is best-effort (a logging failure here must
-    never break the caller's real request).
+    """Append-only log of rate limits, budget caps, keys dropped from
+    rotation and stopped runs, for GitHub and the LLM. /monitor reads it to
+    show how often these happen, not just whether one is happening now.
+    Written best-effort through app/core/rate_limits.py.
     """
 
     __tablename__ = "rate_limit_events"
@@ -872,15 +683,9 @@ class RateLimitEvent(Base):
     # "rate_limited" | "budget_exceeded"
     kind: Mapped[str] = mapped_column(String, index=True)
     detail: Mapped[str] = mapped_column(Text)
-    # free-form: model name, endpoint, username, whatever identifies what
-    # was being called when this happened. Nullable: not every call site
-    # has something meaningful to put here.
+    # What was being called: a model name, endpoint or username.
     context: Mapped[str | None] = mapped_column(String, nullable=True)
-    # Which profile this happened for, when known. Only the LLM side
-    # (app/core/llm.py) ever has one to give; app/ingest/github/client.py
-    # has no per-account credential concept (one shared GITHUB_TOKEN), so
-    # its events keep this NULL. Same informational-id, no-FK pattern as
-    # LLMCall.account_id above.
+    # Only LLM events have one; GitHub uses a single shared token.
     account_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, index=True
@@ -902,61 +707,25 @@ class EmbeddingCache(Base):
 
 
 class ApiKey(Base):
-    """One stored credential set for one LLM provider, managed from the
-    /apis page (app/api/api_keys.py). More than one row per `provider` is
-    allowed, and they back each other up: `is_active` marks the row
-    app/core/llm.py dispatches with first, and if the provider blames that
-    key mid-request (quota gone, credential rejected) the next usable row
-    for the provider takes the same request over. At most one active per
-    provider is enforced in app/core/api_keys_store.py rather than with a
-    partial unique index, which isn't worth it for a single-process local
-    app.
+    """A stored credential for one LLM provider, managed on /apis. Several
+    keys per provider back each other up: is_active marks the one tried
+    first, and when the provider rejects it mid-request the next takes over
+    (app/core/llm.py).
 
-    `encrypted_credentials` is the WHOLE provider-shaped field dict (see
-    PROVIDERS in app/core/llm_providers.py) JSON-encoded then encrypted as
-    one blob, never split field-by-field. Some providers need more than
-    one secret (AWS Bedrock: access key + secret key; Azure OpenAI: key +
-    endpoint + api version), and blob-encoding means a provider gaining a
-    field later never needs a schema migration here.
+    encrypted_credentials is the whole provider field dict, encrypted as
+    one blob, since some providers need several fields (Bedrock, Azure).
+    masked_preview is computed at save time so listing keys never decrypts.
+    budget_cap_usd is an optional per-key cap on top of the global budget.
+    enabled switches a key off without losing its place, and a non-empty
+    allowed_account_ids restricts it to those accounts.
 
-    `masked_preview` is a JSON dict of that same shape with every secret
-    field pre-masked (first 3 / last 3 chars, dots between) and non-secret
-    config fields (api_base, deployment, region, ...) shown in full,
-    computed once at save time so listing keys never decrypts anything.
-
-    `budget_cap_usd` is optional and per-key, separate from (and checked
-    in addition to) the global monthly budget in AppSetting.
-
-    `enabled` is a manual on/off switch, distinct from `is_active`:
-    disabling a key takes it out of dispatch consideration entirely (even
-    if it's the active one for its provider) without losing its place;
-    re-enabling it needs no re-activation. `allowed_account_ids` is an
-    optional allow-list of Account ids (empty list, the default = every
-    account on this device may use it, not "no one may"); a non-empty
-    list restricts the key to only those accounts, checked in
-    app/core/api_keys_store.py's resolve_dispatch_keys() against whichever
-    account_id the calling code passes into app/core/llm.py's complete().
-    `status` is one of unknown|valid|invalid|rate_limited|blocked, and
-    splits into two groups that are treated very differently.
-    `rate_limited` is temporary: the key filled a quota window that rolls
-    over by itself, so `exhausted_at` records when that happened,
-    `exhaustion_kind` which window was hit (per_minute|per_day|quota|
-    unknown, read from the provider's own refusal by
-    app/core/key_cooldown.py) and `retry_at` the earliest moment a recheck
-    is worth making. app/core/key_refresh.py comes back at that moment,
-    at startup and on an interval, and clears the three fields once the
-    key answers again. `invalid` (the credential was rejected) and
-    `blocked` (the provider forbade this key: suspended, revoked, or its
-    API not enabled) are not temporary and never rechecked automatically,
-    only when someone asks for it on /apis; they carry no cooldown fields.
-    None of the four statuses takes a key out of rotation, they only
-    change where it sits in the dispatch order (see
-    app/core/api_keys_store.py's _dispatch_order), because a device with
-    one key must still be able to try it. `last_check_detail` carries the
-    human-readable outcome message (from app/core/llm_providers.py's
-    validate_credentials(), or a dispatch failure) alongside
-    `last_checked_at`, so the /apis page can show not just a status but
-    what actually happened last time.
+    status is unknown, valid, invalid, rate_limited or blocked.
+    rate_limited is temporary: exhausted_at, exhaustion_kind and retry_at
+    (from app/core/key_cooldown.py) say when a recheck is worth making, and
+    app/core/key_refresh.py makes it. invalid and blocked are only
+    rechecked on request. No status removes a key from rotation; it only
+    moves it down the dispatch order, so a device with one key can still
+    try it.
     """
 
     __tablename__ = "api_keys"
@@ -995,53 +764,3 @@ class AppSetting(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=_now, onupdate=_now
     )
-
-
-class AuthSource(Base):
-    """One stored login profile for fetching a job posting from a
-    login-walled site (Wellfound, LinkedIn, etc) on the account holder's
-    own behalf, via a real automated browser login
-    (app/ingest/jobs/auth_fetch.py, Playwright). Opt-in per source:
-    acknowledged_risk must be True to create a row, enforced in
-    app/api/auth_sources.py, not just a UI checkbox. Meant for a person's
-    own credentials on their own job search, not bulk scraping. The UI
-    carries a standing warning: automated login is fragile (breaks on any
-    site UI change, CAPTCHA, or 2FA), is against most sites' terms of
-    service, and can get the logged-in account flagged or banned. Use an
-    alternate account, never a primary one.
-
-    `encrypted_credentials` is a JSON-encoded {"username", "password"}
-    blob, encrypted the same way the ApiKey model above stores provider
-    credentials (app/core/crypto.py): never plaintext, never logged.
-    The three CSS selectors let a generic Playwright driver log into an
-    arbitrary site without hardcoding per-site scraping logic: the account
-    holder supplies them once, by inspecting the site's login form.
-    """
-
-    __tablename__ = "auth_sources"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
-    label: Mapped[str] = mapped_column(String)
-    # e.g. "wellfound.com". Advisory only (shown in the UI so a target URL
-    # can be checked against it before use), not enforced against the URL
-    # passed to fetch_job_url_authenticated at fetch time.
-    site_domain: Mapped[str] = mapped_column(String)
-    login_url: Mapped[str] = mapped_column(String)
-    username_selector: Mapped[str] = mapped_column(String)
-    password_selector: Mapped[str] = mapped_column(String)
-    submit_selector: Mapped[str] = mapped_column(String)
-    # Optional: a selector Playwright waits for after submit to know login
-    # actually succeeded (e.g. a nav element only shown when signed in).
-    # Empty means "just wait for navigation," a weaker signal.
-    post_login_wait_selector: Mapped[str | None] = mapped_column(String, nullable=True)
-    encrypted_credentials: Mapped[str] = mapped_column(Text)
-    masked_username: Mapped[str] = mapped_column(String)
-    acknowledged_risk: Mapped[bool] = mapped_column(default=False)
-    enabled: Mapped[bool] = mapped_column(default=True)
-    status: Mapped[str] = mapped_column(String, default="unknown")  # unknown|valid|invalid
-    last_checked_at: Mapped[dt.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    last_check_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)

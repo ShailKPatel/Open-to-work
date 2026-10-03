@@ -561,7 +561,7 @@ def test_complete_records_account_id_even_via_injected_completion_fn(tmp_path, m
 
 def test_complete_resolves_and_records_key_id_on_real_dispatch(tmp_path, monkeypatch):
     """The one path that DOES resolve a real ApiKey: no _completion_fn
-    passed, so complete() calls app.core.api_keys_store.resolve_dispatch_key()
+    passed, so complete() calls app.core.api_keys_store.resolve_dispatch_keys()
     itself and should stamp the resolved key's id onto the LLMCall row."""
     from sqlalchemy import select
 

@@ -168,12 +168,12 @@ def test_set_enabled_toggles_and_disabled_key_skipped_by_dispatch(tmp_path):
     _reset_db(tmp_path)
     added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None)
 
-    assert api_keys_store.resolve_dispatch_key("openai", None) is not None
+    assert api_keys_store.resolve_dispatch_keys("openai", None)
     api_keys_store.set_enabled(added["id"], False)
-    assert api_keys_store.resolve_dispatch_key("openai", None) is None
+    assert api_keys_store.resolve_dispatch_keys("openai", None) == []
 
     api_keys_store.set_enabled(added["id"], True)
-    assert api_keys_store.resolve_dispatch_key("openai", None) is not None
+    assert api_keys_store.resolve_dispatch_keys("openai", None)
 
 
 def test_delete_key_promotes_next_oldest_when_active_one_is_removed(tmp_path):
@@ -264,14 +264,14 @@ def test_resolve_dispatch_key_respects_account_allow_list(tmp_path):
         "openai", "Restricted", {"api_key": "sk-1"}, None, allowed_account_ids=[5]
     )
 
-    assert api_keys_store.resolve_dispatch_key("openai", 5) is not None
-    assert api_keys_store.resolve_dispatch_key("openai", 6) is None
-    assert api_keys_store.resolve_dispatch_key("openai", None) is None
+    assert api_keys_store.resolve_dispatch_keys("openai", 5)
+    assert api_keys_store.resolve_dispatch_keys("openai", 6) == []
+    assert api_keys_store.resolve_dispatch_keys("openai", None) == []
 
 
-def test_resolve_dispatch_key_falls_back_past_a_disabled_active_key(tmp_path):
+def test_resolve_dispatch_keys_falls_back_past_a_disabled_active_key(tmp_path):
     """An enabled-but-not-active key still serves the provider if the
-    active one is disabled; resolve_dispatch_key must not just check
+    active one is disabled; resolve_dispatch_keys must not just check
     is_active and stop there."""
     from app.core import api_keys_store
 
@@ -280,30 +280,16 @@ def test_resolve_dispatch_key_falls_back_past_a_disabled_active_key(tmp_path):
     backup, _ = api_keys_store.add_key("openai", "Backup", {"api_key": "sk-2"}, None)
     api_keys_store.set_enabled(active["id"], False)
 
-    resolved = api_keys_store.resolve_dispatch_key("openai", None)
-    assert resolved is not None
-    key_id, credentials, _ = resolved
-    assert key_id == backup["id"]
-    assert credentials == {"api_key": "sk-2"}
+    resolved = api_keys_store.resolve_dispatch_keys("openai", None)
+    assert [k.id for k in resolved] == [backup["id"]]
+    assert resolved[0].credentials == {"api_key": "sk-2"}
 
 
-def test_resolve_dispatch_key_none_when_nothing_configured(tmp_path):
+def test_resolve_dispatch_keys_empty_when_nothing_configured(tmp_path):
     from app.core import api_keys_store
 
     _reset_db(tmp_path)
-    assert api_keys_store.resolve_dispatch_key("openai", None) is None
-
-
-def test_get_active_status_reports_unconfigured_and_configured(tmp_path):
-    from app.core import api_keys_store
-
-    _reset_db(tmp_path)
-    assert api_keys_store.get_active_status("openai")["configured"] is False
-
-    api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None)
-    status = api_keys_store.get_active_status("openai")
-    assert status["configured"] is True
-    assert status["status"] == "valid"
+    assert api_keys_store.resolve_dispatch_keys("openai", None) == []
 
 
 def test_resolve_dispatch_keys_returns_every_usable_key_in_try_order(tmp_path):

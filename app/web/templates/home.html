@@ -167,8 +167,9 @@
         await this.load();
       },
 
+      // Archived projects and skills are not counted.
       get totalProjects() {
-        return this.projects.length;
+        return this.projects.filter((p) => !p.exclude_from_resume).length;
       },
 
       get unprocessed() {
@@ -215,7 +216,7 @@
           ]);
           this.projects = await projectsRes.json();
           this.skills = await skillsRes.json();
-          this.skillCount = this.skills.length;
+          this.skillCount = this.skills.filter((s) => !s.archived).length;
           this.skillDemand = demandRes.ok ? await demandRes.json() : [];
           this.githubProfile = profileRes.ok ? await profileRes.json() : null;
 
