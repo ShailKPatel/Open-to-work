@@ -10,6 +10,7 @@ from app.core.settings import get_settings
 from app.ingest.github.cancellation import is_cancelled, request_cancel
 from app.ingest.github.sync import (
     git_blob_sha,
+    refetch_repo,
     sync_account,
     sync_account_progress,
     sync_single_repo,
@@ -933,6 +934,74 @@ def test_description_change_reprocesses_only_a_repo_without_readme(tmp_path, mon
     statuses = {r.github_id: r.skill_extraction_status for r in db.query(Repository)}
     assert statuses == {1: "extracted", 2: "pending"}
     db.close()
+
+
+def test_description_edit_without_push_is_picked_up(tmp_path, monkeypatch):
+    """Editing the About text on GitHub does not move pushed_at, so the
+    cache-hit path has to take the description from the listing."""
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    with_readme, without_readme = _make_repos(2)
+    client = FakeClient([with_readme, without_readme])
+    original = client.readme_text
+    client.readme_text = lambda repo: original(repo) if repo.id == 1 else None
+    sync_account("octocat", client=client)
+    db = db_module.get_db()
+    for stored in db.query(Repository):
+        stored.skill_extraction_status = "extracted"
+    db.commit()
+    db.close()
+
+    for repo in (with_readme, without_readme):
+        repo.description = "now has a description"
+    summary = sync_account("octocat", client=client)
+
+    db = db_module.get_db()
+    rows = {r.github_id: r for r in db.query(Repository)}
+    assert {r.description for r in rows.values()} == {"now has a description"}
+    # only the README-less repo's extraction source changed
+    assert rows[1].skill_extraction_status == "extracted"
+    assert rows[2].skill_extraction_status == "pending"
+    assert summary.cache_hits == 1
+    db.close()
+
+
+def test_refetch_repo_ignores_unchanged_pushed_at(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    (repo,) = _make_repos(1)
+    client = FakeClient([repo])
+    sync_account("octocat", client=client)
+    db = db_module.get_db()
+    repo_id = db.query(Repository).one().id
+    db.close()
+
+    repo.description = "fresh"
+    client.readme = "# new readme"
+    refetch_repo(repo_id, client=client)
+
+    db = db_module.get_db()
+    stored = db.query(Repository).one()
+    assert stored.description == "fresh"
+    assert stored.readme == "# new readme"
+    db.close()
+
+
+def test_refetch_repo_refuses_unknown_and_manual(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    with pytest.raises(ValueError):
+        refetch_repo(999999, client=FakeClient([]))
+    db = db_module.get_db()
+    manual = Repository(
+        github_id=-1, name="m", full_name="m", url="", is_fork=False, manifests_json={}
+    )
+    db.add(manual)
+    db.commit()
+    manual_id = manual.id
+    db.close()
+    with pytest.raises(ValueError):
+        refetch_repo(manual_id, client=FakeClient([]))
 
 
 def test_git_blob_sha_matches_git():

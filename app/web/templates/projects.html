@@ -48,6 +48,8 @@
       </div>
     </div>
 
+    {{ ui.task_notices("notices", class="mt-8") }}
+
     <div x-show="processing" x-cloak class="mt-8 otw-tile p-4 text-sm">
       <div class="flex items-center justify-between gap-4">
         <p>
@@ -221,6 +223,7 @@
       processedTotal: 0,
       extractionSource: null,
       reprocessing: {},
+      notices: [],
       deleting: {},
       maxStarred: 3,
       starBusy: {},
@@ -414,10 +417,9 @@
       async reprocess(project) {
         this.reprocessing[project.id] = true;
         try {
-          const res = await fetch(`/api/projects/${project.id}/reprocess`, { method: 'POST' });
-          const updated = await res.json();
+          const updated = await otwReprocessProject(this.notices, project);
           const idx = this.projects.findIndex((p) => p.id === project.id);
-          if (idx !== -1) this.projects[idx] = updated;
+          if (updated && idx !== -1) this.projects[idx] = updated;
         } finally {
           this.reprocessing[project.id] = false;
         }

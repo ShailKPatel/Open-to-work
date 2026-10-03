@@ -603,6 +603,15 @@
     @keyframes otw-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
     .otw-working { animation: otw-pulse 1.3s ease-in-out infinite; }
 
+    /* Progress bar for work with no known length: a short segment sweeps
+       across the track until the work ends. */
+    @keyframes otw-sweep { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
+    .otw-bar-indeterminate { position: relative; height: 2px; width: 100%; overflow: hidden; background: var(--line); }
+    .otw-bar-indeterminate::after { content: ""; position: absolute; inset: 0 auto 0 0; width: 33%; background: var(--accent); animation: otw-sweep 1.2s ease-in-out infinite; }
+    @media (prefers-reduced-motion: reduce) {
+      .otw-bar-indeterminate::after { animation: otw-pulse 1.3s ease-in-out infinite; width: 100%; }
+    }
+
     .otw-lightbox { cursor: zoom-out; }
     .otw-lightbox img { max-width: 92vw; max-height: 90vh; object-fit: contain; border: 1px solid var(--line); background: var(--paper); }
     .otw-lightbox-close { position: absolute; top: 1rem; right: 1.25rem; font-size: 1.75rem; line-height: 1; color: var(--ink); }
@@ -677,6 +686,60 @@
           detail: Object.assign({ title: 'Are you sure?', body: '', confirmLabel: 'Delete' }, opts, { resolve: resolve }),
         }));
       });
+    };
+
+    // Reprocesses one project and keeps a notice for it in `notices` (an
+    // Alpine array rendered by _ui.html's task_notices). The notice stays
+    // until dismissed; dismissing it while the request runs only hides it.
+    // Resolves to the updated project, or null when the request failed.
+    window.otwReprocessProject = async function (notices, project) {
+      var key = 'reprocess-' + project.id;
+      var name = project.name;
+      function set(fields) {
+        var i = notices.findIndex(function (n) { return n.key === key; });
+        if (i !== -1) notices[i] = Object.assign({ key: key }, fields);
+        return i !== -1;
+      }
+      var existing = notices.findIndex(function (n) { return n.key === key; });
+      if (existing !== -1) notices.splice(existing, 1);
+      notices.push({ key: key });
+      set({
+        state: 'running',
+        title: 'Reprocessing ' + name,
+        detail: project.is_manual
+          ? 'Reading skills again from the saved README and description.'
+          : 'Pulling the latest README and description from GitHub, then reading skills again.',
+      });
+      var res, body;
+      try {
+        res = await fetch('/api/projects/' + project.id + '/reprocess', { method: 'POST' });
+        body = await res.json().catch(function () { return {}; });
+      } catch (e) {
+        set({ state: 'error', title: 'Could not reprocess ' + name, detail: 'The app did not answer. Is it still running?' });
+        return null;
+      }
+      if (!res.ok) {
+        set({ state: 'error', title: 'Could not reprocess ' + name, detail: body.detail || 'Request failed.' });
+        return null;
+      }
+      var lines = [];
+      if (body.refresh_error) lines.push(body.refresh_error);
+      else if ((body.description || '') !== (project.description || '')) lines.push('Description updated from GitHub.');
+      var status = body.skill_extraction_status;
+      if (status === 'extracted') {
+        lines.push(body.skill_count + (body.skill_count === 1 ? ' skill' : ' skills') + ' found.');
+      } else if (status === 'no_signal') {
+        lines.push('No README or description to read skills from.');
+      } else if (body.skill_extraction_error) {
+        lines.push(body.skill_extraction_error);
+      }
+      var failed = status === 'failed' || status === 'rate_limited';
+      set({
+        state: failed ? 'error' : 'done',
+        title: failed ? 'Reprocessing ' + name + ' did not finish' : name + ' reprocessed',
+        detail: lines.join(' '),
+      });
+      return body;
     };
 
     // Date helpers shared by the portfolio pages. API dates are plain

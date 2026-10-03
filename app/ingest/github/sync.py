@@ -27,7 +27,7 @@ from github import GithubException, RateLimitExceededException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.db import Repository, get_db, is_profile_repo
+from app.core.db import Account, Repository, get_db, is_profile_repo
 from app.ingest.github.cancellation import clear as clear_cancel
 from app.ingest.github.cancellation import is_cancelled
 from app.ingest.github.client import GitHubClient
@@ -124,9 +124,15 @@ FETCHED = "fetched"  # new repo or new README: goes back to skill extraction
 
 
 def _upsert(
-    db: Session, gh_repo: Any, client: GitHubClient, username: str, account_id: int | None
+    db: Session,
+    gh_repo: Any,
+    client: GitHubClient,
+    username: str,
+    account_id: int | None,
+    force: bool = False,
 ) -> str:
-    """Returns CACHE_HIT, REFRESHED or FETCHED."""
+    """Returns CACHE_HIT, REFRESHED or FETCHED. force skips the pushed_at
+    cache check and refetches README, manifests and stats regardless."""
     existing = db.execute(
         select(Repository).where(Repository.github_id == gh_repo.id)
     ).scalar_one_or_none()
@@ -145,10 +151,22 @@ def _upsert(
             value = value.astimezone(dt.UTC).replace(tzinfo=None)
         return value
 
-    if existing is not None and _naive_utc(existing.pushed_at) == _naive_utc(pushed_at):
+    if (
+        not force
+        and existing is not None
+        and _naive_utc(existing.pushed_at) == _naive_utc(pushed_at)
+    ):
         existing.stars = gh_repo.stargazers_count
         existing.is_profile_readme = is_profile_repo(gh_repo.full_name)
         existing.fetched_at = dt.datetime.now(dt.UTC)
+        # Editing the About text on GitHub is not a push, so pushed_at stays
+        # put; the listing carries the description anyway, so take it here.
+        description_changed = _source_changed(existing, existing.readme, gh_repo.description)
+        existing.description = gh_repo.description
+        if description_changed:
+            existing.skill_extraction_status = "pending"
+            existing.skill_extraction_error = None
+            return FETCHED
         return CACHE_HIT
 
     readme, readme_sha, manifests = _fetch_readme_and_manifests(client, gh_repo, existing)
@@ -335,6 +353,33 @@ def sync_single_repo_progress(
         "fetched": 0 if hit else 1,
         "cache_hits": 1 if hit else 0,
     }
+
+
+def refetch_repo(repo_id: int, client: GitHubClient | None = None) -> None:
+    """Pulls one stored repo fresh from GitHub (description, README,
+    manifests, stats), skipping the pushed_at cache. The Reprocess button
+    calls this first so extraction reads what GitHub has now. Raises
+    ValueError for an unknown or hand-added repo; GitHub errors propagate.
+    """
+    db = get_db()
+    try:
+        repo = db.get(Repository, repo_id)
+        if repo is None:
+            raise ValueError(f"no repository with id={repo_id}")
+        if repo.github_id < 0:
+            raise ValueError(f"{repo.full_name} was added by hand, not synced from GitHub")
+        account = db.get(Account, repo.account_id) if repo.account_id is not None else None
+        username = account.github_username if account else repo.full_name.split("/")[0]
+        account_id = repo.account_id
+        full_name = repo.full_name
+        db.commit()  # end the read before the GitHub calls
+
+        client = client or GitHubClient()
+        gh_repo = client.get_repo(full_name)
+        _upsert(db, gh_repo, client, username, account_id, force=True)
+        db.commit()
+    finally:
+        db.close()
 
 
 class SyncRateLimitedError(Exception):
