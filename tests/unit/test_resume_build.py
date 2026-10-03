@@ -482,3 +482,21 @@ def test_render_resume_escapes_href_targets(template_name):
     # No bare breaking char survives inside an href target.
     for target in re.findall(r"\\href(?:WithoutArrow)?\{(.*?)\}", rendered):
         assert not re.search(r"(?<!\\)[%#&]", target), f"unescaped href target: {target!r}"
+
+
+@pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
+def test_rendered_resume_stamps_the_pdf_creator(template_name):
+    """app/profile/resume_ingest.py's is_generated_pdf relies on this to
+    refuse a generated resume uploaded back into the library."""
+    from app.resume_build.latex import GENERATED_PDF_CREATOR
+    from app.resume_build.warm_tectonic import _sample_data
+
+    tex = render_resume(template_name, _sample_data())
+    assert f"pdfcreator={{{GENERATED_PDF_CREATOR}}}" in tex
+
+
+def test_is_generated_pdf_ignores_non_pdfs_and_unreadable_pdfs():
+    from app.profile.resume_ingest import is_generated_pdf
+
+    assert not is_generated_pdf(b"\x89PNG not a pdf")
+    assert not is_generated_pdf(b"%PDF-1.4 truncated garbage")

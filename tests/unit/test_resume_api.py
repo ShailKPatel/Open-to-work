@@ -882,3 +882,96 @@ def test_uploading_the_same_file_again_is_refused(tmp_path, monkeypatch):
     )
     assert other.status_code == 200
     assert len(client.get(f"/api/resume?account_id={account_id}").json()) == 2
+
+
+def _pdf(creator: str) -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_metadata({"/Creator": creator})
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def test_uploading_a_resume_this_app_built_is_refused(tmp_path, monkeypatch):
+    """A generated PDF read back in would fold the LLM's job-tailored
+    wording into the profile, so it is turned away before anything is
+    saved or sent to the model."""
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    extract = MagicMock()
+    monkeypatch.setattr("app.profile.resume_extract.complete", extract)
+
+    resp = _client().post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("built.pdf", io.BytesIO(_pdf("Open to Work")), "application/pdf")},
+    )
+
+    assert resp.status_code == 422
+    assert "built by Open to Work" in resp.json()["detail"]
+    extract.assert_not_called()
+    assert _client().get(f"/api/resume?account_id={account_id}").json() == []
+    assert not any((tmp_path / "resumes").rglob("*.pdf"))
+
+
+def test_pdf_made_by_other_latex_tools_still_uploads(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch)
+
+    resp = _client().post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("mine.pdf", io.BytesIO(_pdf("LaTeX")), "application/pdf")},
+    )
+
+    assert resp.status_code == 200
+
+
+def test_uploading_a_download_of_an_older_build_is_refused(tmp_path, monkeypatch):
+    """Builds compiled before the Creator stamp are caught by comparing
+    the upload with the compiled PDFs already in the library."""
+    from app.core.db import Resume
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    extract = MagicMock()
+    monkeypatch.setattr("app.profile.resume_extract.complete", extract)
+    built = tmp_path / "3_generated.pdf"
+    built.write_bytes(b"%PDF-1.4 built before the stamp")
+    db = get_db()
+    db.add(
+        Resume(
+            account_id=account_id, filename="Acme.pdf", mime_type="application/pdf",
+            compiled_path=str(built),
+        )
+    )
+    db.commit()
+    db.close()
+
+    resp = _client().post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("download.pdf", io.BytesIO(built.read_bytes()), "application/pdf")},
+    )
+
+    assert resp.status_code == 422
+    extract.assert_not_called()
+
+
+def test_signup_with_a_generated_resume_creates_nothing(tmp_path):
+    _reset_db(tmp_path)
+
+    resp = _client().post(
+        "/accounts",
+        data={"first_name": "Ada", "last_name": "Lovelace", "github_username": ""},
+        files={"resume": ("built.pdf", io.BytesIO(_pdf("Open to Work")), "application/pdf")},
+    )
+
+    assert resp.status_code == 422
+    db = get_db()
+    assert db.execute(select(Account)).first() is None
+    db.close()

@@ -26,6 +26,11 @@ from jinja2 import Environment, FileSystemLoader
 
 from app.resume_build.layout import default_layout
 
+# Written into every generated PDF's Creator field, so an upload can tell a
+# resume this app built from one the person wrote
+# (app/profile/resume_ingest.py's is_generated_pdf).
+GENERATED_PDF_CREATOR = "Open to Work"
+
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Order matters: backslash isn't in this map because every other
@@ -127,6 +132,7 @@ def render_resume(template_name: str, data: dict[str, Any]) -> str:
     when the numbers were still hardcoded in the .tex.j2 file.
     """
     payload = dict(data)
+    payload["pdf_creator"] = GENERATED_PDF_CREATOR
     if not payload.get("layout"):
         payload["layout"] = default_layout(template_name)
     return _get_env().get_template(template_name).render(**payload)

@@ -38,7 +38,7 @@ from app.core.db import (
 )
 from app.core.settings import get_settings
 from app.ingest.github.client import GitHubClient
-from app.profile.resume_ingest import ingest_resume
+from app.profile.resume_ingest import GeneratedResumeError, ingest_resume, is_generated_pdf
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -103,6 +103,11 @@ def create_account(
     username = github_username.strip()
     if username and _github_user_exists(username) is False:
         raise HTTPException(status_code=422, detail=f"GitHub user '{username}' not found")
+    if resume is not None and resume.filename:
+        # Checked before the account exists, so a refused file leaves nothing behind.
+        if is_generated_pdf(resume.file.read()):
+            raise HTTPException(status_code=422, detail=str(GeneratedResumeError()))
+        resume.file.seek(0)
 
     account = Account(
         first_name=first_name.strip(),

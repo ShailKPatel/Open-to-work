@@ -13,6 +13,7 @@ drift apart.
 from __future__ import annotations
 
 import datetime as dt
+import io
 import logging
 import mimetypes
 from pathlib import Path
@@ -96,6 +97,59 @@ def find_same_file(db: Session, account_id: int, data: bytes) -> Resume | None:
     return None
 
 
+class GeneratedResumeError(Exception):
+    """The upload is a resume this app built. Its wording was tailored to
+    one job by the LLM, so reading it back would fold that wording into
+    the profile as if the person had written it."""
+
+    def __init__(self, existing: Resume | None = None) -> None:
+        super().__init__(
+            "This PDF was built by Open to Work, so its wording was tailored to one job. "
+            "Reading it back would add that wording to your profile as if you wrote it. "
+            "Generated resumes are already in your library; upload a resume you wrote instead."
+        )
+        self.existing = existing
+
+
+def is_generated_pdf(data: bytes) -> bool:
+    """True for a PDF this app compiled, by the Creator field every
+    template sets (app/resume_build/latex.py's GENERATED_PDF_CREATOR)."""
+    if not data.startswith(b"%PDF"):
+        return False
+    from pypdf import PdfReader
+
+    from app.resume_build.latex import GENERATED_PDF_CREATOR
+
+    try:
+        metadata = PdfReader(io.BytesIO(data)).metadata
+    except Exception:
+        return False
+    return metadata is not None and metadata.creator == GENERATED_PDF_CREATOR
+
+
+def find_built_copy(db: Session, account_id: int, data: bytes) -> Resume | None:
+    """This account's resume whose compiled PDF is exactly `data`. Catches
+    a download of a build made before generated PDFs carried a Creator."""
+    rows = db.execute(
+        select(Resume).where(Resume.account_id == account_id, Resume.compiled_path.is_not(None))
+    ).scalars()
+    for row in rows:
+        try:
+            path = Path(row.compiled_path or "")
+            if path.stat().st_size == len(data) and path.read_bytes() == data:
+                return row
+        except OSError:
+            continue
+    return None
+
+
+def check_not_generated(db: Session, account_id: int, data: bytes) -> None:
+    """Raises GeneratedResumeError when `data` is a resume this app built."""
+    built = find_built_copy(db, account_id, data)
+    if built is not None or is_generated_pdf(data):
+        raise GeneratedResumeError(built)
+
+
 def ingest_resume(
     db: Session,
     account_id: int,
@@ -117,7 +171,8 @@ def ingest_resume(
 
     Raises DuplicateResumeError, before anything is saved, when the file
     is identical to one already in this account's library: a second copy
-    would only repeat the same extraction and profile merge.
+    would only repeat the same extraction and profile merge. Raises
+    GeneratedResumeError, also before saving, for a resume this app built.
 
     Caller owns opening/closing `db` (same convention as every other
     router in this app).
@@ -127,6 +182,7 @@ def ingest_resume(
     existing = find_same_file(db, account_id, data)
     if existing is not None:
         raise DuplicateResumeError(existing)
+    check_not_generated(db, account_id, data)
     mime_type = (
         upload.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
     )

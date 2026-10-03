@@ -42,7 +42,12 @@ from app.core.llm import (
     LLMRateLimitedError,
 )
 from app.core.settings import get_settings
-from app.profile.resume_ingest import DuplicateResumeError, ingest_resume, run_extraction
+from app.profile.resume_ingest import (
+    DuplicateResumeError,
+    GeneratedResumeError,
+    ingest_resume,
+    run_extraction,
+)
 from app.resume_build.checkpoint import progress_steps
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
 from app.resume_build.orchestrator import build_resume_data_from_seed, edit_resume_content
@@ -261,6 +266,8 @@ def upload_resume(
             detail=f'This file is already in your library as "{label}". '
             "Use Reprocess on it to read it again.",
         ) from e
+    except GeneratedResumeError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     return ResumeItem.from_row(row)
 
 
