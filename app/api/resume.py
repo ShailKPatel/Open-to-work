@@ -21,7 +21,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.api.deps import DbSession
 from app.core.db import (
@@ -93,6 +93,13 @@ class ResumeItem(BaseModel):
     extraction_error: str | None
     extracted_at: dt.datetime | None
     job_posting_id: int | None
+    # Built by this app (app/api/resume_build.py) rather than uploaded:
+    # there is no original file, only the compiled PDF, so there is
+    # nothing to reprocess. The posting it was built for, when it still
+    # exists, so the library can name and link it.
+    is_generated: bool
+    job_title: str | None = None
+    job_company: str | None = None
     template: str | None
     has_original_file: bool
     has_ai_edited_version: bool
@@ -109,6 +116,12 @@ class ResumeItem(BaseModel):
     @classmethod
     def from_row(cls, row: Resume) -> ResumeItem:
         state = row.build_state_json or None
+        session = object_session(row)
+        posting = (
+            session.get(JobPosting, row.job_posting_id)
+            if session is not None and row.job_posting_id is not None
+            else None
+        )
         return cls(
             id=row.id,
             account_id=row.account_id,
@@ -128,6 +141,9 @@ class ResumeItem(BaseModel):
             extraction_error=row.extraction_error,
             extracted_at=row.extracted_at,
             job_posting_id=row.job_posting_id,
+            is_generated=not row.stored_path,
+            job_title=posting.title if posting else None,
+            job_company=posting.company if posting else None,
             template=row.template,
             has_original_file=bool(row.stored_path),
             has_ai_edited_version=bool(row.compiled_path),
@@ -141,12 +157,15 @@ class ResumeItem(BaseModel):
 
 
 @router.get("", response_model=list[ResumeItem])
-def list_resumes(account_id: int, *, db: DbSession) -> list[ResumeItem]:
-    rows = db.execute(
-        select(Resume)
-        .where(Resume.account_id == account_id)
-        .order_by(Resume.uploaded_at.desc())
-    ).scalars()
+def list_resumes(
+    account_id: int, job_posting_id: int | None = None, *, db: DbSession
+) -> list[ResumeItem]:
+    """job_posting_id narrows it to the resumes built for that posting,
+    for the job page's own list of them."""
+    query = select(Resume).where(Resume.account_id == account_id)
+    if job_posting_id is not None:
+        query = query.where(Resume.job_posting_id == job_posting_id)
+    rows = db.execute(query.order_by(Resume.uploaded_at.desc())).scalars()
     return [ResumeItem.from_row(r) for r in rows]
 
 
@@ -369,7 +388,12 @@ def reprocess_resume(resume_id: int, *, db: DbSession) -> ResumeItem:
     row = db.get(Resume, resume_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
-    if not row.stored_path or not Path(row.stored_path).exists():
+    if not row.stored_path:
+        raise HTTPException(
+            status_code=409,
+            detail="this resume was built here, not uploaded, so there is nothing to reprocess",
+        )
+    if not Path(row.stored_path).exists():
         raise HTTPException(status_code=409, detail="the resume's file is missing on disk")
     row = run_extraction(db, row)
     return ResumeItem.from_row(row)

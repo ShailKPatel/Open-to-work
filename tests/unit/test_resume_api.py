@@ -384,6 +384,78 @@ def test_reprocess_resume_reruns_extraction(tmp_path, monkeypatch):
     assert body["extraction_status"] == "extracted"
     assert body["tags"] == ["Rust"]
     assert body["summary"] == "Reprocessed summary."
+    assert body["is_generated"] is False
+
+
+def _make_generated_resume(tmp_path, account_id: int) -> tuple[int, int]:
+    """A resume as the build flow saves it: compiled PDF only, no upload."""
+    from app.core.db import JobPosting, Resume
+
+    compiled = tmp_path / "generated.pdf"
+    compiled.write_bytes(b"%PDF-compiled")
+    db = get_db()
+    posting = JobPosting(
+        account_id=account_id, source="pasted", external_id="x", company="Acme",
+        title="Engineer", raw_text_quarantined="hiring an engineer", content_hash="h1",
+    )
+    db.add(posting)
+    db.commit()
+    db.refresh(posting)
+    row = Resume(
+        account_id=account_id, filename="Engineer - Acme.pdf", mime_type="application/pdf",
+        compiled_path=str(compiled), job_posting_id=posting.id, extraction_status="extracted",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    ids = (row.id, posting.id)
+    db.close()
+    return ids
+
+
+def test_generated_resume_is_marked_and_names_its_job(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    resume_id, posting_id = _make_generated_resume(tmp_path, account_id)
+
+    listed = _client().get(f"/api/resume?account_id={account_id}").json()
+
+    assert len(listed) == 1
+    assert listed[0]["id"] == resume_id
+    assert listed[0]["is_generated"] is True
+    assert listed[0]["job_posting_id"] == posting_id
+    assert listed[0]["job_title"] == "Engineer"
+    assert listed[0]["job_company"] == "Acme"
+
+
+def test_list_resumes_filters_by_job_posting(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch)
+    client = _client()
+    client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("mine.pdf", io.BytesIO(b"%PDF-1.4 mine"), "application/pdf")},
+    )
+    resume_id, posting_id = _make_generated_resume(tmp_path, account_id)
+
+    listed = client.get(
+        f"/api/resume?account_id={account_id}&job_posting_id={posting_id}"
+    ).json()
+
+    assert [r["id"] for r in listed] == [resume_id]
+
+
+def test_reprocess_refuses_a_generated_resume(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    resume_id, _ = _make_generated_resume(tmp_path, account_id)
+
+    resp = _client().post(f"/api/resume/{resume_id}/reprocess")
+
+    assert resp.status_code == 409
+    assert "built here" in resp.json()["detail"]
 
 
 def test_download_resume_file_roundtrips_bytes(tmp_path):

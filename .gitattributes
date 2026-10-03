@@ -1,0 +1,7 @@
+# Shell scripts and the Makefile run inside Linux (or WSL, or Git Bash) even
+# when the repo is cloned on Windows, where CRLF endings break them.
+*.sh text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+# Windows batch files need CRLF.
+*.cmd text eol=crlf

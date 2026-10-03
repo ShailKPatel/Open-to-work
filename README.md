@@ -62,7 +62,13 @@ Most resume tools let a language model write whatever sounds good. Open to Work 
 ## Quick start
 
 > [!TIP]
-> The only requirement is Docker with Compose. Nothing needs to be configured before the first run.
+> The only requirement is Docker with Compose v2.1 or newer. Nothing needs to be configured before the first run.
+
+| OS | Before the first run |
+|---|---|
+| Linux | Nothing. `make start` installs Docker if missing (Ubuntu, Debian, Fedora, CentOS, RHEL). On other distros, install Docker yourself first. |
+| macOS | Install and open [Docker Desktop](https://www.docker.com/products/docker-desktop/). |
+| Windows | Install [Docker Desktop](https://www.docker.com/products/docker-desktop/), then double-click `start.cmd` in the cloned folder (it uses ports 8000 and 6333). Or run the commands below from a WSL terminal, which also picks free ports. |
 
 ```bash
 git clone https://github.com/ShailKPatel/Open-to-work.git open-to-work
@@ -75,6 +81,8 @@ Then:
 1. Create a profile.
 2. Paste an LLM API key when prompted (free Gemini keys: [Google AI Studio](https://aistudio.google.com/apikey)).
 3. Sync a GitHub account and pick a job posting to build a resume for.
+
+No `make` on your system? Run `./start.sh` instead; it does the same thing. If Docker is missing on macOS or Windows, the script opens the Docker Desktop install page for your OS. The first build downloads a few GB and takes several minutes.
 
 <details>
 <summary><b>What <code>make start</code> does</b></summary>

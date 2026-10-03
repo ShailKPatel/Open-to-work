@@ -11,12 +11,21 @@
     {% set data_active = 'resume' %}
     {% include "_portfolio_subnav.html" %}
 
-    <div class="flex items-center justify-between gap-4 flex-wrap mt-8">
-      <h1 class="font-display text-4xl">Resume</h1>
-      <a href="/portfolio/resume/build" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">Build a resume →</a>
+    <h1 class="font-display text-4xl mt-8">Resume</h1>
+
+    <!-- Two tabs: files the person uploaded, and resumes this app built.
+         A build has no original file, so it never offers Reprocess, and
+         it shows the job it was made for instead of "Good for". -->
+    <div class="otw-tabs mt-8" role="tablist">
+      <button type="button" role="tab" class="otw-tab" :class="{ active: tab === 'uploaded' }" :aria-selected="tab === 'uploaded'" @click="setTab('uploaded')">
+        Your uploads <span class="otw-tab-count" x-text="uploadedResumes.length"></span>
+      </button>
+      <button type="button" role="tab" class="otw-tab" :class="{ active: tab === 'built' }" :aria-selected="tab === 'built'" @click="setTab('built')">
+        Built here <span class="otw-tab-count" x-text="builtResumes.length"></span>
+      </button>
     </div>
 
-    <div class="otw-tile p-6 mt-8">
+    <div x-show="tab === 'uploaded'" class="otw-tile p-6 mt-8">
       <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Name this version (optional)</label>
       <input x-model="uploadName" class="otw-input mt-1" placeholder="e.g. Backend, 2026 batch" />
       <label class="text-xs uppercase tracking-wide text-[color:var(--muted)] mt-4 block">Notes for this upload (optional)</label>
@@ -31,24 +40,33 @@
       <p x-show="uploadError" x-text="uploadError" class="mt-3 text-sm otw-error"></p>
     </div>
 
-    <div x-cloak x-show="!loading && resumes.length === 0" class="mt-16 text-center">
-      <p class="text-[color:var(--muted)]">No resumes yet, upload one above to get started.</p>
+    <div x-show="tab === 'built'" x-cloak class="mt-8 flex items-center justify-between gap-4 flex-wrap">
+      <p class="text-sm text-[color:var(--muted)]">Resumes this app tailored to a job posting.</p>
+      <a href="/portfolio/resume/build" class="otw-btn-ghost text-sm px-4 py-2 shrink-0">Build a resume →</a>
     </div>
 
-    <div x-cloak x-show="!loading && resumes.length > 0" class="mt-8 flex items-center gap-4">
+    <div x-cloak x-show="!loading && tabResumes.length === 0" class="mt-16 text-center">
+      <p class="text-[color:var(--muted)]" x-text="tab === 'built' ? 'Nothing built yet. Build one from a job posting.' : 'No uploads yet, add one above to get started.'"></p>
+    </div>
+
+    <div x-cloak x-show="!loading && tabResumes.length > 0" class="mt-8 flex items-center gap-4">
       {{ ui.search("query", "Search resumes", class="flex-1 min-w-0") }}
       <span class="text-xs text-[color:var(--muted)] shrink-0" x-text="countLabel"></span>
     </div>
 
-    <div x-cloak x-show="!loading && resumes.length > 0 && filteredResumes.length === 0" class="mt-16 text-center">
+    <div x-cloak x-show="!loading && tabResumes.length > 0 && filteredResumes.length === 0" class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">No resumes match that search.</p>
     </div>
 
-    <div x-cloak class="mt-6 space-y-5">
+    <section x-cloak x-show="!loading">
+    <div class="mt-5 space-y-5">
       <template x-for="resume in filteredResumes" :key="resume.id">
-        <div class="otw-tile p-6">
+        <div :id="'resume-' + resume.id" class="otw-tile p-6" :class="{ 'otw-built': resume.is_generated, 'otw-flash': flashId === resume.id }">
           <div class="flex items-start justify-between gap-4 flex-wrap">
-            <div class="otw-monogram text-xs tracking-wider" x-text="fileExt(resume.filename)"></div>
+            <div class="otw-monogram text-xs tracking-wider" :class="{ 'otw-monogram-built': resume.is_generated }">
+              <svg x-show="resume.is_generated" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+              <span x-show="!resume.is_generated" x-text="fileExt(resume.filename)"></span>
+            </div>
             <div class="min-w-0 flex-1">
               <input
                 x-model="editName[resume.id]"
@@ -58,8 +76,12 @@
                 :placeholder="resume.filename"
                 title="Click to name this version"
               />
-              <p x-show="!resume.build_incomplete" class="text-xs text-[color:var(--muted)] mt-1">
-                <a :href="'/api/resume/' + resume.id + (resume.has_original_file ? '/file' : '/compiled-file')" target="_blank" class="hover:underline break-all" x-text="resume.filename"></a>
+              <p class="text-xs text-[color:var(--muted)] mt-1.5 flex items-center gap-2 flex-wrap">
+                <span x-show="resume.is_generated" class="otw-pill otw-pill-built">Built here</span>
+                <span x-show="!resume.is_generated" class="otw-pill">Uploaded</span>
+                <span x-show="!resume.is_generated && resume.has_ai_edited_version" class="otw-pill">AI-edited copy</span>
+                <span x-show="!resume.is_generated" class="break-all" x-text="resume.filename"></span>
+                <span x-text="(resume.is_generated ? 'built ' : 'added ') + otwDates.day(resume.uploaded_at)"></span>
               </p>
             </div>
             <div class="flex items-center gap-2 shrink-0">
@@ -71,11 +93,14 @@
               <button x-show="!resume.build_incomplete" @click="openViewer(resume)" title="View" aria-label="View" class="otw-icon-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
               </button>
+              <a x-show="!resume.build_incomplete" :href="downloadUrl(resume)" :title="downloadTitle(resume)" :aria-label="downloadTitle(resume)" class="otw-icon-btn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </a>
               <button x-show="!resume.build_incomplete" @click="openAiEdit(resume)" title="Edit with AI" aria-label="Edit with AI" class="otw-icon-btn">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
               </button>
               <button
-                x-show="!resume.build_incomplete"
+                x-show="!resume.is_generated"
                 @click="reprocess(resume)"
                 :disabled="Boolean(reprocessing[resume.id])"
                 title="Reprocess"
@@ -117,7 +142,17 @@
           </div>
 
           <div x-show="!resume.build_incomplete">
-          <div class="mt-5">
+          <div x-show="resume.is_generated" class="mt-5">
+            <label class="block text-xs uppercase tracking-wide text-[color:var(--muted)]">Made for</label>
+            <a x-show="resume.job_title" :href="'/jobs/' + resume.job_posting_id" class="otw-made-for mt-2">
+              <span class="font-medium" x-text="resume.job_title"></span>
+              <span x-show="resume.job_company"><span class="text-[color:var(--muted)]">at</span> <span x-text="resume.job_company"></span></span>
+              <span class="text-[color:var(--muted)]">→</span>
+            </a>
+            <p x-show="!resume.job_title" class="text-sm text-[color:var(--muted)] mt-2">A job posting that has since been deleted.</p>
+          </div>
+
+          <div x-show="!resume.is_generated" class="mt-5">
             <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Good for</label>
             <div class="flex flex-wrap items-center gap-2 mt-2">
               <template x-for="role in resume.target_roles" :key="role">
@@ -138,7 +173,7 @@
               @input="autoGrow($el)"
               rows="1"
               class="otw-input otw-autogrow mt-1"
-              placeholder="What is this resume good for? Fill in by hand, or Reprocess to have it read automatically."
+              :placeholder="resume.is_generated ? 'What is this resume good for?' : 'What is this resume good for? Fill in by hand, or Reprocess to have it read automatically.'"
             ></textarea>
             <div x-show="editSummary[resume.id] !== (resume.summary || '')" class="flex justify-end mt-1">
               <button @click="saveSummary(resume)" :disabled="Boolean(savingSummary[resume.id])" class="otw-btn-ghost text-xs px-3 py-1">
@@ -154,7 +189,7 @@
           </button>
 
           <div x-show="expanded[resume.id]" class="mt-4 space-y-5 border-t border-[color:var(--line)] pt-5">
-            <div>
+            <div x-show="!resume.is_generated">
               <div class="flex items-baseline justify-between gap-3">
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Contact</label>
                 <a href="/portfolio/contact-links" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Contact &amp; Links →</a>
@@ -203,7 +238,7 @@
               </dl>
             </div>
 
-            <div>
+            <div x-show="!resume.is_generated">
               <div class="flex items-baseline justify-between gap-3">
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Experience</label>
                 <a href="/portfolio/experience" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Experience →</a>
@@ -234,7 +269,7 @@
               </ul>
             </div>
 
-            <div>
+            <div x-show="!resume.is_generated">
               <div class="flex items-baseline justify-between gap-3">
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Education</label>
                 <a href="/portfolio/education" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Education →</a>
@@ -250,7 +285,7 @@
               </ul>
             </div>
 
-            <div x-show="(profiles[resume.id]?.skills || []).length > 0">
+            <div x-show="!resume.is_generated && (profiles[resume.id]?.skills || []).length > 0">
               <div class="flex items-baseline justify-between gap-3">
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Skills not tied to a role</label>
                 <a href="/portfolio/skills" class="text-xs text-[color:var(--muted)] hover:underline">Edit on Skills →</a>
@@ -263,7 +298,7 @@
             </div>
 
             <div>
-              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Tags</label>
+              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]" x-text="resume.is_generated ? 'Skills on this resume' : 'Tags'"></label>
               <div class="flex flex-wrap items-center gap-2 mt-2">
                 <template x-for="tag in resume.tags" :key="tag">
                   <span class="otw-chip">
@@ -297,6 +332,7 @@
         </div>
       </template>
     </div>
+    </section>
   </main>
 
   <!-- Edit with AI popup: one prompt, one send. -->
@@ -340,44 +376,41 @@
     </div>
   </div>
 
-  <!-- View popup: preview a resume inline (PDF/image) or fall back to a
-       plain Download link for anything else, without leaving this page. -->
-  <div x-show="viewing" x-cloak class="otw-modal-backdrop" @keydown.escape.window="viewing = null" @click.self="viewing = null">
-    <div class="otw-modal" style="max-width: 50rem;">
-      <div class="flex items-start justify-between gap-4">
-        <div class="min-w-0">
-          <h3 class="font-display text-2xl break-all" x-text="viewing ? (viewing.name || viewing.filename) : ''"></h3>
-          <p x-show="viewing && viewing.name" class="text-xs text-[color:var(--muted)] mt-1 break-all" x-text="viewing ? viewing.filename : ''"></p>
+  <!-- View popup: nearly the full window, with the PDF opened at
+       page-fit so a whole page reads at once without scrolling. Images
+       preview inline; anything else falls back to Download. -->
+  <div x-show="viewing" x-cloak class="otw-modal-backdrop otw-viewer-backdrop" @keydown.escape.window="viewing = null" @click.self="viewing = null">
+    <div class="otw-viewer" role="dialog" aria-modal="true">
+      <div class="flex items-center justify-between gap-4 flex-wrap">
+        <div class="min-w-0 flex items-center gap-3">
+          <h3 class="font-display text-xl truncate" x-text="viewing ? (viewing.name || viewing.filename) : ''"></h3>
+          <span x-show="viewing && viewing.is_generated" class="otw-pill otw-pill-built shrink-0">Built here</span>
         </div>
-        <button @click="viewing = null" class="text-[color:var(--muted)] hover:text-[color:var(--ink)] text-xl leading-none shrink-0">×</button>
+        <div class="flex items-center gap-2 shrink-0">
+          <!-- Two tabs when an upload also has an AI-edited copy. -->
+          <template x-if="viewing && !viewing.is_generated && viewing.has_original_file && viewing.has_ai_edited_version">
+            <div class="flex gap-2 mr-2">
+              <button type="button" @click="viewTab = 'original'" class="otw-btn-ghost text-xs px-3 py-1.5" :class="{ 'border-[color:var(--accent)]': viewTab === 'original' }">Original</button>
+              <button type="button" @click="viewTab = 'ai'" class="otw-btn-ghost text-xs px-3 py-1.5" :class="{ 'border-[color:var(--accent)]': viewTab === 'ai' }">AI-edited</button>
+            </div>
+          </template>
+          <a :href="viewSrc" target="_blank" rel="noopener" title="Open in a new tab" aria-label="Open in a new tab" class="otw-icon-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          </a>
+          <a :href="viewDownloadUrl" class="otw-btn-ghost text-xs px-3 py-1.5">Download</a>
+          <button @click="viewing = null" aria-label="Close" class="otw-icon-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
       </div>
 
-      <!-- Two tabs when both exist: the original upload untouched, and
-           the AI-edited/generated version compiled from content_json.
-           Only one tab shown when a resume only has one or the other. -->
-      <div x-show="viewing && viewing.has_original_file && viewing.has_ai_edited_version" class="flex gap-2 mt-4">
-        <button type="button" @click="viewTab = 'original'" class="otw-btn-ghost text-xs px-3 py-1.5" :class="{ 'border-[color:var(--accent)]': viewTab === 'original' }">Original</button>
-        <button type="button" @click="viewTab = 'ai'" class="otw-btn-ghost text-xs px-3 py-1.5" :class="{ 'border-[color:var(--accent)]': viewTab === 'ai' }">AI-edited</button>
+      <iframe x-show="viewKind === 'pdf'" :src="viewKind === 'pdf' ? viewSrc + '#zoom=page-fit&view=Fit&navpanes=0' : 'about:blank'" class="otw-viewer-frame"></iframe>
+      <div x-show="viewKind === 'image'" class="otw-viewer-frame flex items-center justify-center overflow-auto">
+        <img :src="viewKind === 'image' ? viewSrc : ''" class="max-w-full max-h-full" />
       </div>
-
-      <div class="mt-5" x-show="viewing && viewTab === 'original' && previewKind(viewing) === 'pdf'">
-        <iframe :src="viewing ? '/api/resume/' + viewing.id + '/file?disposition=inline' : ''" class="w-full" style="height: 65vh; border: 1px solid var(--line); background: white;"></iframe>
-      </div>
-      <div class="mt-5 flex justify-center" x-show="viewing && viewTab === 'original' && previewKind(viewing) === 'image'">
-        <img :src="viewing ? '/api/resume/' + viewing.id + '/file?disposition=inline' : ''" class="max-w-full" style="max-height: 65vh;" />
-      </div>
-      <p class="mt-5 text-sm text-[color:var(--muted)]" x-show="viewing && viewTab === 'original' && previewKind(viewing) === 'none'">
+      <p x-show="viewKind === 'none'" class="mt-5 text-sm text-[color:var(--muted)]">
         No inline preview for this file type. Download it to view it.
       </p>
-
-      <div class="mt-5" x-show="viewing && viewTab === 'ai' && viewing.has_ai_edited_version">
-        <iframe :src="viewing ? '/api/resume/' + viewing.id + '/compiled-file?disposition=inline' : ''" class="w-full" style="height: 65vh; border: 1px solid var(--line); background: white;"></iframe>
-      </div>
-
-      <div class="flex justify-end gap-3 mt-6">
-        <a :href="viewing ? (viewTab === 'ai' ? '/api/resume/' + viewing.id + '/compiled-file' : '/api/resume/' + viewing.id + '/file') : '#'" class="otw-btn-ghost text-sm px-4 py-2">Download</a>
-        <button @click="viewing = null" class="otw-btn text-sm px-4 py-2">Close</button>
-      </div>
     </div>
   </div>
 </div>
@@ -413,6 +446,38 @@
   textarea.otw-autogrow { resize: none; overflow: hidden; field-sizing: content; }
   .otw-prompt { display: flex; gap: 0.75rem; border: 1px solid var(--line); padding: 0.75rem; }
   .otw-prompt:focus-within { border-color: var(--line-strong); }
+  /* A resume this app built sits on a lighter gray card, so it never
+     reads as one of the person's uploads. */
+  .otw-built { background: #232327; border-color: rgba(242, 242, 240, 0.2); }
+  .otw-monogram-built { background: #34343a; border-color: rgba(242, 242, 240, 0.24); }
+  .otw-pill-built { background: #34343a; color: var(--ink); border-color: rgba(242, 242, 240, 0.24); }
+  .otw-made-for { display: inline-flex; align-items: baseline; gap: 0.35rem; flex-wrap: wrap; font-size: 0.95rem; }
+  .otw-made-for:hover { text-decoration: underline; }
+  .otw-tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--line); }
+  .otw-tab {
+    display: inline-flex; align-items: center; gap: 0.6rem;
+    padding: 0.75rem 1.1rem; margin-bottom: -1px;
+    font-family: 'Fraunces', Georgia, serif; font-size: 1.15rem;
+    color: var(--muted); border-bottom: 2px solid transparent;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+  .otw-tab:hover { color: var(--ink); }
+  .otw-tab.active { color: var(--ink); border-bottom-color: var(--ink); }
+  .otw-tab-count { font-family: 'Inter', system-ui, sans-serif; font-size: 0.72rem; color: var(--muted); border: 1px solid var(--line); border-radius: 9999px; padding: 0.05rem 0.5rem; }
+  .otw-flash { outline: 1px solid var(--line-strong); outline-offset: 4px; }
+  .otw-viewer-backdrop { padding: 1rem; }
+  .otw-viewer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    width: 100%;
+    max-width: 72rem;
+    height: calc(100vh - 2rem);
+    padding: 0.9rem 1rem 1rem;
+    background: var(--paper);
+    border: 1px solid var(--line);
+  }
+  .otw-viewer-frame { flex: 1; min-height: 0; width: 100%; border: 1px solid var(--line); background: #525659; }
 </style>
 
 <script>
@@ -447,6 +512,8 @@
       aiWorking: false,
       aiError: '',
       query: '',
+      flashId: null,
+      tab: 'uploaded',
 
       async init() {
         this.accountId = localStorage.getItem('otw_account_id');
@@ -456,8 +523,36 @@
           return;
         }
         this.query = new URLSearchParams(window.location.search).get('q') || '';
+        try {
+          if (localStorage.getItem('otw_resume_tab') === 'built') this.tab = 'built';
+        } catch (e) {
+          // no saved tab; uploads it is
+        }
         await this.load();
+        this.focusFromHash();
         this.attachRetries();
+      },
+
+      // /portfolio/resume#resume-12 (the job page links here) scrolls to
+      // that card and outlines it for a moment.
+      focusFromHash() {
+        const m = /^#resume-(\d+)$/.exec(window.location.hash);
+        if (!m) return;
+        const id = Number(m[1]);
+        const target = this.resumes.find((r) => r.id === id);
+        if (target) this.tab = target.is_generated ? 'built' : 'uploaded';
+        // The cards render a frame or two after the list loads.
+        const find = (tries) => {
+          const el = document.getElementById(`resume-${id}`);
+          if (!el || !el.getClientRects().length) {
+            if (tries > 0) setTimeout(() => find(tries - 1), 100);
+            return;
+          }
+          el.scrollIntoView({ block: 'center' });
+          this.flashId = id;
+          setTimeout(() => { this.flashId = null; }, 2400);
+        };
+        find(20);
       },
 
       // A retry started earlier, here or from the build page, keeps
@@ -536,16 +631,77 @@
       // Matches what is saved, not the inline edits in progress, so a card
       // never disappears from under the cursor while it is being edited.
       get filteredResumes() {
-        return otwSearch(this.resumes, this.query, (r) => [
+        return otwSearch(this.tabResumes, this.query, (r) => [
           r.name || r.filename, r.filename, r.target_roles, r.tags, r.summary, r.notes,
           (r.experiences || []).map((x) => [x.title, x.company, x.location]),
           (r.education || []).map((x) => [x.institution, x.degree, x.location]),
         ].flat());
       },
 
+      get uploadedResumes() {
+        return this.resumes.filter((r) => !r.is_generated);
+      },
+
+      get builtResumes() {
+        return this.resumes.filter((r) => r.is_generated);
+      },
+
+      get tabResumes() {
+        return this.tab === 'built' ? this.builtResumes : this.uploadedResumes;
+      },
+
+      setTab(tab) {
+        this.tab = tab;
+        try {
+          localStorage.setItem('otw_resume_tab', tab);
+        } catch (e) {
+          // the tab just is not remembered
+        }
+      },
+
+      fileUrl(resume, which, inline) {
+        const path = which === 'ai' ? 'compiled-file' : 'file';
+        const params = new URLSearchParams();
+        if (inline) params.set('disposition', 'inline');
+        // The edited PDF keeps its path across edits; a version stamp
+        // keeps the browser from showing a cached older copy.
+        if (which === 'ai' && resume.compiled_at) params.set('v', resume.compiled_at);
+        const qs = params.toString();
+        return `/api/resume/${resume.id}/${path}` + (qs ? `?${qs}` : '');
+      },
+
+      // A build only has its compiled PDF; an upload downloads its newest
+      // version, the AI-edited copy once there is one.
+      downloadWhich(resume) {
+        return resume.has_ai_edited_version ? 'ai' : 'original';
+      },
+
+      downloadUrl(resume) {
+        return this.fileUrl(resume, this.downloadWhich(resume), false);
+      },
+
+      downloadTitle(resume) {
+        if (resume.is_generated) return 'Download PDF';
+        return resume.has_ai_edited_version ? 'Download AI-edited copy' : 'Download';
+      },
+
+      get viewKind() {
+        if (!this.viewing) return null;
+        if (this.viewTab === 'ai') return 'pdf';
+        return this.previewKind(this.viewing);
+      },
+
+      get viewSrc() {
+        return this.viewing ? this.fileUrl(this.viewing, this.viewTab, true) : '';
+      },
+
+      get viewDownloadUrl() {
+        return this.viewing ? this.fileUrl(this.viewing, this.viewTab, false) : '#';
+      },
+
       get countLabel() {
         const shown = this.filteredResumes.length;
-        const total = this.resumes.length;
+        const total = this.tabResumes.length;
         return shown === total ? `${total} resume${total !== 1 ? 's' : ''}` : `${shown} of ${total}`;
       },
 
