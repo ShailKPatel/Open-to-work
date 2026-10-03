@@ -21,6 +21,12 @@ def _stub_indexing(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_github(monkeypatch):
+    """Reprocess pulls the repo from GitHub first; no test here goes online."""
+    monkeypatch.setattr("app.api.projects.refetch_repo", lambda repo_id: None)
+
+
 def _reset_db(tmp_path: Path):
     import os
 
@@ -250,6 +256,48 @@ def test_reprocess_marks_no_signal_when_nothing_to_extract(tmp_path):
     assert resp.status_code == 200
     body = resp.json()
     assert body["skill_extraction_status"] == "no_signal"
+
+
+def test_reprocess_refetches_from_github_before_extracting(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account = _make_account()
+    repo_id = _make_repo(account, readme=None, description=None)
+
+    def refetch(rid):
+        db = get_db()
+        db.get(Repository, rid).description = "A FastAPI service."
+        db.commit()
+        db.close()
+
+    monkeypatch.setattr("app.api.projects.refetch_repo", refetch)
+    fake_response = MagicMock()
+    fake_response.parsed = {"skills": [{"skill": "FastAPI", "confidence": 0.9}]}
+    monkeypatch.setattr("app.profile.extract.complete", MagicMock(return_value=fake_response))
+
+    resp = _client().post(f"/api/projects/{repo_id}/reprocess")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["description"] == "A FastAPI service."
+    assert body["skill_extraction_status"] == "extracted"
+    assert body["refresh_error"] is None
+
+
+def test_reprocess_falls_back_to_saved_copy_when_github_fails(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account = _make_account()
+    repo_id = _make_repo(account, readme=None, description=None)
+
+    def offline(rid):
+        raise ConnectionError("down")
+
+    monkeypatch.setattr("app.api.projects.refetch_repo", offline)
+    resp = _client().post(f"/api/projects/{repo_id}/reprocess")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["skill_extraction_status"] == "no_signal"
+    assert "GitHub" in body["refresh_error"]
 
 
 def test_reprocess_unknown_repo_404(tmp_path):

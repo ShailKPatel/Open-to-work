@@ -16,6 +16,8 @@
     {% set back_href = '/portfolio/projects' %}
     {% include "_portfolio_subnav.html" %}
 
+    {{ ui.task_notices("notices") }}
+
     <div x-show="!loading && !project" x-cloak class="mt-16 text-center">
       <p class="text-[color:var(--muted)]">Project not found.</p>
     </div>
@@ -313,6 +315,7 @@
       saving: false,
       saveError: '',
       reprocessing: false,
+      notices: [],
       addingSkill: false,
       skillBusy: {},
       addingLink: false,
@@ -413,8 +416,10 @@
       async reprocess() {
         this.reprocessing = true;
         try {
-          await fetch(`/api/projects/${this.repoId}/reprocess`, { method: 'POST' });
-          await this.load(true);
+          await otwReprocessProject(this.notices, this.project);
+          // Reprocess can bring a new description from GitHub; take it
+          // unless the header has unsaved edits.
+          await this.load(this.isDirty);
         } finally {
           this.reprocessing = false;
         }

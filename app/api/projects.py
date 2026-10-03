@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
 from app.core.db import ProjectLink, Repository, SkillEvidence, get_db
+from app.ingest.github.sync import refetch_repo
 from app.profile.build import build_profile, reprocess_repo, skill_evidence_for_repos
 from app.profile.evidence import add_evidence, delete_evidence, update_evidence
 from app.profile.jobs import extraction_reminder, extraction_stream, start_extraction
@@ -544,19 +545,41 @@ def delete_link(repo_id: int, link_id: int, *, db: DbSession) -> ProjectDetail:
     return _detail_for(db, repo)
 
 
-@router.post("/{repo_id}/reprocess", response_model=ProjectSummary)
-def reprocess(repo_id: int, *, db: DbSession) -> ProjectSummary:
-    """The UI's manual retry: always forces re-extraction, whatever the
-    current status. Works whether the repo previously failed, had no
-    signal, or already succeeded and someone just wants to redo it.
+class ReprocessResponse(ProjectSummary):
+    # Set when GitHub could not be reached; extraction then ran on the
+    # README and description saved by the last sync.
+    refresh_error: str | None = None
+
+
+@router.post("/{repo_id}/reprocess", response_model=ReprocessResponse)
+def reprocess(repo_id: int, *, db: DbSession) -> ReprocessResponse:
+    """The UI's manual retry: pulls the repo fresh from GitHub, then always
+    forces re-extraction, whatever the current status. Works whether the
+    repo previously failed, had no signal, or already succeeded and someone
+    just wants to redo it. A hand-added project skips the GitHub step.
     """
+    repo = db.get(Repository, repo_id)
+    if repo is None:
+        raise HTTPException(status_code=404, detail=f"no repository with id={repo_id}")
+    is_manual = repo.github_id < 0
+    db.commit()  # end the read before refetch and extraction open their own sessions
+
+    refresh_error = None
+    if not is_manual:
+        try:
+            refetch_repo(repo_id)
+        except Exception as e:
+            logger.exception("could not refresh repo %s from GitHub; using saved copy", repo_id)
+            refresh_error = f"Could not reach GitHub ({e.__class__.__name__}), used the saved copy."
+
     try:
         repo = reprocess_repo(repo_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
 
     count = _skill_counts(db, [repo_id]).get(repo_id, 0)
-    return ProjectSummary.from_repo(repo, count)
+    summary = ProjectSummary.from_repo(repo, count)
+    return ReprocessResponse(**summary.model_dump(), refresh_error=refresh_error)
 
 
 class ProcessPendingResponse(BaseModel):

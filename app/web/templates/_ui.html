@@ -141,3 +141,31 @@
   />
 </div>
 {%- endmacro %}
+
+{#
+  Dismissible status cards for work started from a button, such as
+  Reprocess. `items` is the Alpine array otwReprocessProject() fills;
+  each card shows a sweeping bar while its work runs.
+#}
+{% macro task_notices(items, class='mt-6') -%}
+<div x-show="{{ items }}.length" x-cloak class="{{ class }} space-y-2" aria-live="polite">
+  <template x-for="n in {{ items }}" :key="n.key">
+    <div class="otw-tile p-4 text-sm" role="status">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <p :class="{ 'otw-working': n.state === 'running', 'otw-error': n.state === 'error' }" x-text="n.title"></p>
+          <p x-show="n.detail" class="mt-1 text-xs text-[color:var(--muted)]" x-text="n.detail"></p>
+        </div>
+        <button
+          type="button"
+          @click="{{ items }}.splice({{ items }}.indexOf(n), 1)"
+          class="otw-btn-danger-text text-base leading-none shrink-0"
+          aria-label="Dismiss"
+          title="Dismiss"
+        >×</button>
+      </div>
+      <div x-show="n.state === 'running'" class="otw-bar-indeterminate mt-3"></div>
+    </div>
+  </template>
+</div>
+{%- endmacro %}
