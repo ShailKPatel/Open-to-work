@@ -166,6 +166,38 @@ def _format_month_year(d: dt.date) -> str:
     return f"{_MONTH_ABBR[d.month]} {d.year}"
 
 
+def project_skills(
+    db: Session, account_id: int, repo_ids: list[int]
+) -> dict[int, list[str]]:
+    """Each repo's skills as the resume writer is shown them: every
+    SkillEvidence skill for the repo, first spelling kept, archived skills
+    left out. app/evals/groundedness.py reads them through here too, so its
+    judge sees the same list."""
+    archived_skills = archived_skill_keys(db, account_id)
+    skills_by_repo: dict[int, list[str]] = {}
+    for e in db.execute(
+        select(SkillEvidence).where(SkillEvidence.repo_id.in_(repo_ids))
+    ).scalars():
+        if e.skill.strip().casefold() in archived_skills:
+            continue
+        bucket = skills_by_repo.setdefault(e.repo_id, [])
+        if e.skill not in bucket:
+            bucket.append(e.skill)
+    return skills_by_repo
+
+
+def format_project_evidence(
+    name: str, description: Any, skills: list[str], user_note: str | None = None
+) -> str:
+    """One candidate project as the resume writer reads it. Also the
+    evidence app/evals/groundedness.py's judge checks a bullet against, so
+    the judge holds a bullet to exactly what its writer was given."""
+    skills_text = ", ".join(skills) or "none listed"
+    description = str(description)[:_MAX_CANDIDATE_DESCRIPTION_CHARS]
+    note = f" [User Note: {user_note.strip()}]" if user_note and user_note.strip() else ""
+    return f"name={name!r} description={description!r} skills={skills_text}{note}"
+
+
 def _candidate_projects(
     db: Session,
     account_id: int,
@@ -231,16 +263,7 @@ def _candidate_projects(
             )
         ).scalars()
     }
-    archived_skills = archived_skill_keys(db, account_id)
-    skills_by_repo: dict[int, list[str]] = {}
-    for e in db.execute(
-        select(SkillEvidence).where(SkillEvidence.repo_id.in_(top_repo_ids))
-    ).scalars():
-        if e.skill.strip().casefold() in archived_skills:
-            continue
-        bucket = skills_by_repo.setdefault(e.repo_id, [])
-        if e.skill not in bucket:
-            bucket.append(e.skill)
+    skills_by_repo = project_skills(db, account_id, top_repo_ids)
 
     candidates = []
     for repo_id in top_repo_ids:
@@ -434,19 +457,9 @@ def _build_candidates_message(
     lines = ["CANDIDATE PROJECTS (pick zero or more, use only the info given):"]
     if candidates:
         for c in candidates:
-            skills_text = ", ".join(c["skills"]) or "none listed"
-            description = str(c["description"])[:_MAX_CANDIDATE_DESCRIPTION_CHARS]
-            note = ""
-            if (
-                project_instructions
-                and c["repo_id"] in project_instructions
-                and project_instructions[c["repo_id"]].strip()
-            ):
-                note = f" [User Note: {project_instructions[c['repo_id']].strip()}]"
-            lines.append(
-                f"- id={c['repo_id']} name={c['name']!r} "
-                f"description={description!r} skills={skills_text}{note}"
-            )
+            note = (project_instructions or {}).get(c["repo_id"])
+            evidence = format_project_evidence(c["name"], c["description"], c["skills"], note)
+            lines.append(f"- id={c['repo_id']} {evidence}")
     else:
         lines.append("(none available)")
     lines.append("")
@@ -472,8 +485,14 @@ def _build_candidates_message(
 
 
 def _assemble_projects(
-    llm_projects: list[dict[str, Any]], candidates_by_id: dict[int, dict[str, Any]]
+    llm_projects: list[dict[str, Any]],
+    candidates_by_id: dict[int, dict[str, Any]],
+    project_instructions: dict[int, str] | None = None,
 ) -> list[dict[str, Any]]:
+    """The model's picks, kept only where they name a project it was
+    offered. repo_id and the account holder's note for the project stay on
+    each entry: the templates ignore them, and app/evals/groundedness.py
+    needs both to rebuild the evidence the bullets were written from."""
     result: list[dict[str, Any]] = []
     for item in llm_projects:
         if len(result) >= _MAX_SELECTED_PROJECTS:
@@ -491,8 +510,10 @@ def _assemble_projects(
         points = [str(p).strip() for p in item.get("points", []) if str(p).strip()]
         if not points:
             continue
+        user_note = ((project_instructions or {}).get(repo_id) or "").strip() or None
         result.append(
             {
+                "repo_id": repo_id,
                 "name": candidate["name"],
                 "tagline": str(item.get("tagline", "")).strip() or None,
                 "href": candidate["href"],
@@ -500,6 +521,7 @@ def _assemble_projects(
                 "date_range": _format_month_year(candidate["date"]) if candidate["date"] else "",
                 "points": points[:_MAX_POINTS_PER_PROJECT],
                 "note": None,
+                "user_note": user_note,
             }
         )
     return result
@@ -531,6 +553,7 @@ def _reserve_project(candidate: dict[str, Any]) -> dict[str, Any] | None:
     if not description:
         return None
     return {
+        "repo_id": candidate["repo_id"],
         "name": candidate["name"],
         "tagline": None,
         "href": candidate["href"],
@@ -700,7 +723,9 @@ def _build_resume_data_for_text(
     if response.parsed is None:
         raise ValueError("LLM response for resume generation was not valid JSON")
 
-    projects = _assemble_projects(response.parsed.get("projects", []), candidates_by_id)
+    projects = _assemble_projects(
+        response.parsed.get("projects", []), candidates_by_id, project_instructions
+    )
     skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
     experience = _pick_experience_points(
         pool, response.parsed.get("experience"), points_limit
@@ -927,7 +952,16 @@ def edit_resume_content(
         if response.parsed is None:
             raise ValueError("LLM response for resume edit was not valid JSON")
 
-        projects = _assemble_projects(response.parsed.get("projects", []), candidates_by_id)
+        # The notes the resume was built with ride along on its saved
+        # projects; an edit keeps them so the eval still sees them.
+        kept_notes = {
+            p["repo_id"]: p["user_note"]
+            for p in current_content.get("projects", [])
+            if isinstance(p, dict) and p.get("repo_id") is not None and p.get("user_note")
+        }
+        projects = _assemble_projects(
+            response.parsed.get("projects", []), candidates_by_id, kept_notes
+        )
         skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
         summary = str(response.parsed.get("summary", "")).strip() or None
 

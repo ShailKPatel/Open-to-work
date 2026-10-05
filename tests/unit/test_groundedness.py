@@ -158,3 +158,74 @@ def test_project_with_no_repo_match_is_skipped(tmp_path, monkeypatch):
 
     assert result.checked == 0
     fake_complete.assert_not_called()
+
+
+def test_generated_projects_are_scored_against_the_writers_evidence(tmp_path, monkeypatch):
+    """Contract between the resume writer and the judge: projects saved by
+    the real _assemble_projects() are checkable, and the judge is shown the
+    exact evidence line the writer got (truncated description, non-archived
+    skills, user note) and no README."""
+    from app.core.db import SkillArchive
+    from app.resume_build.orchestrator import (
+        _assemble_projects,
+        _build_candidates_message,
+        _candidate_projects,
+    )
+
+    _reset(tmp_path)
+    account_id = _make_account()
+    repo_id = _make_repo(account_id, description="A Python web scraper " + "x" * 400)
+    db = get_db()
+    repo = db.get(Repository, repo_id)
+    repo.readme = "README ONLY CLAIM: handles a billion requests"
+    db.add(
+        SkillEvidence(
+            skill="Perl", repo_id=repo_id, evidence_type="declared_dependency",
+            weight=0.5, confidence=1.0,
+        )
+    )
+    db.add(SkillArchive(account_id=account_id, name_key="perl"))
+    db.commit()
+
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: [])
+    candidates = _candidate_projects(db, account_id, "python scraping")
+    db.close()
+    instructions = {repo_id: "  Used by three newsrooms  "}
+    writer_prompt = _build_candidates_message(candidates, [], project_instructions=instructions)
+
+    projects = _assemble_projects(
+        [{"repo_id": repo_id, "tagline": "Scraper", "points": ["Built a Python web scraper"]}],
+        {c["repo_id"]: c for c in candidates},
+        instructions,
+    )
+    db = get_db()
+    db.add(
+        Resume(
+            account_id=account_id, filename="generated.pdf", mime_type="application/pdf",
+            content_json={"projects": projects},
+        )
+    )
+    db.commit()
+    db.close()
+
+    seen: list[str] = []
+
+    def _fake_complete(tier, messages, schema=None, account_id=None, purpose=None):
+        seen.append(messages[-1]["content"])
+        response = MagicMock()
+        response.parsed = {"grounded": True}
+        return response
+
+    monkeypatch.setattr("app.evals.groundedness.complete", _fake_complete)
+
+    result = score_groundedness(account_id)
+
+    assert result.checked > 0
+    assert result.score == 1.0
+    evidence = seen[0].split("Evidence:\n", 1)[1].split("\n\nBullet:", 1)[0]
+    assert f"- id={repo_id} {evidence}" in writer_prompt.splitlines()
+    assert "[User Note: Used by three newsrooms]" in evidence
+    assert "Python" in evidence
+    assert "Perl" not in evidence
+    assert "README" not in evidence
+    assert "x" * 301 not in evidence
