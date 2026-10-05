@@ -9,7 +9,11 @@ and dates, is always included (context.py's build_experience_context).
 Points are chosen per job: _select_experience_points keeps each role's
 best search matches (or all its points if search returns nothing), and
 the model picks from that pool by number. A reworded point that states a
-number the original does not falls back to the original text.
+number the original does not falls back to the original text. Project
+bullets and the summary are written from scratch, so they are checked
+against the evidence instead (grounding.py): a bullet with a number or a
+technology its project does not have is dropped, and a summary sentence
+with an unsupported number is removed.
 
 The posting text never enters the system prompt. It is sent as its own
 user message, labelled as reference material not to be followed.
@@ -22,8 +26,10 @@ from the Repository row, never from the model.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -31,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import (
     Account,
+    Experience,
     ExperienceSkillEvidence,
     JobPosting,
     Repository,
@@ -46,7 +53,15 @@ from app.resume_build.context import (
     build_header_context,
     excluded_sources,
 )
+from app.resume_build.grounding import (
+    TechVocabulary,
+    ground_summary,
+    is_grounded_bullet,
+    years_of_experience,
+)
 from app.resume_build.latex import render_resume
+
+logger = logging.getLogger(__name__)
 
 _MAX_CANDIDATE_PROJECTS = 8
 _MAX_SELECTED_PROJECTS = 4
@@ -580,6 +595,95 @@ def _ground_skills(llm_skills: list[Any], candidate_skills: list[str]) -> list[s
     return result
 
 
+def _technology_names(db: Session, account_id: int) -> list[str]:
+    """Every skill name this account has evidence for, from a repo or a
+    role, archived and excluded ones too: the names grounding.py treats as
+    technologies when it checks what a bullet mentions."""
+    repo_skills = db.execute(
+        select(SkillEvidence.skill)
+        .join(Repository, Repository.id == SkillEvidence.repo_id)
+        .where(Repository.account_id == account_id)
+    ).scalars()
+    role_skills = db.execute(
+        select(ExperienceSkillEvidence.skill)
+        .join(Experience, Experience.id == ExperienceSkillEvidence.experience_id)
+        .where(Experience.account_id == account_id)
+    ).scalars()
+    return sorted({*repo_skills, *role_skills})
+
+
+def _account_years(db: Session, account_id: int) -> float | None:
+    spans = db.execute(
+        select(Experience.start_date, Experience.end_date).where(
+            Experience.account_id == account_id, Experience.exclude_from_resume.is_(False)
+        )
+    ).all()
+    return years_of_experience((start, end) for start, end in spans)
+
+
+def _ground_projects(
+    projects: list[dict[str, Any]],
+    candidates_by_id: dict[int, dict[str, Any]],
+    vocabulary: TechVocabulary,
+) -> tuple[list[dict[str, Any]], int]:
+    """Drops each project bullet that fails grounding.is_grounded_bullet()
+    against the evidence its writer was shown for that project, and a
+    tagline that fails the same check. A project left with no bullets
+    falls back to _reserve_project()'s single bullet, its own
+    description, or is dropped when it has none. Returns the projects and
+    how many bullets were dropped."""
+    result: list[dict[str, Any]] = []
+    dropped = 0
+    for project in projects:
+        candidate = candidates_by_id[project["repo_id"]]
+        evidence = format_project_evidence(
+            candidate["name"], candidate["description"], candidate["skills"],
+            project.get("user_note"),
+        )
+        skills = candidate["skills"]
+        points = [
+            p for p in project["points"] if is_grounded_bullet(p, evidence, skills, vocabulary)
+        ]
+        dropped += len(project["points"]) - len(points)
+        if points:
+            tagline = project.get("tagline")
+            if tagline and not is_grounded_bullet(tagline, evidence, skills, vocabulary):
+                tagline = None
+            result.append({**project, "points": points, "tagline": tagline})
+            continue
+        fallback = _reserve_project(candidate)
+        if fallback is not None:
+            result.append({**fallback, "user_note": project.get("user_note")})
+    return result, dropped
+
+
+def _ground_summary(
+    summary: str | None,
+    ctx: _DeterministicContext,
+    experience_points: Iterable[str],
+    project_notes: dict[int, str] | None = None,
+) -> tuple[str | None, int]:
+    """grounding.ground_summary() against everything the writer was shown:
+    each candidate project's evidence, the experience points, the
+    candidate skill names, plus the account's years of experience."""
+    evidence = [
+        format_project_evidence(
+            c["name"], c["description"], c["skills"], (project_notes or {}).get(c["repo_id"])
+        )
+        for c in ctx.candidates
+    ]
+    evidence += experience_points
+    evidence += ctx.candidate_skill_names
+    return ground_summary(summary, evidence, ctx.years)
+
+
+def _log_grounding(purpose: str, account_id: int, bullets: int, sentences: int) -> None:
+    logger.info(
+        "%s for account %s: grounding dropped %d project bullet(s), %d summary sentence(s)",
+        purpose, account_id, bullets, sentences,
+    )
+
+
 def _reserve_project(candidate: dict[str, Any]) -> dict[str, Any] | None:
     """Turns a candidate project the model did not select into a
     render-ready entry, for app/resume_build/pagefit.py to add back when
@@ -648,6 +752,9 @@ def _build_reserve(
         "projects": reserve_projects,
         "experience_points": held_points,
         "skills": reserve_skills,
+        # For pagefit.py's rewording check, so a shorter wording cannot
+        # bring in a technology the line it replaces did not name.
+        "known_technologies": ctx.technologies,
     }
 
 
@@ -672,6 +779,10 @@ class _DeterministicContext:
     # the difference when a resume needs more content to reach its target
     # page count, so a narrowed-away point is held back rather than lost.
     experience_all_points: dict[int, list[str]]
+    # Every skill name the account has (_technology_names) and its years of
+    # experience: what grounding.py checks written text against.
+    technologies: list[str] = field(default_factory=list)
+    years: float | None = None
 
 
 def _build_deterministic_context(
@@ -704,7 +815,15 @@ def _build_deterministic_context(
         db, account_id, job_text, selected_skills=selected_skills
     )
     return _DeterministicContext(
-        header, experience, education, candidates, candidate_skill_names, pool, all_points
+        header,
+        experience,
+        education,
+        candidates,
+        candidate_skill_names,
+        pool,
+        all_points,
+        technologies=_technology_names(db, account_id),
+        years=_account_years(db, account_id),
     )
 
 
@@ -764,8 +883,13 @@ def _build_resume_data_for_text(
     if response.parsed is None:
         raise ValueError("LLM response for resume generation was not valid JSON")
 
-    projects = _assemble_projects(
-        response.parsed.get("projects", []), candidates_by_id, project_instructions
+    vocabulary = TechVocabulary(ctx.technologies)
+    projects, dropped_bullets = _ground_projects(
+        _assemble_projects(
+            response.parsed.get("projects", []), candidates_by_id, project_instructions
+        ),
+        candidates_by_id,
+        vocabulary,
     )
     skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
     experience = _pick_experience_points(
@@ -778,7 +902,13 @@ def _build_resume_data_for_text(
             if s_clean and s_clean not in skills and len(skills) < _MAX_SELECTED_SKILLS:
                 skills.append(s_clean)
 
-    summary = str(response.parsed.get("summary", "")).strip() or None
+    summary, dropped_sentences = _ground_summary(
+        str(response.parsed.get("summary", "")),
+        ctx,
+        [point for role in pool for point in role["points"]],
+        project_instructions,
+    )
+    _log_grounding("resume build", account_id, dropped_bullets, dropped_sentences)
 
     return {
         **ctx.header,
@@ -1000,11 +1130,19 @@ def edit_resume_content(
             for p in current_content.get("projects", [])
             if isinstance(p, dict) and p.get("repo_id") is not None and p.get("user_note")
         }
-        projects = _assemble_projects(
-            response.parsed.get("projects", []), candidates_by_id, kept_notes
+        projects, dropped_bullets = _ground_projects(
+            _assemble_projects(response.parsed.get("projects", []), candidates_by_id, kept_notes),
+            candidates_by_id,
+            TechVocabulary(ctx.technologies),
         )
         skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
-        summary = str(response.parsed.get("summary", "")).strip() or None
+        summary, dropped_sentences = _ground_summary(
+            str(response.parsed.get("summary", "")),
+            ctx,
+            [point for points in ctx.experience_all_points.values() for point in points],
+            kept_notes,
+        )
+        _log_grounding("resume edit", account_id, dropped_bullets, dropped_sentences)
 
         experience = _keep_shown_points(
             _keep_chosen(ctx.experience, current_content.get("experience")),

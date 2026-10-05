@@ -735,3 +735,26 @@ def test_progress_reports_each_model_change_and_a_resumed_fit_skips_rewording(mo
         )
 
     assert "pagefit_rewrite" not in purposes
+
+
+def test_rewrite_that_brings_in_a_new_technology_is_dropped():
+    """_is_faithful_shortening ignores words of three letters or fewer, so
+    a short tool name like "Go" would slip past it on its own."""
+    from app.resume_build.grounding import TechVocabulary
+
+    data = {
+        "summary": "",
+        "experience": [],
+        "projects": [{"name": "api", "points": ["Built the internal billing service in Python"]}],
+        "skills": [],
+    }
+    rewrite = {
+        "target": "project_point", "owner": "api",
+        "original": "Built the internal billing service in Python",
+        "shorter": "Built the billing service in Go",
+    }
+    vocabulary = TechVocabulary(["Python", "Go"])
+
+    assert not _apply_rewrite(data, rewrite, vocabulary)
+    in_python = {**rewrite, "shorter": "Built the billing service in Python"}
+    assert _apply_rewrite(data, in_python, vocabulary)

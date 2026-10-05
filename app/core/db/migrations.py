@@ -594,6 +594,52 @@ def _migrate_month_year_dates(engine: Engine) -> None:
         conn.commit()
 
 
+# (table, column, old global unique index, new per-account unique index)
+_PER_ACCOUNT_UNIQUE = (
+    ("repositories", "github_id", "ix_repositories_github_id", "uq_repositories_account_github_id"),
+    ("repositories", "full_name", "ix_repositories_full_name", "uq_repositories_account_full_name"),
+    (
+        "job_postings",
+        "content_hash",
+        "ix_job_postings_content_hash",
+        "uq_job_postings_account_content_hash",
+    ),
+)
+
+
+def _migrate_per_account_unique_indexes(engine: Engine) -> None:
+    """Turn the global unique indexes on repositories.github_id/full_name
+    and job_postings.content_hash into per-account ones, so two accounts
+    can hold the same repo or posting as separate rows. Older databases
+    carry these as unique indexes (unique=True, index=True), not inline
+    UNIQUE constraints, so no table rebuild is needed: each one is dropped
+    and recreated as a plain index, then the (account_id, column) unique
+    index is added. Row ids and every foreign key are untouched. Runs in
+    one explicit transaction, since the sqlite3 driver would otherwise
+    commit each DDL statement on its own. Idempotent: an index that is
+    already non-unique is left alone and the new ones use IF NOT EXISTS.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        conn.exec_driver_sql("BEGIN")
+        for table, column, old_index, new_index in _PER_ACCOUNT_UNIQUE:
+            is_unique = {
+                row[1]: bool(row[2]) for row in conn.execute(text(f"PRAGMA index_list({table})"))
+            }
+            if is_unique.get(old_index):
+                conn.execute(text(f"DROP INDEX {old_index}"))
+                conn.execute(text(f"CREATE INDEX {old_index} ON {table} ({column})"))
+            conn.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {new_index} "
+                    f"ON {table} (account_id, {column})"
+                )
+            )
+        conn.commit()
+
+
 # Tables an older database may still carry that no model declares any more.
 # auth_sources held encrypted job-site logins, so it is dropped rather than
 # left on disk; the other two were never written to.
@@ -634,4 +680,5 @@ def init_db() -> None:
     _migrate_education_extras_columns(engine)
     _migrate_month_year_date_column_types(engine)
     _migrate_month_year_dates(engine)
+    _migrate_per_account_unique_indexes(engine)
     _drop_retired_tables(engine)

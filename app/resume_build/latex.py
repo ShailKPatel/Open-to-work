@@ -58,10 +58,14 @@ _LATEX_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _LATEX_SPECIAL_CHAR
 # argument, not typeset as regular text. `_`, `~`, `-`, `.`, `/`, `:` are
 # all common and structurally meaningful in real URLs and don't need
 # escaping there; `%`, `#`, `&` do, they're the ones LaTeX's tokenizer
-# still treats specially even inside an href target. The templates apply
-# this as the `latex_url` filter on every href, checked by
+# still treats specially even inside an href target. A backslash, a
+# brace or `^` (TeX reads `^^5c` as a backslash) could close the argument
+# or start a command such as \input, so those are percent-encoded first,
+# which a browser reads back as the same URL. The templates apply this as
+# the `latex_url` filter on every href, checked by
 # test_render_resume_escapes_href_targets; still not exercised by a real
 # Tectonic compile.
+_URL_PERCENT_ENCODE = {"\\": "%5C", "{": "%7B", "}": "%7D", "^": "%5E"}
 _URL_ESCAPE_CHARS = {"%": r"\%", "#": r"\#", "&": r"\&"}
 _URL_ESCAPE_RE = re.compile("|".join(re.escape(c) for c in _URL_ESCAPE_CHARS))
 
@@ -95,6 +99,8 @@ def escape_latex_url(url: str) -> str:
     """Escapes a URL for use as \\href's target argument. See the module
     comment above for why this differs from escape_latex().
     """
+    for char, encoded in _URL_PERCENT_ENCODE.items():
+        url = url.replace(char, encoded)
     return _URL_ESCAPE_RE.sub(lambda m: _URL_ESCAPE_CHARS[m.group()], url)
 
 

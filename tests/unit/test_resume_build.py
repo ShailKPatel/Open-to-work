@@ -128,6 +128,21 @@ def test_escape_latex_url_only_touches_breaking_chars():
     )
 
 
+def test_escape_latex_url_cannot_close_the_href_or_start_a_command():
+    # A link saved on the profile, written to read a local file into the
+    # PDF: `}` would close \href's argument and \input would then run.
+    url = r"https://example.com/}\input{/etc/passwd}^^5cwrite18{id}"
+
+    escaped = escape_latex_url(url)
+
+    assert "\\input" not in escaped
+    assert not set("{}^") & set(escaped)
+    assert escaped.count("\\") == escaped.count("\\%")
+    assert escaped == (
+        r"https://example.com/\%7D\%5Cinput\%7B/etc/passwd\%7D\%5E\%5E5cwrite18\%7Bid\%7D"
+    )
+
+
 @pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
 def test_render_resume_escapes_injected_data_and_leaves_no_unrendered_tags(template_name):
     data = {

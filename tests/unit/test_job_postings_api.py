@@ -5,6 +5,14 @@ import app.retrieval.vectorstore as vectorstore_module
 from app.core.db import get_db, init_db
 from app.core.settings import get_settings
 
+# Uploads are checked by their bytes, so test images carry a real PNG
+# signature in front of a tag that tells them apart.
+_PNG = b"\x89PNG\r\n\x1a\n"
+
+
+def _png(tag: bytes) -> bytes:
+    return _PNG + tag
+
 
 def _reset_db(tmp_path: Path):
     import os
@@ -109,6 +117,60 @@ def test_create_posting_dedupes_identical_text(tmp_path):
 
     assert first["id"] == second["id"]
     assert len(client.get(f"/api/job-postings?account_id={account_id}").json()) == 1
+
+
+def _make_second_account() -> int:
+    from app.core.db import Account
+
+    db = get_db()
+    account = Account(first_name="Grace", last_name="Hopper", github_username="ghopper")
+    db.add(account)
+    db.commit()
+    account_id = account.id
+    db.close()
+    return account_id
+
+
+def test_identical_text_from_another_account_gets_its_own_posting(tmp_path):
+    _reset_db(tmp_path)
+    account_a = _make_account()
+    account_b = _make_second_account()
+    client = _client()
+    text = "Identical posting text, saved by two profiles."
+
+    a = client.post("/api/job-postings", json={"account_id": account_a, "raw_text": text}).json()
+    b = client.post("/api/job-postings", json={"account_id": account_b, "raw_text": text}).json()
+
+    assert a["id"] != b["id"]
+    assert [r["id"] for r in client.get(f"/api/job-postings?account_id={account_b}").json()] == [
+        b["id"]
+    ]
+    assert [r["id"] for r in client.get(f"/api/job-postings?account_id={account_a}").json()] == [
+        a["id"]
+    ]
+
+
+def test_identical_screenshot_from_another_account_gets_its_own_posting(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_a = _make_account()
+    account_b = _make_second_account()
+    monkeypatch.setattr(
+        "app.api.job_postings.extract_job_posting_from_images",
+        lambda images, context_text="", account_id=None: _fake_screenshot_result(),
+    )
+    client = _client()
+
+    def upload(account_id: int) -> dict:
+        return client.post(
+            "/api/job-postings/from-screenshot",
+            data={"account_id": str(account_id)},
+            files={"file": ("shot.png", _png(b"fake-bytes"), "image/png")},
+        ).json()
+
+    first_a, second_a, b = upload(account_a), upload(account_a), upload(account_b)
+
+    assert first_a["id"] == second_a["id"]
+    assert b["id"] != first_a["id"]
 
 
 def test_list_postings_scoped_to_account(tmp_path):
@@ -385,15 +447,15 @@ def test_create_from_screenshot_saves_transcription_and_image(tmp_path, monkeypa
         ),
     )
     monkeypatch.setattr(
-        "app.api.job_postings.extract_job_posting_from_image",
-        lambda image_bytes, mime_type, account_id=None: fake_result,
+        "app.api.job_postings.extract_job_posting_from_images",
+        lambda images, context_text="", account_id=None: fake_result,
     )
 
     client = _client()
     resp = client.post(
         "/api/job-postings/from-screenshot",
         data={"account_id": str(account_id)},
-        files={"file": ("shot.png", b"fake-bytes", "image/png")},
+        files={"file": ("shot.png", _png(b"fake-bytes"), "image/png")},
     )
 
     assert resp.status_code == 200
@@ -408,13 +470,6 @@ def test_create_from_screenshot_saves_transcription_and_image(tmp_path, monkeypa
 def test_create_from_screenshot_unsupported_type_422s(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     account_id = _make_account()
-
-    from app.profile.job_screenshot_extract import UnsupportedScreenshotType
-
-    def _raise(image_bytes, mime_type, account_id=None):
-        raise UnsupportedScreenshotType("can't read this")
-
-    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_image", _raise)
 
     client = _client()
     resp = client.post(
@@ -569,8 +624,8 @@ def test_compose_screenshots_with_text_and_link(tmp_path, monkeypatch):
             "text": "Referred by a friend, salary 20 LPA. https://acme.example/jobs/9",
         },
         files=[
-            ("files", ("one.png", b"png-1", "image/png")),
-            ("files", ("two.png", b"png-2", "image/png")),
+            ("files", ("one.png", _png(b"1"), "image/png")),
+            ("files", ("two.png", _png(b"2"), "image/png")),
         ],
     )
 
@@ -592,8 +647,8 @@ def test_compose_screenshots_with_text_and_link(tmp_path, monkeypatch):
     client = _client()
     first = client.get(f"/api/job-postings/{body['id']}/images/0")
     second = client.get(f"/api/job-postings/{body['id']}/images/1")
-    assert first.status_code == 200 and first.content == b"png-1"
-    assert second.status_code == 200 and second.content == b"png-2"
+    assert first.status_code == 200 and first.content == _png(b"1")
+    assert second.status_code == 200 and second.content == _png(b"2")
     assert client.get(f"/api/job-postings/{body['id']}/images/2").status_code == 404
 
 
@@ -605,19 +660,23 @@ def test_compose_keeps_images_the_model_could_not_read(tmp_path, monkeypatch):
     def _fail(images, context_text="", account_id=None):
         raise ScreenshotExtractionError("model unavailable")
 
+    _fake_extraction(monkeypatch)
+
     monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_images", _fail)
 
     resp = _client().post(
         "/api/job-postings/compose",
         data={"account_id": str(account_id), "text": "Backend engineer, Python."},
-        files=[("files", ("one.png", b"png-1", "image/png"))],
+        files=[("files", ("one.png", _png(b"1"), "image/png"))],
     )
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["source"] == "pasted"
     assert body["image_count"] == 1
-    assert "model unavailable" in body["warnings"][0]
+    assert body["extraction_status"] == "extracted"
+    assert "model unavailable" in body["extraction_error"]
+    assert body["warnings"] == []
 
 
 def test_delete_posting_removes_its_images(tmp_path, monkeypatch):
@@ -631,7 +690,7 @@ def test_delete_posting_removes_its_images(tmp_path, monkeypatch):
     body = client.post(
         "/api/job-postings/compose",
         data={"account_id": str(account_id)},
-        files=[("files", ("one.png", b"png-1", "image/png"))],
+        files=[("files", ("one.png", _png(b"1"), "image/png"))],
     ).json()
     stored = Path(body["screenshot_path"])
     assert stored.exists()
@@ -728,7 +787,7 @@ def test_large_screenshot_asks_before_the_llm_reads_it(tmp_path, monkeypatch):
     def _unexpected(*args, **kwargs):
         raise AssertionError("the screenshot was sent before the person agreed")
 
-    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_image", _unexpected)
+    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_images", _unexpected)
     resp = _client().post(
         "/api/job-postings/from-screenshot",
         data={"account_id": str(account_id)},
@@ -759,3 +818,288 @@ def test_compose_asks_for_large_text_or_screenshots(tmp_path, monkeypatch):
     assert asked.status_code == 409
     assert asked.json()["detail"]["message"].startswith("This job posting is 29 characters")
     assert confirmed.status_code == 200
+
+
+def _blocking_extraction(monkeypatch):
+    """A fake extraction that waits until the test lets it finish, and
+    counts how often it was called."""
+    import threading
+    from unittest.mock import MagicMock
+
+    release = threading.Event()
+    calls: list[int] = []
+    response = MagicMock()
+    response.parsed = {
+        "company": "Acme", "title": "Backend Engineer", "location": "", "salary_range": "",
+        "employment_type": "", "seniority": "", "experience_required": "",
+        "skills_required": [], "other_requirements": [], "role_summary": "",
+    }
+
+    def _complete(*args, **kwargs):
+        calls.append(1)
+        assert release.wait(10)
+        return response
+
+    monkeypatch.setattr("app.profile.job_extract.complete", _complete)
+    return release, calls
+
+
+def _background_reads(monkeypatch):
+    import app.api.job_postings as job_postings
+
+    monkeypatch.setattr(job_postings, "_start_extraction", _real_start_extraction)
+
+
+def _wait_for_read(client, posting_id: int) -> dict:
+    """Until the worker thread is gone, not just the status: it still
+    resolves the role family and indexes after the status is set."""
+    import time
+
+    from app.api.job_postings import _reading
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        body = client.get(f"/api/job-postings/{posting_id}").json()
+        if body["extraction_status"] != "pending" and not _reading(posting_id):
+            return body
+        time.sleep(0.05)
+    raise AssertionError("the background read never finished")
+
+
+from app.api.job_postings import _start_extraction as _real_start_extraction  # noqa: E402
+
+
+def test_create_posting_returns_before_the_read_finishes(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _background_reads(monkeypatch)
+    release, _ = _blocking_extraction(monkeypatch)
+    client = _client()
+
+    created = client.post(
+        "/api/job-postings", json={"account_id": account_id, "raw_text": "Backend role."}
+    )
+
+    assert created.status_code == 200
+    assert created.json()["extraction_status"] == "pending"
+    assert client.get(f"/api/job-postings/{created.json()['id']}").json()[
+        "extraction_status"
+    ] == "pending"
+    release.set()
+    done = _wait_for_read(client, created.json()["id"])
+    assert done["extraction_status"] == "extracted"
+    assert done["company"] == "Acme"
+
+
+def test_same_posting_sent_twice_while_reading_is_read_once(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _background_reads(monkeypatch)
+    release, calls = _blocking_extraction(monkeypatch)
+    client = _client()
+    body = {"account_id": account_id, "raw_text": "Backend role, sent twice."}
+
+    first = client.post("/api/job-postings", json=body).json()
+    second = client.post("/api/job-postings", json=body).json()
+    again = client.post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id), "text": "Backend role, sent twice."},
+    ).json()
+
+    assert first["id"] == second["id"] == again["id"]
+    assert second["extraction_status"] == "pending"
+    assert again["warnings"] == ["This posting was already saved, so the saved one was kept."]
+    release.set()
+    _wait_for_read(client, first["id"])
+    assert len(calls) == 1
+
+
+def test_reprocess_while_reading_does_not_start_a_second_read(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _background_reads(monkeypatch)
+    release, calls = _blocking_extraction(monkeypatch)
+    client = _client()
+    created = client.post(
+        "/api/job-postings", json={"account_id": account_id, "raw_text": "Backend role."}
+    ).json()
+
+    resp = client.post(f"/api/job-postings/{created['id']}/reprocess")
+
+    assert resp.status_code == 200
+    assert resp.json()["extraction_status"] == "pending"
+    release.set()
+    _wait_for_read(client, created["id"])
+    assert len(calls) == 1
+
+    release.clear()
+    again = client.post(f"/api/job-postings/{created['id']}/reprocess").json()
+    assert again["extraction_status"] == "pending"
+    release.set()
+    assert _wait_for_read(client, created["id"])["extraction_status"] == "extracted"
+    assert len(calls) == 2
+
+
+def test_screenshot_is_read_in_the_background(tmp_path, monkeypatch):
+    import threading
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _background_reads(monkeypatch)
+    release = threading.Event()
+
+    def _read(images, context_text="", account_id=None):
+        assert release.wait(10)
+        return _fake_screenshot_result()
+
+    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_images", _read)
+    client = _client()
+
+    created = client.post(
+        "/api/job-postings/from-screenshot",
+        data={"account_id": str(account_id)},
+        files={"file": ("shot.png", _png(b"shot"), "image/png")},
+    ).json()
+
+    assert created["extraction_status"] == "pending"
+    assert created["raw_text"] == ""
+    assert created["image_count"] == 1
+    release.set()
+    done = _wait_for_read(client, created["id"])
+    assert done["extraction_status"] == "extracted"
+    assert done["company"] == "Acme"
+    assert done["raw_text"] == "Backend Engineer at Acme. Python required."
+
+
+def test_unreadable_screenshot_alone_fails_and_reprocess_reads_it_again(tmp_path, monkeypatch):
+    from app.profile.job_screenshot_extract import ScreenshotExtractionError
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    reads: list[int] = []
+
+    def _fail(images, context_text="", account_id=None):
+        reads.append(len(images))
+        raise ScreenshotExtractionError("could not read any job posting text")
+
+    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_images", _fail)
+    client = _client()
+    created = client.post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id)},
+        files=[("files", ("one.png", _png(b"1"), "image/png"))],
+    ).json()
+    assert created["extraction_status"] == "failed"
+    assert "could not read" in created["extraction_error"]
+
+    monkeypatch.setattr(
+        "app.api.job_postings.extract_job_posting_from_images",
+        lambda images, context_text="", account_id=None: _fake_screenshot_result(),
+    )
+    done = client.post(f"/api/job-postings/{created['id']}/reprocess").json()
+
+    assert reads == [1]
+    assert done["extraction_status"] == "extracted"
+    assert done["source"] == "screenshot"
+    assert "Python required." in done["raw_text"]
+
+
+def test_posting_left_reading_by_a_restart_is_marked_failed(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from app.api.job_postings import fail_interrupted_extractions
+    from app.api.main import app
+    from app.core.db import JobPosting
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    db = get_db()
+    for i, status in enumerate(("pending", "extracted", "pending")):
+        db.add(
+            JobPosting(
+                account_id=account_id, source="pasted", external_id=str(i), company="Acme",
+                title="Engineer", raw_text_quarantined=f"text {i}", content_hash=str(i),
+                extraction_status=status,
+            )
+        )
+    db.commit()
+    db.close()
+
+    assert fail_interrupted_extractions() == 2
+    # The app's startup runs the same thing.
+    db = get_db()
+    db.add(
+        JobPosting(
+            account_id=account_id, source="pasted", external_id="3", company="Acme",
+            title="Engineer", raw_text_quarantined="text 3", content_hash="3",
+            extraction_status="pending",
+        )
+    )
+    db.commit()
+    db.close()
+    with TestClient(app) as client:
+        rows = client.get(f"/api/job-postings?account_id={account_id}").json()
+
+    statuses = sorted(r["extraction_status"] for r in rows)
+    assert statuses == ["extracted", "failed", "failed", "failed"]
+    failed = [r for r in rows if r["extraction_status"] == "failed"]
+    assert all("restarted" in r["extraction_error"] for r in failed)
+    assert all("Reprocess" in r["extraction_error"] for r in failed)
+
+
+def test_concurrent_save_of_the_same_text_returns_the_saved_posting(tmp_path, monkeypatch):
+    import app.api.job_postings as job_postings
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+    body = {"account_id": account_id, "raw_text": "Backend role, raced."}
+    first = client.post("/api/job-postings", json=body).json()
+
+    # The second request looked before the first one committed.
+    real_find = job_postings._find_posting
+    looks: list[int] = []
+
+    def _find_late(db, account_id, content_hash):
+        looks.append(1)
+        return None if len(looks) == 1 else real_find(db, account_id, content_hash)
+
+    monkeypatch.setattr(job_postings, "_find_posting", _find_late)
+    second = client.post("/api/job-postings", json=body)
+
+    assert second.status_code == 200
+    assert second.json()["id"] == first["id"]
+
+
+def test_posting_image_is_served_by_its_bytes_not_its_name(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    monkeypatch.setattr(
+        "app.api.job_postings.extract_job_posting_from_images",
+        lambda images, context_text="", account_id=None: _fake_screenshot_result(),
+    )
+    client = _client()
+    created = client.post(
+        "/api/job-postings/compose",
+        data={"account_id": str(account_id)},
+        files=[("files", ("page.html", _png(b"<script>alert(1)</script>"), "text/html"))],
+    ).json()
+
+    resp = client.get(f"/api/job-postings/{created['id']}/images/0")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+
+
+def test_screenshot_whose_bytes_are_not_an_image_is_refused(tmp_path):
+    _reset_db(tmp_path)
+    account_id = _make_account()
+
+    resp = _client().post(
+        "/api/job-postings/from-screenshot",
+        data={"account_id": str(account_id)},
+        files={"file": ("shot.png", b"<html>not a png</html>", "image/png")},
+    )
+
+    assert resp.status_code == 422
+    assert "not a PNG" in resp.json()["detail"]

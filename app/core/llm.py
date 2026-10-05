@@ -155,13 +155,18 @@ def _canonical_messages(messages: list[dict]) -> list[dict]:
 _CACHE_VERSION = 1
 
 
-def _prompt_hash(model: str, messages: list[dict], schema: dict | None) -> str:
+def _prompt_hash(
+    model: str, messages: list[dict], schema: dict | None, account_id: int | None
+) -> str:
     """Keyed on the model rather than the tier: with the same model on
-    both tiers, one prompt is one cache entry."""
+    both tiers, one prompt is one cache entry. Keyed on the account too,
+    so an answer paid for by a key restricted to one profile is never
+    served to another."""
     payload = json.dumps(
         {
             "version": _CACHE_VERSION,
             "model": model,
+            "account_id": account_id,
             "messages": _canonical_messages(messages),
             "schema": schema,
         },
@@ -317,15 +322,16 @@ def complete(
     purpose labels the feature spending the call ("repo_facts",
     "resume_build", ...) for /monitor; it is not part of the cache key.
     account_id lets keys restricted to certain profiles serve the call;
-    None can only use unrestricted keys. Callers never pick a key: every
-    usable one is tried in order, and the LLMCall row records which paid.
+    None can only use unrestricted keys. It is part of the cache key.
+    Callers never pick a key: every usable one is tried in order, and the
+    LLMCall row records which paid.
     bypass_cache skips the cache lookup, for a retry the person asked for;
     the fresh answer is still recorded, so later calls can reuse it.
     _completion_fn replaces litellm.completion in tests.
     """
     settings = get_llm_settings()
     model = settings.model_for(tier)
-    prompt_hash = _prompt_hash(model, messages, schema)
+    prompt_hash = _prompt_hash(model, messages, schema, account_id)
 
     cached_row = None if bypass_cache else _lookup_cache(prompt_hash)
     cached_response = cached_row.response_json if cached_row is not None else None
@@ -405,7 +411,7 @@ def complete(
 
     if answered_model != model:
         model = answered_model
-        prompt_hash = _prompt_hash(model, messages, schema)
+        prompt_hash = _prompt_hash(model, messages, schema, account_id)
 
     content = response.choices[0].message.content or ""
     usage = getattr(response, "usage", None)

@@ -535,8 +535,8 @@ def test_delete_account_removes_job_screenshot_files(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "app.api.job_postings.extract_job_posting_from_image",
-        lambda image_bytes, mime_type, account_id=None: fake_result,
+        "app.api.job_postings.extract_job_posting_from_images",
+        lambda images, context_text="", account_id=None: fake_result,
     )
 
     client = _client()
@@ -547,7 +547,7 @@ def test_delete_account_removes_job_screenshot_files(tmp_path, monkeypatch):
     client.post(
         "/api/job-postings/from-screenshot",
         data={"account_id": str(account["id"])},
-        files={"file": ("shot.png", io.BytesIO(b"fake"), "image/png")},
+        files={"file": ("shot.png", io.BytesIO(b"\x89PNG\r\n\x1a\nfake"), "image/png")},
     )
     screenshot_dir = tmp_path / "job_screenshots" / str(account["id"])
     assert screenshot_dir.exists()

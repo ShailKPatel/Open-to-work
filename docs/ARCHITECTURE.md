@@ -164,7 +164,7 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `social_links` | Contact links with a free-form platform. |
 | `resumes` | Uploaded and generated resumes: extracted fields, `content_json`, compiled PDF path. |
 | `profiles` | Aggregated skill snapshots (`skills_json`). |
-| `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is globally unique. |
+| `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is unique per account: a hash of the pasted text, or of the text and screenshot bytes when there are screenshots. |
 | `role_families` | Canonical job-title clusters. |
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |
 | `app_settings` | One row per setting picked in the app: bulk model, quality model, monthly budget. A missing row means the default. |
@@ -173,7 +173,23 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `embedding_cache` | Embedding vectors by content hash and model. |
 | `skill_map_cache` | One stored skill-map layout per account, with the fingerprint of the skills it was built from. |
 
+Saving a job posting returns at once with `extraction_status` "pending". The LLM read (text extraction, or the screenshot transcription) runs in a worker thread through `app/core/jobs.py`, keyed by posting id, so a resent save or a second Reprocess never starts a second read. The jobs list and the posting page poll until the status changes. Rows still "pending" at startup lost their worker to the restart and are marked failed with a note to reprocess.
+
 Archived projects, roles, education entries and skills stay on their pages under an Archived section but are left out of resume building, the portfolio counts, the skill map and job analytics. A skill whose every project and role is archived counts as archived too.
+
+## Security model
+
+The app has no login. It is built for one person on their own machine, and the Docker ports bind to 127.0.0.1. Whoever can send it requests can do anything the UI can. `app/api/security.py` protects against other web pages reaching it through that person's browser:
+
+- **Cross-site requests.** POST, PUT, PATCH and DELETE are refused (403) when `Sec-Fetch-Site` is anything but `same-origin` or `none`, or when `Origin` (or `Referer` when there is no `Origin`) is not the app's own origin. A request with none of these headers is not from a web page and is allowed.
+- **DNS rebinding.** Every request must carry a loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`, any port), else 400.
+- **Response headers.** `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN` and a CSP of `frame-ancestors 'self'; base-uri 'self'; form-action 'self'`. Framing is `'self'` rather than `'none'` because the resume pages show PDFs in an iframe. There is no `script-src`: Tailwind and Alpine.js load from a CDN and the pages use inline scripts and Alpine expressions, so a script policy would need `'unsafe-inline'` and `'unsafe-eval'` and would block very little.
+- **Uploaded files.** Screenshots must be PNG, JPEG, WebP or GIF by their bytes. Resumes are typed by their bytes, and files are served with that type. Only a PDF or an image is shown inline. Anything else downloads as `application/octet-stream`, so an uploaded page never runs on the app's origin. Stored file names are reduced to their base name and prefixed with an id or hash.
+- **LaTeX.** Every value in a resume template goes through `escape_latex` or `escape_latex_url` (`app/resume_build/latex.py`). Tectonic runs with shell escape off and in untrusted mode.
+- **Secrets.** API keys are encrypted at rest and shown only as masked previews. Provider keys travel in request headers, never in URLs.
+- **Fetching.** Links in job postings are stored, never opened. The server only calls GitHub, the configured LLM providers, and the embedding model and Tectonic package downloads. No endpoint fetches a URL a person typed, apart from the `api_base` of an Azure OpenAI or Ollama key, which is the person's own setting.
+
+Out of scope: anyone else with access to the machine or the `data/` directory (the encryption key file sits next to the database), other local processes, which can call the API directly, exposing the port to a network, which this model does not cover, and XSS through a compromised CDN script.
 
 ## Conventions
 

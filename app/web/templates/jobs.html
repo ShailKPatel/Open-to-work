@@ -101,8 +101,11 @@
           </div>
           <div class="flex items-center justify-between mt-auto pt-3 text-xs text-[color:var(--muted)]" style="border-top: 1px solid var(--line);">
             <span x-show="p.extraction_status === 'extracted'" x-text="p.applied ? 'Applied' + (p.applied_at ? ' ' + otwDates.day(p.applied_at) : '') : 'Saved ' + new Date(p.fetched_at).toLocaleDateString()" :class="p.applied && 'text-[color:var(--ink)]'"></span>
-            <span x-show="p.extraction_status === 'failed'" class="otw-error">Could not read details</span>
-            <span x-show="p.extraction_status === 'pending'" class="otw-working">Reading…</span>
+            <span x-show="p.extraction_status === 'failed'" class="otw-error" :title="p.extraction_error || ''">Could not read details</span>
+            <span x-show="p.extraction_status === 'pending'" class="flex items-center gap-2">
+              <svg class="animate-spin w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>
+              Extracting details in the background, you can keep using the app
+            </span>
           </div>
         </a>
       </template>
@@ -146,6 +149,8 @@
       dragging: false,
       saving: false,
       deleting: null,
+      // Set while a posting is still being read, to look again shortly.
+      refreshTimer: null,
       composeError: '',
       composeWarnings: [],
       minSalary: '',
@@ -172,10 +177,25 @@
       async loadPostings() {
         this.loading = true;
         try {
-          const res = await fetch(`/api/job-postings?account_id=${this.accountId}`);
-          this.postings = await res.json();
+          await this.refreshPostings();
         } finally {
           this.loading = false;
+        }
+      },
+
+      // Postings are read in the background after saving, so while any
+      // is still "pending" the list is fetched again every few seconds.
+      async refreshPostings() {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+        try {
+          const res = await fetch(`/api/job-postings?account_id=${this.accountId}`);
+          if (res.ok) this.postings = await res.json();
+        } catch {
+          // Tried again on the next round while anything is still reading.
+        }
+        if (this.postings.some((p) => p.extraction_status === 'pending')) {
+          this.refreshTimer = setTimeout(() => this.refreshPostings(), 3000);
         }
       },
 
@@ -208,8 +228,7 @@
         return this.composeText.trim().length > 0 || this.composeFiles.length > 0;
       },
       savingLabel() {
-        if (this.composeFiles.length) return 'Reading screenshots…';
-        return 'Reading…';
+        return 'Saving…';
       },
 
       resetAddForm() {
@@ -240,7 +259,7 @@
           }
           const saved = await res.json();
           this.composeWarnings = saved.warnings || [];
-          await this.loadPostings();
+          await this.refreshPostings();
           this.resetAddForm();
         } finally {
           this.saving = false;

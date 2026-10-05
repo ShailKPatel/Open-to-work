@@ -1,9 +1,9 @@
 """Canonical job-title clustering: "ML Engineer", "Machine Learning
 Engineer", "Applied ML Engineer" all resolve to the same RoleFamily row,
 so job-posting analytics (app/api/job_analytics.py) roll up by what a role
-actually is, not by exact title string. Global across accounts, same
-posture as JobPosting.content_hash's shared-cache reasoning: a title's
-canonical family doesn't depend on which local profile pasted the posting.
+actually is, not by exact title string. Global across accounts: a
+title's canonical family doesn't depend on which local profile pasted the
+posting.
 
 Retrieval-first, not an LLM call on every title: resolve_role_family()
 embeds the raw title and searches the `role_families` Qdrant collection

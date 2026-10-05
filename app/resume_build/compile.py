@@ -15,6 +15,7 @@ actually runs against real input.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -54,11 +55,15 @@ def compile_tex(
         tex_path.write_text(tex_source, encoding="utf-8")
 
         try:
+            # Shell escape is off by default in Tectonic; untrusted mode
+            # also turns off anything else it knows to be unsafe, in case
+            # resume text ever got past escape_latex().
             result = run(
                 ["tectonic", "--outdir", str(tmp), str(tex_path)],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env={**os.environ, "TECTONIC_UNTRUSTED_MODE": "1"},
             )
         except FileNotFoundError as e:
             raise TectonicNotInstalledError(

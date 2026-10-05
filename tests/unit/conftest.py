@@ -67,3 +67,29 @@ def _no_background_startup_work(monkeypatch):
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _job_posting_reads_inline(monkeypatch):
+    """Saving a job posting starts its LLM read in a worker thread
+    (app/api/job_postings.py's _start_extraction). Run it inline instead,
+    so a test sees the finished read in the response and no thread
+    outlives its temp database. Tests of the background path itself
+    restore the real starter."""
+    import app.api.job_postings as job_postings
+
+    def run_inline(posting_id: int, bypass_cache: bool = False) -> bool:
+        job_postings._read_posting(posting_id, bypass_cache=bypass_cache)
+        return True
+
+    monkeypatch.setattr(job_postings, "_start_extraction", run_inline)
+
+
+@pytest.fixture(autouse=True)
+def _test_client_host_allowed(monkeypatch):
+    """TestClient sends Host: testserver, which the app's host check
+    (app/api/security.py) refuses like any other non-loopback name. Let it
+    through so every API test can keep its plain TestClient(app)."""
+    from app.api import security
+
+    monkeypatch.setattr(security, "ALLOWED_HOSTS", security.ALLOWED_HOSTS | {"testserver"})

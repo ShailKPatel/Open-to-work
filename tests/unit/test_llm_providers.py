@@ -131,7 +131,8 @@ def test_validate_sends_each_provider_key_in_its_expected_place(monkeypatch):
     assert openai["headers"]["Authorization"] == "Bearer k-openai"
     assert anthropic["headers"]["x-api-key"] == "k-anthropic"
     assert "anthropic-version" in anthropic["headers"]
-    assert gemini["params"]["key"] == "k-gemini"
+    assert gemini["headers"]["x-goog-api-key"] == "k-gemini"
+    assert "params" not in gemini
     assert mistral["headers"]["Authorization"] == "Bearer k-mistral"
     assert azure["headers"]["api-key"] == "k-azure"
     assert azure["params"]["api-version"] == "2024-10-21"

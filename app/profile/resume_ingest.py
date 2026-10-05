@@ -23,6 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import Account, Resume
+from app.core.filetypes import PDF, sniff_type
 from app.core.settings import get_settings
 from app.profile.resume_extract import (
     ContactClaim,
@@ -150,6 +151,20 @@ def check_not_generated(db: Session, account_id: int, data: bytes) -> None:
         raise GeneratedResumeError(built)
 
 
+def _file_type(data: bytes, safe_name: str, declared: str | None) -> str:
+    """A PDF or image is typed by its bytes. Anything else keeps the type
+    it came with, for download only, unless it claimed to be a PDF or an
+    image: then it is plain bytes, so it is neither sent to the resume
+    reader nor served back as something it is not."""
+    sniffed = sniff_type(data)
+    if sniffed is not None:
+        return sniffed
+    declared = (declared or mimetypes.guess_type(safe_name)[0] or "").lower()
+    if not declared or declared == PDF or declared.startswith("image/"):
+        return "application/octet-stream"
+    return declared
+
+
 def ingest_resume(
     db: Session,
     account_id: int,
@@ -183,9 +198,7 @@ def ingest_resume(
     if existing is not None:
         raise DuplicateResumeError(existing)
     check_not_generated(db, account_id, data)
-    mime_type = (
-        upload.content_type or mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
-    )
+    mime_type = _file_type(data, safe_name, upload.content_type)
 
     row = Resume(
         account_id=account_id,

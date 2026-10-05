@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -120,13 +121,26 @@ def is_profile_repo(full_name: str) -> bool:
 
 
 class Repository(Base):
+    """One GitHub repo (or hand-added project) as seen by one account.
+    github_id and full_name are unique per account, not globally: two
+    profiles that sync the same repo each get their own row and their own
+    evidence.
+    """
+
     __tablename__ = "repositories"
+    # Unique indexes, not UniqueConstraint: an index can be added to an
+    # existing table, so an upgraded database ends up with the same schema
+    # as a fresh one (migrations.py's _migrate_per_account_unique_indexes).
+    __table_args__ = (
+        Index("uq_repositories_account_github_id", "account_id", "github_id", unique=True),
+        Index("uq_repositories_account_full_name", "account_id", "full_name", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
-    github_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    github_id: Mapped[int] = mapped_column(Integer, index=True)
     name: Mapped[str] = mapped_column(String)
-    full_name: Mapped[str] = mapped_column(String, unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String, index=True)
     url: Mapped[str] = mapped_column(String)
     is_fork: Mapped[bool] = mapped_column(default=False)
     primary_language: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -578,14 +592,15 @@ class RoleFamily(Base):
 
 
 class JobPosting(Base):
-    """A saved job posting. content_hash is unique across accounts: the
-    same text is one row, owned by whichever account saved it first. A
-    second account saving identical text gets that row back but will not
-    see it in its own list; accepted rather than paying for a
-    table-rebuilding migration to a per-account constraint.
+    """A saved job posting. content_hash is unique per account: saving
+    the same text twice returns the account's existing row, and another
+    account saving identical text gets a row of its own.
     """
 
     __tablename__ = "job_postings"
+    __table_args__ = (
+        Index("uq_job_postings_account_content_hash", "account_id", "content_hash", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
@@ -599,7 +614,7 @@ class JobPosting(Base):
     # untrusted: never string-formatted into a prompt template
     raw_text_quarantined: Mapped[str] = mapped_column(Text)
     extracted_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    content_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    content_hash: Mapped[str] = mapped_column(String, index=True)
     apply_url: Mapped[str | None] = mapped_column(String, nullable=True)
     fetched_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
 

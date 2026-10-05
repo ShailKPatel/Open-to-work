@@ -11,8 +11,9 @@ or two pages, never over and never under. Four levers, cheapest first:
 3. Rewording, once, when the tightest rung still overflows by a line or
    two. The model reads the PDF and proposes shorter wordings, each
    checked by _is_faithful_shortening (shorter, keeps at least two fifths
-   of the original, no new numbers or words, no em dash) and dropped if
-   it fails.
+   of the original, no new numbers or words, no em dash) and by
+   grounding.py (no technology the original does not name), and dropped
+   if it fails.
 4. Cutting, last and one item at a time: a skill, then a project point,
    then an experience point if the role keeps at least one. Roles and
    their company, title and dates are never cut. One model call returns
@@ -43,6 +44,7 @@ from app.core.llm import (
     user_message,
 )
 from app.resume_build.compile import CompileError, compile_tex
+from app.resume_build.grounding import TechVocabulary, introduces_technology
 from app.resume_build.latex import render_resume
 from app.resume_build.layout import BASE_DENSITY_INDEX, DENSITY_LADDER, layout_for
 
@@ -366,15 +368,22 @@ def _is_faithful_shortening(original: str, shorter: str) -> bool:
     )
 
 
-def _apply_rewrite(data: dict[str, Any], rewrite: dict[str, Any]) -> bool:
+def _apply_rewrite(
+    data: dict[str, Any], rewrite: dict[str, Any], vocabulary: TechVocabulary | None = None
+) -> bool:
     """Mutates data in place. True when the rewording matched a current
-    line exactly and passed _is_faithful_shortening(); anything else (a
-    misquoted original, a wording that adds something) is dropped."""
+    line exactly, passed _is_faithful_shortening() and names no technology
+    in `vocabulary` the original does not; anything else (a misquoted
+    original, a wording that adds something) is dropped. Short names like
+    "Go" or "AWS" slip past the word check, which ignores words of three
+    letters or fewer, so the technology check is what catches them."""
     target = rewrite.get("target")
     original = str(rewrite.get("original", "")).strip()
     shorter = str(rewrite.get("shorter", "")).strip()
     owner = str(rewrite.get("owner", "")).strip()
     if not original or not _is_faithful_shortening(original, shorter):
+        return False
+    if vocabulary is not None and introduces_technology(original, shorter, vocabulary):
         return False
 
     if target == "summary":
@@ -639,6 +648,7 @@ def fit_to_page_limit(
     target_pages = max(1, max_pages)
     working = copy.deepcopy(data)
     reserve = working.pop("reserve", None) or {}
+    vocabulary = TechVocabulary(reserve.get("known_technologies") or [])
     typesetter = _Typesetter(template, max_compiles=max_compiles)
 
     cuts = cuts_made
@@ -706,7 +716,7 @@ def fit_to_page_limit(
                     planned = _plan_rewrites(working, overflowing, target_pages, account_id)
                 except _LLM_UNREACHABLE:
                     planned = []
-                applied_rewrites = sum(_apply_rewrite(working, r) for r in planned)
+                applied_rewrites = sum(_apply_rewrite(working, r, vocabulary) for r in planned)
                 if applied_rewrites:
                     rewrites += applied_rewrites
                     _report()

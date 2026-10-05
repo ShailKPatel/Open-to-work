@@ -36,6 +36,7 @@ from app.core.db import (
     ResumeProfileLink,
     Skill,
 )
+from app.core.filetypes import sniff_file
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
@@ -313,10 +314,17 @@ def download_resume(
     row = db.get(Resume, resume_id)
     if row is None or not row.stored_path or not Path(row.stored_path).exists():
         raise HTTPException(status_code=404, detail=f"no resume file with id={resume_id}")
+    # Only a PDF or image, judged by its bytes, is shown in the browser.
+    # Anything else is a download, whatever type it was uploaded with, so
+    # an uploaded page never runs as part of this app.
+    media_type = sniff_file(row.stored_path)
+    if media_type is None:
+        media_type = "application/octet-stream"
+        disposition = "attachment"
     return FileResponse(
         row.stored_path,
         filename=row.filename,
-        media_type=row.mime_type,
+        media_type=media_type,
         content_disposition_type=disposition,
     )
 

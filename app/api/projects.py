@@ -239,10 +239,10 @@ def project_detail(repo_id: int, *, db: DbSession) -> ProjectDetail:
 
 def _next_manual_github_id(db: Session) -> int:
     """Manually-added projects have no GitHub repo behind them, but
-    `Repository.github_id` is a NOT NULL unique column (no migration
-    tooling in this project to make it nullable). Real GitHub ids are always
-    positive, so a strictly-decreasing negative counter is unique forever
-    without touching the schema; `ProjectSummary.is_manual` /
+    `Repository.github_id` is a NOT NULL column, unique per account (no
+    migration tooling in this project to make it nullable). Real GitHub ids
+    are always positive, so a strictly-decreasing negative counter is unique
+    forever without touching the schema; `ProjectSummary.is_manual` /
     `ProjectDetail.is_manual` key off `github_id < 0` to tell these apart
     from synced repos.
     """
