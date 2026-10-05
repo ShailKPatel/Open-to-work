@@ -86,6 +86,20 @@ def _job_posting_reads_inline(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _resume_reads_inline(monkeypatch):
+    """Same as _job_posting_reads_inline, for an uploaded resume's read
+    (app/profile/resume_ingest.py's start_extraction). Tests of the
+    background path itself restore the real starter."""
+    import app.profile.resume_ingest as resume_ingest
+
+    def run_inline(key, work) -> bool:
+        work()
+        return True
+
+    monkeypatch.setattr(resume_ingest, "_start_worker", run_inline)
+
+
+@pytest.fixture(autouse=True)
 def _test_client_host_allowed(monkeypatch):
     """TestClient sends Host: testserver, which the app's host check
     (app/api/security.py) refuses like any other non-loopback name. Let it

@@ -7,6 +7,7 @@ path POST /api/resume uses (see app/api/resume.py).
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import shutil
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from github import UnknownObjectException
 from pydantic import BaseModel
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DbSession
 from app.api.input_limits import file_notes, require_confirmation
@@ -63,6 +65,14 @@ class AccountSummary(BaseModel):
         )
 
 
+class CreatedAccount(AccountSummary):
+    # The signup resume, when one was sent: its row and how reading it is
+    # going ("pending" while the worker reads it). The profile itself is
+    # made either way, whatever the AI provider is doing.
+    resume_id: int | None = None
+    resume_extraction: str | None = None
+
+
 @router.get("/accounts", response_model=list[AccountSummary])
 def list_accounts(db: DbSession) -> list[AccountSummary]:
     accounts = db.execute(select(Account).order_by(Account.created_at)).scalars().all()
@@ -89,20 +99,81 @@ def _github_user_exists(username: str) -> bool | None:
         return None
 
 
-@router.post("/accounts", response_model=AccountSummary)
+# A second identical signup this soon after the first is the same form
+# sent twice, not a second person with the same name.
+_DUPLICATE_WINDOW = dt.timedelta(seconds=60)
+
+
+def _created(db: DbSession, account: Account) -> CreatedAccount:
+    resume = db.execute(
+        select(Resume)
+        .where(Resume.account_id == account.id)
+        .order_by(Resume.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    return CreatedAccount(
+        **AccountSummary.from_account(account).model_dump(),
+        resume_id=resume.id if resume else None,
+        resume_extraction=resume.extraction_status if resume else None,
+    )
+
+
+def _already_created(
+    db: DbSession, request_id: str, first_name: str, last_name: str, username: str
+) -> Account | None:
+    """The account an earlier send of this same signup made, if any: by
+    the form's request_id, or else by the same name and GitHub username
+    within the last minute."""
+    if request_id:
+        found = db.execute(
+            select(Account).where(Account.request_id == request_id)
+        ).scalar_one_or_none()
+        if found is not None:
+            return found
+    cutoff = dt.datetime.now(dt.UTC) - _DUPLICATE_WINDOW
+    for account in db.execute(
+        select(Account).where(
+            Account.first_name == first_name,
+            Account.last_name == last_name,
+            Account.github_username == username,
+        )
+    ).scalars():
+        created = account.created_at
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=dt.UTC)
+        if created >= cutoff:
+            return account
+    return None
+
+
+@router.post("/accounts", response_model=CreatedAccount)
 def create_account(
     first_name: str = Form(...),
     last_name: str = Form(...),
     github_username: str = Form(""),
     resume: UploadFile | None = File(None),
     confirm_large: bool = Form(False),
+    request_id: str = Form(""),
     *,
     db: DbSession,
-) -> AccountSummary:
+) -> CreatedAccount:
+    """Makes the profile and answers within a second: a signup resume is
+    saved here and read in the background (app/profile/resume_ingest.py),
+    so a slow or unavailable AI provider never holds up or breaks this.
+    Sending the same signup again (same request_id, or the same name and
+    GitHub username within a minute) answers with the profile already
+    made instead of a second one.
+    """
     # GitHub is optional at signup, non-technical users, or anyone without
     # a GitHub account, leave it blank and build their profile by hand
     # instead. Only check/seed a sync source when one was actually given.
     username = github_username.strip()
+    first_name = first_name.strip()
+    last_name = last_name.strip()
+    request_id = request_id.strip()
+    existing = _already_created(db, request_id, first_name, last_name, username)
+    if existing is not None:
+        return _created(db, existing)
     if username and _github_user_exists(username) is False:
         raise HTTPException(status_code=422, detail=f"GitHub user '{username}' not found")
     if resume is not None and resume.filename:
@@ -114,12 +185,21 @@ def create_account(
         resume.file.seek(0)
 
     account = Account(
-        first_name=first_name.strip(),
-        last_name=last_name.strip(),
+        first_name=first_name,
+        last_name=last_name,
         github_username=username,
+        request_id=request_id or None,
     )
     db.add(account)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # The same request_id committed by a send running alongside this one.
+        db.rollback()
+        existing = _already_created(db, request_id, first_name, last_name, username)
+        if existing is None:
+            raise
+        return _created(db, existing)
     db.refresh(account)
 
     if username:
@@ -141,11 +221,12 @@ def create_account(
     if resume is not None and resume.filename:
         # Same ingestion path POST /api/resume uses (app/api/resume.py):
         # saves the file, creates its Resume row, mirrors it onto
-        # account.resume_filename/resume_path, and runs extraction.
+        # account.resume_filename/resume_path, and starts extraction in
+        # the background.
         ingest_resume(db, account.id, resume)
         db.refresh(account)
 
-    return AccountSummary.from_account(account)
+    return _created(db, account)
 
 
 def _delete_qdrant_points(skill_evidence_ids: list[int]) -> None:

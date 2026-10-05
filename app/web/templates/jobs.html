@@ -101,7 +101,7 @@
           </div>
           <div class="flex items-center justify-between mt-auto pt-3 text-xs text-[color:var(--muted)]" style="border-top: 1px solid var(--line);">
             <span x-show="p.extraction_status === 'extracted'" x-text="p.applied ? 'Applied' + (p.applied_at ? ' ' + otwDates.day(p.applied_at) : '') : 'Saved ' + new Date(p.fetched_at).toLocaleDateString()" :class="p.applied && 'text-[color:var(--ink)]'"></span>
-            <span x-show="p.extraction_status === 'failed'" class="otw-error" :title="p.extraction_error || ''">Could not read details</span>
+            <span x-show="p.extraction_status === 'failed'" class="otw-error" :title="p.extraction_error || ''" x-text="otwIsLlmKind(p.extraction_error_kind) ? 'AI provider unavailable, saved for retry' : 'Could not read details'"></span>
             <span x-show="p.extraction_status === 'pending'" class="flex items-center gap-2">
               <svg class="animate-spin w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>
               Extracting details in the background, you can keep using the app
@@ -254,13 +254,15 @@
           if (!res) return;
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            this.composeError = typeof err.detail === 'string' ? err.detail : 'Could not save this job.';
+            this.composeError = otwResponseError(err, 'Could not save this job.');
             return;
           }
           const saved = await res.json();
           this.composeWarnings = saved.warnings || [];
           await this.refreshPostings();
           this.resetAddForm();
+        } catch (e) {
+          this.composeError = otwErrorText(e);
         } finally {
           this.saving = false;
         }

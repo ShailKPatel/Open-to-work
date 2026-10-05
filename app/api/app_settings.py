@@ -98,3 +98,19 @@ def list_models() -> list[ProviderModelsOut]:
         )
         for provider in PROVIDERS
     ]
+
+
+class LlmHealthOut(BaseModel):
+    degraded: bool
+    model: str | None = None
+    detail: str | None = None
+
+
+@router.get("/llm/health", response_model=LlmHealthOut)
+def get_llm_health() -> LlmHealthOut:
+    """Whether the AI provider was found unavailable in the last few
+    minutes with no successful call since (app/core/llm.py's llm_health).
+    The nav polls this to show its "AI degraded" pill."""
+    from app.core.llm import llm_health
+
+    return LlmHealthOut(**llm_health())

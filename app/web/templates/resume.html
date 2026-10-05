@@ -114,7 +114,19 @@
               </button>
             </div>
           </div>
-          <p x-show="resume.extraction_error" x-text="resume.extraction_error" class="mt-2 text-xs otw-error"></p>
+          <!-- A read that failed because of the AI provider: what happened in
+               plain words, Retry (which reads the saved file again) and a
+               way to Manage APIs. Kept on the row, so a reload still shows it. -->
+          <div x-show="resume.extraction_status === 'failed' && otwIsLlmKind(resume.extraction_error_kind)" class="mt-3 text-xs">
+            <p class="otw-error" x-text="otwLlmMessage(resume.extraction_error_kind, null, true)"></p>
+            <p class="mt-1 text-[color:var(--muted)]" x-text="resume.extraction_error"></p>
+            <div class="mt-2 flex items-center gap-3">
+              <button type="button" @click="reprocess(resume)" :disabled="Boolean(reprocessing[resume.id])" class="otw-btn-accent text-xs px-3 py-1.5">Retry</button>
+              <a href="/apis" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Manage APIs →</a>
+            </div>
+          </div>
+          <p x-show="resume.extraction_error && !(resume.extraction_status === 'failed' && otwIsLlmKind(resume.extraction_error_kind))" x-text="resume.extraction_error" class="mt-2 text-xs otw-error"></p>
+          <p x-show="reprocessError[resume.id]" x-text="reprocessError[resume.id]" class="mt-2 text-xs otw-error"></p>
 
           <!-- A generated resume whose build stopped partway: what is done,
                what is left, and Retry, which picks up from there. -->
@@ -125,6 +137,7 @@
               What was done is kept; Retry carries on from there.
             </p>
             <p x-show="resume.build_error && !retrying[resume.id]" x-text="resume.build_error" class="mt-2 text-xs otw-error"></p>
+            <a x-show="otwIsLlmKind(resume.build_error_kind) && !retrying[resume.id]" href="/apis" class="mt-1 inline-block text-xs underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Manage APIs →</a>
             <p x-show="resume.build_attempts > 1 && !retrying[resume.id]" class="mt-1 text-xs text-[color:var(--muted)]" x-text="`Stopped ${resume.build_attempts} times so far.`"></p>
             <p x-show="retrying[resume.id]" class="mt-2 text-xs text-[color:var(--muted)] otw-working" x-text="retryStage[resume.id] || 'Starting'"></p>
             <p x-show="retryError[resume.id]" x-text="retryError[resume.id]" class="mt-2 text-xs otw-error"></p>
@@ -499,6 +512,8 @@
       savingSummary: {},
       savingNotes: {},
       reprocessing: {},
+      reprocessError: {},
+      readPoll: null,
       retrying: {},
       retryStage: {},
       retryError: {},
@@ -580,13 +595,13 @@
           const res = await fetch(`/api/resume-build/retry/${resume.id}`, { method: 'POST' });
           const build = await res.json();
           if (!res.ok) {
-            this.retryError[resume.id] = build.detail || 'Could not start the retry.';
+            this.retryError[resume.id] = otwResponseError(build, 'Could not start the retry.');
             this.retrying[resume.id] = false;
             return;
           }
           this.watchRetry(resume.id, build);
         } catch (e) {
-          this.retryError[resume.id] = 'Could not reach the server.';
+          this.retryError[resume.id] = otwErrorText(e);
           this.retrying[resume.id] = false;
         }
       },
@@ -623,9 +638,51 @@
             this.editSummary[r.id] = r.summary || '';
             this.editNotes[r.id] = r.notes || '';
           }
+        } catch (e) {
+          this.uploadError = otwErrorText(e);
         } finally {
           this.loading = false;
         }
+        this.watchReads();
+      },
+
+      // An uploaded file still being read in the background.
+      isReading(resume) {
+        return resume.extraction_status === 'pending' && resume.has_original_file && !resume.build_incomplete;
+      },
+
+      // Polls while any upload is being read, swapping in each row once
+      // its read ends. Only those rows change, so edits in progress on
+      // other cards are left alone.
+      watchReads() {
+        if (this.readPoll || !this.resumes.some((r) => this.isReading(r))) return;
+        this.readPoll = setTimeout(async () => {
+          this.readPoll = null;
+          let fresh;
+          try {
+            const res = await fetch(`/api/resume?account_id=${this.accountId}`);
+            if (!res.ok) throw new Error('poll failed');
+            fresh = new Map((await res.json()).map((r) => [r.id, r]));
+          } catch (e) {
+            this.watchReads();
+            return;
+          }
+          for (const [idx, r] of this.resumes.entries()) {
+            const now = fresh.get(r.id);
+            if (!this.isReading(r) || !now || this.isReading(now)) continue;
+            this.resumes[idx] = now;
+            this.editSummary[r.id] = now.summary || '';
+            if (now.extraction_status === 'failed' && otwIsLlmKind(now.extraction_error_kind)) {
+              otwLlmProblem({
+                kind: now.extraction_error_kind,
+                detail: now.extraction_error,
+                kept: true,
+                retry: () => this.reprocess(now),
+              });
+            }
+          }
+          this.watchReads();
+        }, 2000);
       },
 
       // Matches what is saved, not the inline edits in progress, so a card
@@ -731,11 +788,14 @@
         if (resume.build_incomplete) return 'Incomplete';
         if (resume.extraction_status === 'extracted') return '';
         if (resume.extraction_status === 'unsupported_type') return 'Not auto-analyzable';
+        if (resume.extraction_status === 'failed') return 'Not read';
+        if (this.isReading(resume)) return 'Reading';
         return 'Pending';
       },
 
       statusClass(resume) {
-        return resume.extraction_status === 'failed' ? 'otw-error' : '';
+        if (resume.extraction_status === 'failed') return 'otw-error';
+        return this.isReading(resume) ? 'otw-pill-live' : '';
       },
 
       autoGrow(el) {
@@ -791,9 +851,9 @@
             event.target.value = '';
             return;
           }
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
           if (!res.ok) {
-            this.uploadError = data.detail || 'Could not upload that.';
+            this.uploadError = otwResponseError(data, 'Could not upload that.');
             event.target.value = '';
             return;
           }
@@ -802,7 +862,7 @@
           event.target.value = '';
           await this.load();
         } catch (e) {
-          this.uploadError = String(e);
+          this.uploadError = otwErrorText(e);
         } finally {
           this.uploading = false;
         }
@@ -871,20 +931,25 @@
         }
       },
 
+      // Reads the saved file again in the background (also the Retry for
+      // a read the AI provider failed); the card shows Reading until done.
       async reprocess(resume) {
+        if (this.reprocessing[resume.id]) return;
         this.reprocessing[resume.id] = true;
+        this.reprocessError[resume.id] = '';
         try {
-          const res = await fetch(`/api/resume/${resume.id}/reprocess`, { method: 'POST' });
-          const updated = await res.json();
-          if (res.ok) {
-            const idx = this.resumes.findIndex((r) => r.id === resume.id);
-            if (idx !== -1) this.resumes[idx] = updated;
-            this.editSummary[resume.id] = updated.summary || '';
-            if (this.expanded[resume.id]) await this.loadProfile(updated);
-            else delete this.profiles[resume.id];
-          } else {
-            alert(updated.detail || 'Reprocess failed.');
+          const out = await otwFetch(`/api/resume/${resume.id}/reprocess`, { method: 'POST' }, { fallback: 'Reprocess failed.' });
+          if (!out.ok) {
+            this.reprocessError[resume.id] = out.error;
+            return;
           }
+          const updated = out.data;
+          const idx = this.resumes.findIndex((r) => r.id === resume.id);
+          if (idx !== -1) this.resumes[idx] = updated;
+          this.editSummary[resume.id] = updated.summary || '';
+          if (this.expanded[resume.id]) await this.loadProfile(updated);
+          else delete this.profiles[resume.id];
+          this.watchReads();
         } finally {
           this.reprocessing[resume.id] = false;
         }
@@ -919,9 +984,11 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ message }),
           });
-          const updated = await res.json();
+          const updated = await res.json().catch(() => ({}));
           if (!res.ok) {
-            this.aiError = updated.detail || 'Could not apply that edit.';
+            this.aiError = otwResponseError(updated, 'Could not apply that edit.', {
+              retry: () => this.editWithAi(),
+            });
             return;
           }
           const idx = this.resumes.findIndex((r) => r.id === resume.id);
@@ -930,7 +997,7 @@
           this.aiEditing = null;
           this.openViewer(updated);
         } catch (e) {
-          this.aiError = 'Could not reach the server.';
+          this.aiError = otwErrorText(e);
         } finally {
           this.aiWorking = false;
         }

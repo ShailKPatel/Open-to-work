@@ -144,7 +144,14 @@
           <svg class="animate-spin w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>
           Extracting details in the background, you can keep using the app. This page updates when it is done.
         </p>
-        <p x-show="job.extraction_status === 'failed'" class="mt-4 text-sm otw-error" x-text="job.extraction_error || 'Could not read the details of this posting. Try Reprocess below.'"></p>
+        <p x-show="job.extraction_status === 'failed' && !otwIsLlmKind(job.extraction_error_kind)" class="mt-4 text-sm otw-error" x-text="job.extraction_error || 'Could not read the details of this posting. Try Reprocess below.'"></p>
+        <!-- Failed because of the AI provider: the posting is saved, only the
+             read waits. Re-read below retries it. -->
+        <div x-show="job.extraction_status === 'failed' && otwIsLlmKind(job.extraction_error_kind)" class="mt-4 text-sm">
+          <p class="otw-error" x-text="otwLlmMessage(job.extraction_error_kind, null, false) + ' The posting is saved; use Re-read posting below to try again.'"></p>
+          <p class="mt-1 text-xs text-[color:var(--muted)]" x-text="job.extraction_error"></p>
+          <a href="/apis" class="mt-1 inline-block text-xs underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Manage APIs →</a>
+        </div>
         <p x-show="job.extraction_status === 'extracted' && job.extraction_error" class="mt-4 text-xs text-[color:var(--muted)]" x-text="job.extraction_error"></p>
 
         <!-- The facts: each its own labeled field, editable in place -->
@@ -386,6 +393,13 @@
             const job = res.ok ? await res.json() : null;
             if (job && job.extraction_status !== 'pending') {
               this.setJob(job);
+              if (job.extraction_status === 'failed' && otwIsLlmKind(job.extraction_error_kind)) {
+                otwLlmProblem({
+                  kind: job.extraction_error_kind,
+                  detail: job.extraction_error,
+                  retry: () => this.reprocess(),
+                });
+              }
               await this.loadGap();
             }
           } catch {

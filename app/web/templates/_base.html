@@ -622,6 +622,21 @@
     .otw-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .otw-thumb-remove { position: absolute; top: 0.15rem; right: 0.15rem; width: 1.15rem; height: 1.15rem; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; line-height: 1; color: var(--ink); background: var(--paper); border: 1px solid var(--line); }
 
+    .otw-llm-banner {
+      position: fixed;
+      top: 1rem;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 55;
+      width: min(26rem, calc(100vw - 2rem));
+      padding: 1rem 1.1rem;
+      background: var(--surface);
+      border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--line));
+      border-radius: 0.75rem;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    }
+    .otw-pill-warn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, transparent); }
+    .otw-pill-warn:hover { border-color: var(--danger); }
     [x-cloak] { display: none !important; }
   </style>
   {% block head %}{% endblock %}
@@ -671,6 +686,29 @@
     <button type="button" class="otw-lightbox-close" aria-label="Close">×</button>
   </div>
 
+  <!-- The one notice for an AI provider problem, opened by otwLlmProblem().
+       Never blocks the page: everything that does not need the model keeps
+       working while it shows. -->
+  <div
+    x-data="otwLlmBanner"
+    x-show="open"
+    x-cloak
+    class="otw-llm-banner"
+    role="status"
+    aria-live="polite"
+    @otw-llm-problem.window="show($event.detail)"
+  >
+    <p class="text-sm" x-text="message"></p>
+    <p x-show="detail" class="text-xs text-[color:var(--muted)] mt-2" style="white-space: pre-line;" x-text="detail"></p>
+    <div class="mt-3 flex flex-wrap items-center gap-2">
+      <button type="button" x-show="retry" @click="runRetry()" :disabled="retrying" class="otw-btn px-3 py-1.5 text-xs">
+        <span x-text="retrying ? 'Retrying...' : 'Retry'"></span>
+      </button>
+      <a href="/apis" class="otw-btn-ghost px-3 py-1.5 text-xs">Manage APIs →</a>
+      <button type="button" @click="open = false" class="ml-auto text-xs text-[color:var(--muted)] hover:text-[color:var(--ink)]">Dismiss</button>
+    </div>
+  </div>
+
   <script>
     // Opens an image full size over the page; a click or Escape closes it.
     window.otwViewImage = function (src, alt) {
@@ -705,6 +743,146 @@
       });
       return ok ? send(true) : null;
     };
+
+    // Failures that come from the AI provider rather than the app
+    // (app/core/llm.py's error_kind). Anything else that did not need the
+    // model still worked, and the message says so.
+    var OTW_NETWORK_ERROR = "Couldn't reach the app. Check it's still running.";
+    var OTW_LLM_KINDS = ['provider_unavailable', 'no_key', 'provider_rejected', 'budget'];
+
+    window.otwIsLlmKind = function (kind) {
+      return OTW_LLM_KINDS.indexOf(kind) !== -1;
+    };
+
+    // One sentence for an error_kind. kept: the upload or text was saved
+    // and only the AI read is waiting on a retry.
+    window.otwLlmMessage = function (kind, model, kept) {
+      var who = model ? 'Your AI provider (' + model + ')' : 'Your AI provider';
+      var keep = kept ? " We kept your upload, so you can retry." : '';
+      if (kind === 'no_key') {
+        return 'No API key is set up for ' + (model ? 'your AI provider (' + model + ')' : 'your AI provider') +
+          '. Everything else still works; add a key on Manage APIs, then retry.' + keep;
+      }
+      if (kind === 'provider_rejected') {
+        return who + ' refused the request, usually a revoked key or a model it does not offer. ' +
+          'Everything else still works; check the key or model on Manage APIs.' + keep;
+      }
+      if (kind === 'budget') {
+        return "This month's AI budget is used up. Everything else still works; " +
+          'raise it on Manage APIs, or wait until next month.' + keep;
+      }
+      return who + ' is unavailable right now. Everything else still works.' + keep;
+    };
+
+    // Shows the shared AI provider notice. opts: { kind, model, detail,
+    // kept, retry }; retry is an async function the Retry button runs.
+    window.otwLlmProblem = function (opts) {
+      window.dispatchEvent(new CustomEvent('otw-llm-problem', { detail: opts || {} }));
+    };
+
+    // Text for a thrown error: never the raw "TypeError: Failed to fetch".
+    window.otwErrorText = function (e) {
+      if (!e || e instanceof TypeError || /fetch|network/i.test(String(e && e.message))) {
+        return OTW_NETWORK_ERROR;
+      }
+      return e.message || 'Something went wrong.';
+    };
+
+    // Text for a failed response's JSON body, raising the AI provider
+    // notice when the failure was the provider's. opts are passed on to
+    // otwLlmProblem (retry, kept).
+    window.otwResponseError = function (data, fallback, opts) {
+      data = data || {};
+      if (otwIsLlmKind(data.error_kind)) {
+        otwLlmProblem(Object.assign({ kind: data.error_kind, model: data.model, detail: data.detail }, opts));
+        return otwLlmMessage(data.error_kind, data.model, opts && opts.kept);
+      }
+      var detail = data.detail;
+      if (detail && typeof detail === 'object') detail = detail.message || null;
+      return detail || fallback || 'Something went wrong.';
+    };
+
+    // fetch that never throws. Resolves to { ok, status, data, error }:
+    // data is the parsed JSON body (or {}), error a sentence to show when
+    // !ok. opts.fallback is the sentence when the body names no reason;
+    // opts.retry and opts.kept go to the AI provider notice.
+    window.otwFetch = async function (input, init, opts) {
+      opts = opts || {};
+      var res;
+      try {
+        res = await fetch(input, init);
+      } catch (e) {
+        return { ok: false, status: 0, data: {}, error: OTW_NETWORK_ERROR, network: true };
+      }
+      var data = await res.json().catch(function () { return {}; });
+      if (res.ok) return { ok: true, status: res.status, data: data, error: '' };
+      return { ok: false, status: res.status, data: data, error: otwResponseError(data, opts.fallback, opts) };
+    };
+
+    document.addEventListener('alpine:init', function () {
+      Alpine.data('otwLlmHealthPill', function () {
+        return {
+          degraded: false,
+          model: null,
+          init() {
+            this.check();
+            setInterval(() => this.check(), 30000);
+            // A failure seen on this page shows the pill without waiting.
+            window.addEventListener('otw-llm-problem', () => this.check());
+          },
+          async check() {
+            try {
+              var health = await (await fetch('/api/app-settings/llm/health')).json();
+              this.degraded = !!health.degraded;
+              this.model = health.model;
+            } catch (e) {
+              // app unreachable for a moment; keep the last state
+            }
+          },
+        };
+      });
+
+      Alpine.data('otwLlmBanner', function () {
+        return {
+          open: false,
+          message: '',
+          detail: '',
+          retry: null,
+          retrying: false,
+          async show(opts) {
+            this.retry = typeof opts.retry === 'function' ? opts.retry : null;
+            this.detail = opts.detail || '';
+            this.message = otwLlmMessage(opts.kind, opts.model, opts.kept);
+            this.open = true;
+            if (!opts.model) {
+              // Name the model even for a failure read back from a saved row.
+              try {
+                var res = await fetch('/api/app-settings/llm/health');
+                var health = await res.json();
+                var model = health.model;
+                if (!model) {
+                  var settings = await (await fetch('/api/app-settings/llm')).json();
+                  model = settings.quality_model;
+                }
+                if (model && this.open) this.message = otwLlmMessage(opts.kind, model, opts.kept);
+              } catch (e) {
+                // keep the message without a model name
+              }
+            }
+          },
+          async runRetry() {
+            if (!this.retry || this.retrying) return;
+            this.retrying = true;
+            try {
+              await this.retry();
+              this.open = false;
+            } finally {
+              this.retrying = false;
+            }
+          },
+        };
+      });
+    });
 
     // Reprocesses one project and keeps a notice for it in `notices` (an
     // Alpine array rendered by _ui.html's task_notices). The notice stays

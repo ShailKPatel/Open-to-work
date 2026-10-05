@@ -297,7 +297,11 @@ def _embedded_links(pdf_bytes: bytes) -> list[str]:
 
 
 def extract_resume(
-    file_bytes: bytes, mime_type: str, account_id: int | None = None
+    file_bytes: bytes,
+    mime_type: str,
+    account_id: int | None = None,
+    *,
+    bypass_cache: bool = False,
 ) -> ResumeExtraction:
     mime_type = (mime_type or "").lower()
     intro = "Here is the resume to analyze."
@@ -325,7 +329,12 @@ def extract_resume(
     ]
 
     response = complete(
-        "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="resume_extract"
+        "quality",
+        messages,
+        schema=_SCHEMA,
+        account_id=account_id,
+        purpose="resume_extract",
+        bypass_cache=bypass_cache,
     )
     if response.parsed is None:
         raise ValueError("LLM response for resume extraction was not valid JSON")

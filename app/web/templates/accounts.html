@@ -213,6 +213,7 @@
       createError: '',
       form: { first_name: '', last_name: '', github_username: '' },
       resumeFile: null,
+      requestId: '',
 
       // Default-provider key step, 'apikey' view. keyAdded flips true once
       // a key verifies and stays true for the rest of this page load
@@ -340,28 +341,41 @@
         if (this.accounts.length === 0) this.view = 'create';
       },
 
+      // One id per filled-in form, sent with every try of it, so a double
+      // click or a resend after a dropped connection answers with the
+      // profile the first try made instead of making a second one.
+      newRequestId() {
+        if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+        return Date.now().toString(36) + Math.random().toString(36).slice(2);
+      },
+
       async submitCreate() {
+        if (this.submitting) return;
         this.submitting = true;
         this.createError = '';
+        if (!this.requestId) this.requestId = this.newRequestId();
         try {
           const res = await otwFetchConfirmingLarge((confirmLarge) => {
             const body = new FormData();
             body.append('first_name', this.form.first_name);
             body.append('last_name', this.form.last_name);
             body.append('github_username', this.form.github_username);
+            body.append('request_id', this.requestId);
             if (this.resumeFile) body.append('resume', this.resumeFile);
             if (confirmLarge) body.append('confirm_large', 'true');
             return fetch('/accounts', { method: 'POST', body });
           });
           if (!res) return;
-          const data = await res.json();
+          const data = await res.json().catch(() => ({}));
           if (!res.ok) {
-            this.createError = data.detail || 'Could not create profile.';
+            this.createError = otwResponseError(data, 'Could not create profile.');
             return;
           }
+          // The resume, if any, is read in the background; the Resume page
+          // shows how that went, and offers Retry if the AI provider was down.
           this.selectAccount(data, { isNew: true });
         } catch (e) {
-          this.createError = String(e);
+          this.createError = otwErrorText(e);
         } finally {
           this.submitting = false;
         }

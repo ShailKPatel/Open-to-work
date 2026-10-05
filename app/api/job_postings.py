@@ -41,6 +41,7 @@ from app.core.db import (
     get_db,
 )
 from app.core.filetypes import sniff_file, sniff_image_type
+from app.core.llm import error_kind
 from app.core.settings import get_settings
 from app.profile.job_extract import (
     JobExtraction,
@@ -112,14 +113,17 @@ def _run_extraction(
             posting.location = extraction.location
         posting.extraction_status = "extracted"
         posting.extraction_error = note
+        posting.extraction_error_kind = None
         posting.extracted_at = dt.datetime.now(dt.UTC)
     except JobExtractionError as e:
         posting.extraction_status = "failed"
         posting.extraction_error = str(e)
+        posting.extraction_error_kind = None
     except Exception as e:
         logger.warning("job posting extraction failed for id=%s", posting.id, exc_info=True)
         posting.extraction_status = "failed"
         posting.extraction_error = str(e)
+        posting.extraction_error_kind = error_kind(e)
     db.commit()
     db.refresh(posting)
 
@@ -141,6 +145,7 @@ def _store_extraction(posting: JobPosting, extraction: JobExtraction, db: Sessio
         posting.location = extraction.location
     posting.extraction_status = "extracted"
     posting.extraction_error = None
+    posting.extraction_error_kind = None
     posting.extracted_at = dt.datetime.now(dt.UTC)
     db.commit()
     db.refresh(posting)
@@ -212,6 +217,7 @@ def _read_posting(posting_id: int, bypass_cache: bool = False) -> None:
                 .values(
                     extraction_status="failed",
                     extraction_error="Internal error, see server logs.",
+                    extraction_error_kind=None,
                 )
             )
             db.commit()
@@ -262,6 +268,7 @@ def _read_images(posting: JobPosting, db: Session) -> None:
         else:
             posting.extraction_status = "failed"
             posting.extraction_error = str(e)
+            posting.extraction_error_kind = error_kind(e)
             db.commit()
         return
     posting.source = "mixed" if typed else "screenshot"
@@ -285,7 +292,11 @@ def fail_interrupted_extractions() -> int:
         result = db.execute(
             update(JobPosting)
             .where(JobPosting.extraction_status == _READING)
-            .values(extraction_status="failed", extraction_error=_INTERRUPTED)
+            .values(
+                extraction_status="failed",
+                extraction_error=_INTERRUPTED,
+                extraction_error_kind=None,
+            )
         )
         db.commit()
         return int(getattr(result, "rowcount", 0) or 0)
@@ -423,6 +434,9 @@ class JobPostingSummary(BaseModel):
     fetched_at: dt.datetime
     extraction_status: str
     extraction_error: str | None
+    # Set when a failed read was the AI provider's doing (app/core/llm.py's
+    # error_kind), so the page can point to Manage APIs.
+    extraction_error_kind: str | None = None
     salary_range: str
     salary_min_annual: int | None
     salary_max_annual: int | None
@@ -457,6 +471,7 @@ class JobPostingSummary(BaseModel):
             id=p.id, source=p.source, company=p.company, title=p.title,
             location=p.location, apply_url=p.apply_url, fetched_at=p.fetched_at,
             extraction_status=p.extraction_status, extraction_error=p.extraction_error,
+            extraction_error_kind=p.extraction_error_kind,
             salary_range=extracted.get("salary_range", ""),
             salary_min_annual=p.salary_min_annual,
             salary_max_annual=p.salary_max_annual,
@@ -860,6 +875,7 @@ def reprocess_posting(posting_id: int, *, db: DbSession) -> JobPostingDetail:
     if not _reading(posting_id):
         posting.extraction_status = _READING
         posting.extraction_error = None
+        posting.extraction_error_kind = None
         db.commit()
         _start_extraction(posting_id, bypass_cache=True)
         db.refresh(posting)

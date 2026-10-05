@@ -47,6 +47,10 @@ class Account(Base):
     contact_phone: Mapped[str | None] = mapped_column(String, nullable=True)
     contact_location: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Sent by the signup form, one per filled-in form, so the same form
+    # sent twice (a double click, a retry after a dropped connection)
+    # answers with the profile it already made.
+    request_id: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
 
 
 class SyncSource(Base):
@@ -527,6 +531,9 @@ class Resume(Base):
     # cannot read this file type, so Retry would fail the same way).
     extraction_status: Mapped[str] = mapped_column(String, default="pending")
     extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # For a failed read whose cause was the AI provider: app/core/llm.py's
+    # error_kind() ("provider_unavailable", "no_key", ...). None otherwise.
+    extraction_error_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     extracted_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -624,6 +631,8 @@ class JobPosting(Base):
     # POST /api/job-postings/{id}/reprocess.
     extraction_status: Mapped[str] = mapped_column(String, default="pending")
     extraction_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Same as Resume.extraction_error_kind.
+    extraction_error_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     extracted_at: Mapped[dt.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

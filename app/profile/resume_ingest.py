@@ -1,5 +1,6 @@
 """Shared resume-file ingestion: saving an uploaded file to disk, creating
-its Resume row, and (best-effort) running multimodal extraction against it,
+its Resume row, and (best-effort, in a worker thread) running multimodal
+extraction against it,
 including folding whatever skills, work history, education and contact
 details it found
 into the account's actual profile data (app/profile/resume_profile_merge.py).
@@ -16,14 +17,17 @@ import datetime as dt
 import io
 import logging
 import mimetypes
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import UploadFile
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.core.db import Account, Resume
+from app.core import jobs
+from app.core.db import Account, Resume, get_db
 from app.core.filetypes import PDF, sniff_type
+from app.core.llm import error_kind
 from app.core.settings import get_settings
 from app.profile.resume_extract import (
     ContactClaim,
@@ -175,9 +179,11 @@ def ingest_resume(
 ) -> Resume:
     """Saves the uploaded file to disk, creates its Resume row, mirrors it
     onto Account.resume_filename/resume_path (see that field's docstring),
-    and runs extraction against it. Extraction failing (unsupported file
-    type, LLM error, rate limit) never loses the upload itself, it just
-    leaves the row at extraction_status "failed" or "unsupported_type" for
+    and starts extraction against it in a worker thread, so the caller
+    answers at once with the row still "pending" whatever the AI provider
+    is doing. Extraction failing (unsupported file type, LLM error, rate
+    limit) never loses the upload itself, it just leaves the row at
+    extraction_status "failed" or "unsupported_type" for
     POST /api/resume/{id}/reprocess to retry later.
 
     `name` is the person-chosen label (see Resume.name's docstring), left
@@ -223,24 +229,111 @@ def ingest_resume(
         account.resume_filename = row.filename
         account.resume_path = row.stored_path
     db.commit()
-    db.refresh(row)
 
-    run_extraction(db, row, data)
+    start_extraction(row.id)
+    db.refresh(row)
     return row
 
 
-def run_extraction(db: Session, row: Resume, file_bytes: bytes | None = None) -> Resume:
+_INTERRUPTED = "The app restarted before this resume was read. Use Retry to read it again."
+
+
+def _job_key(resume_id: int) -> str:
+    return f"resume_read:{resume_id}"
+
+
+def _start_worker(key: str, work: Callable[[], None]) -> bool:
+    """Seam for tests, which run the work inline instead."""
+    return jobs.start(key, lambda job: work())
+
+
+def start_extraction(resume_id: int, bypass_cache: bool = False) -> bool:
+    """Reads the saved file in a worker thread (app/core/jobs.py). False
+    when a read of this resume is already running: a second click never
+    starts another."""
+    return _start_worker(
+        _job_key(resume_id), lambda: _read_resume(resume_id, bypass_cache=bypass_cache)
+    )
+
+
+def is_reading(resume_id: int) -> bool:
+    state = jobs.snapshot(_job_key(resume_id))
+    return state is not None and state["running"]
+
+
+def _read_resume(resume_id: int, bypass_cache: bool = False) -> None:
+    """The worker, with its own session. Whatever goes wrong (the file
+    gone from disk, the row deleted mid-read), the row never stays
+    "pending"."""
+    db = get_db()
+    try:
+        row = db.get(Resume, resume_id)
+        if row is None or not row.stored_path:
+            return
+        try:
+            run_extraction(db, row, bypass_cache=bypass_cache)
+        except Exception:
+            logger.warning("reading resume id=%s failed", resume_id, exc_info=True)
+            db.rollback()
+            db.execute(
+                update(Resume)
+                .where(Resume.id == resume_id, Resume.extraction_status == "pending")
+                .values(
+                    extraction_status="failed",
+                    extraction_error="Internal error, see server logs.",
+                    extraction_error_kind=None,
+                )
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
+def fail_interrupted_reads() -> int:
+    """Called at startup. Reads run in this process only, so an uploaded
+    resume still "pending" now lost its worker to the restart. Marked
+    failed with a note to retry instead of showing as in progress
+    forever. Generated resumes (no stored file) use "pending" for an
+    unfinished build and are left alone. Returns how many were marked."""
+    db = get_db()
+    try:
+        result = db.execute(
+            update(Resume)
+            .where(Resume.extraction_status == "pending", Resume.stored_path != "")
+            .values(
+                extraction_status="failed",
+                extraction_error=_INTERRUPTED,
+                extraction_error_kind=None,
+            )
+        )
+        db.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
+    finally:
+        db.close()
+
+
+def run_extraction(
+    db: Session,
+    row: Resume,
+    file_bytes: bytes | None = None,
+    *,
+    bypass_cache: bool = False,
+) -> Resume:
     """(Re)runs extraction against an already-saved Resume row. Reads the
-    file back off disk when `file_bytes` isn't already in hand (the
-    reprocess path, ingest_resume above already has the bytes from the
-    original upload, no need to make it re-read its own write).
+    file back off disk when `file_bytes` isn't already in hand.
+    bypass_cache is set by a retry, so the file is read again rather than
+    replayed. A failure caused by the AI provider records its
+    extraction_error_kind (app/core/llm.py's error_kind) so the page can
+    say what to do about it.
     """
     if file_bytes is None:
         file_bytes = Path(row.stored_path).read_bytes()
 
     extraction: ResumeExtraction | None = None
     try:
-        extraction = extract_resume(file_bytes, row.mime_type, account_id=row.account_id)
+        extraction = extract_resume(
+            file_bytes, row.mime_type, account_id=row.account_id, bypass_cache=bypass_cache
+        )
         row.tags_json = extraction.tags
         row.target_roles_json = extraction.target_roles
         row.summary = extraction.summary
@@ -249,14 +342,17 @@ def run_extraction(db: Session, row: Resume, file_bytes: bytes | None = None) ->
         row.contact_json = _contact_dict(extraction.contact)
         row.extraction_status = "extracted"
         row.extraction_error = None
+        row.extraction_error_kind = None
         row.extracted_at = dt.datetime.now(dt.UTC)
     except UnsupportedResumeType as e:
         row.extraction_status = "unsupported_type"
         row.extraction_error = str(e)
+        row.extraction_error_kind = None
     except Exception as e:
         logger.warning("resume extraction failed for resume id=%s", row.id, exc_info=True)
         row.extraction_status = "failed"
         row.extraction_error = str(e)
+        row.extraction_error_kind = error_kind(e)
     db.commit()
     db.refresh(row)
 

@@ -469,8 +469,12 @@
         }
         this.generating = false;
         if (build.state === 'error') {
-          this.generateError = build.detail || 'The build failed.';
           this.incompleteResumeId = build.incomplete_resume_id || null;
+          this.generateError = otwResponseError(
+            { detail: build.detail, error_kind: build.error_kind },
+            'The build failed.',
+            this.incompleteResumeId ? { retry: () => this.retryIncomplete() } : {},
+          );
         } else {
           this.showResult(build);
           this.loadClosest();
@@ -609,7 +613,7 @@
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            this.reviewError = (err.detail || `Skill check failed (${res.status}).`) + ' Related skills are left for you to pick.';
+            this.reviewError = otwResponseError(err, `Skill check failed (${res.status}).`) + ' Related skills are left for you to pick.';
             return;
           }
           const verdicts = {};
@@ -621,7 +625,7 @@
             }
           });
         } catch (e) {
-          this.reviewError = 'Could not reach the server. Related skills are left for you to pick.';
+          this.reviewError = otwErrorText(e) + ' Related skills are left for you to pick.';
         } finally {
           this.reviewingSkills = false;
         }
@@ -718,16 +722,16 @@
         this.generateError = '';
         try {
           const res = await fetch(`/api/resume-build/retry/${this.incompleteResumeId}`, { method: 'POST' });
-          const build = await res.json();
+          const build = await res.json().catch(() => ({}));
           if (!res.ok) {
-            this.generateError = build.detail || `Retry failed (${res.status}).`;
+            this.generateError = otwResponseError(build, `Retry failed (${res.status}).`);
             this.generating = false;
             return;
           }
           this.incompleteResumeId = null;
           this.followBuild(build);
         } catch (e) {
-          this.generateError = 'Could not reach the server.';
+          this.generateError = otwErrorText(e);
           this.generating = false;
         }
       },
@@ -773,13 +777,13 @@
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
-            this.generateError = err.detail || `Generation failed (${res.status}).`;
+            this.generateError = otwResponseError(err, `Generation failed (${res.status}).`);
             this.generating = false;
             return;
           }
           this.followBuild(await res.json());
         } catch (e) {
-          this.generateError = 'Could not reach the server.';
+          this.generateError = otwErrorText(e);
           this.generating = false;
         }
       },

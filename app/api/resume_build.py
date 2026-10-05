@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
+from app.api.llm_errors import llm_http_error
 from app.api.skills import active_skill_groups
 from app.core.db import JobPosting, Resume, get_db
 from app.core.llm import (
@@ -129,6 +130,7 @@ def _save_incomplete_resume(
     stopped_at: str,
     error: str,
     resume_id: int | None = None,
+    error_kind: str | None = None,
 ) -> int | None:
     """Keeps a build that stopped partway in the library as an incomplete
     resume, holding what it had done (Resume.build_state_json), so a
@@ -159,6 +161,7 @@ def _save_incomplete_resume(
             "cuts_made": int(checkpoint.get("cuts_made") or 0),
             "stopped_at": stopped_at,
             "error": error,
+            "error_kind": error_kind,
             "stopped_time": dt.datetime.now(dt.UTC).isoformat(),
             "attempts": attempts,
         }
@@ -194,15 +197,7 @@ def _header_safe(text: str) -> str:
 
 
 def _map_llm_error(e: Exception) -> HTTPException:
-    if isinstance(e, ApiKeyMissingError):
-        return HTTPException(status_code=422, detail=str(e))
-    if isinstance(e, BudgetExceededError):
-        return HTTPException(status_code=402, detail=str(e))
-    if isinstance(e, LLMRateLimitedError):
-        return HTTPException(status_code=503, detail=str(e))
-    if isinstance(e, LLMProviderError):
-        return HTTPException(status_code=502, detail=str(e))
-    return HTTPException(status_code=502, detail=f"resume generation failed: {e}")
+    return llm_http_error(e, "resume generation failed")
 
 
 class ResumeBuildOptionsResponse(BaseModel):
@@ -692,9 +687,11 @@ def _start_in_background(
             )
         except HTTPException as e:
             detail = str(e.detail)
+            kind = getattr(e, "error_kind", None)
         except Exception:
             logger.exception("resume build %s crashed", build.id)
             detail = "Internal error, see server logs."
+            kind = None
         else:
             build.finish(
                 out.pdf_bytes,
@@ -708,8 +705,10 @@ def _start_in_background(
                 },
             )
             return
-        saved = _save_incomplete_resume(body, state, build.stage, detail, resume_id=retry_of)
-        build.fail(detail, {"incomplete_resume_id": saved})
+        saved = _save_incomplete_resume(
+            body, state, build.stage, detail, resume_id=retry_of, error_kind=kind
+        )
+        build.fail(detail, {"incomplete_resume_id": saved, "error_kind": kind})
 
     return background.start(
         body.account_id, body.job_posting_id, label, run, retry_of=retry_of
