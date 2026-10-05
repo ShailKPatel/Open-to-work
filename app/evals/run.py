@@ -47,8 +47,8 @@ class MetricsReport:
     pairs_scored: int
     dense: dict
     bm25: dict
-    hybrid_beats_baseline: bool | None
-    context_precision: float | None
+    dense_beats_bm25: bool | None
+    precision_at_10: float | None
     groundedness: float | None
     groundedness_checked: int
     cost_usd: float
@@ -156,7 +156,7 @@ def run_eval(
     notes: list[str] = []
     dense_points: list[tuple[float, float]] = []
     bm25_points: list[tuple[float, float]] = []
-    context_precision_points: list[float] = []
+    precision_at_10_points: list[float] = []
     corpora: dict[str, Bm25Corpus] = {}
 
     for pair in pairs:
@@ -185,20 +185,19 @@ def run_eval(
                 recall_at_k(bm25_hits, relevant, _RECALL_K),
             )
         )
-        # Context precision: precision over the FULL retrieved window a
+        # Plain precision@10: precision over the full retrieved window a
         # downstream generation step would actually be handed (top-10,
         # not the ranking-quality top-5), scored against real hand-labeled
-        # ground truth; see this module's and groundedness.py's
-        # docstrings for why this needs no separate LLM judge call.
-        context_precision_points.append(precision_at_k(dense_hits, relevant, _RECALL_K))
+        # ground truth. Not the rank-weighted RAGAS "context precision".
+        precision_at_10_points.append(precision_at_k(dense_hits, relevant, _RECALL_K))
 
     dense_result: SystemScore = mean_system_score(dense_points)
     bm25_result: SystemScore = mean_system_score(bm25_points)
     scored = dense_result.pairs_scored
 
-    hybrid_beats_baseline = None
+    dense_beats_bm25 = None
     if scored > 0:
-        hybrid_beats_baseline = (
+        dense_beats_bm25 = (
             dense_result.precision_at_5 >= bm25_result.precision_at_5
             and dense_result.recall_at_10 >= bm25_result.recall_at_10
         )
@@ -215,9 +214,9 @@ def run_eval(
             "numbers below this size are directional, not final"
         )
 
-    context_precision = (
-        sum(context_precision_points) / len(context_precision_points)
-        if context_precision_points
+    precision_at_10 = (
+        sum(precision_at_10_points) / len(precision_at_10_points)
+        if precision_at_10_points
         else None
     )
 
@@ -241,8 +240,8 @@ def run_eval(
         pairs_scored=scored,
         dense=asdict(dense_result),
         bm25=asdict(bm25_result),
-        hybrid_beats_baseline=hybrid_beats_baseline,
-        context_precision=context_precision,
+        dense_beats_bm25=dense_beats_bm25,
+        precision_at_10=precision_at_10,
         groundedness=groundedness_score,
         groundedness_checked=groundedness_checked,
         cost_usd=cost_usd,

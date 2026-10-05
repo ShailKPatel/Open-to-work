@@ -15,7 +15,9 @@ parallel with an in-flight GitHub sync: sync commits repos one at a time,
 marking each "pending" as it lands, and this worker picks them up as they
 appear rather than only seeing whatever was already there when it started.
 It gives up after a few consecutive empty passes (nothing pending, several
-checks in a row) rather than polling forever.
+checks in a row) rather than polling forever. Each repo is tried at most
+once per run, so one that keeps failing ends the run instead of being
+retried in a loop; the next run picks it up again.
 """
 
 from __future__ import annotations
@@ -73,9 +75,10 @@ def _eligible_repos(account_id: int) -> list[Repository]:
 def _worker(account_id: int, job: Job) -> None:
     total_done = 0
     empty_passes = 0
+    attempted: set[int] = set()
     job.set_state(stage="running", index=0, total=0, name="")
     while True:
-        repos = _eligible_repos(account_id)
+        repos = [repo for repo in _eligible_repos(account_id) if repo.id not in attempted]
         if not repos:
             empty_passes += 1
             if empty_passes >= _EMPTY_PASSES_BEFORE_STOP:
@@ -83,6 +86,7 @@ def _worker(account_id: int, job: Job) -> None:
             time.sleep(_EMPTY_PASS_DELAY_SECONDS)
             continue
         empty_passes = 0
+        attempted.update(repo.id for repo in repos)
 
         for event in build_profile_progress(repos):
             if event["stage"] == "repo_progress":

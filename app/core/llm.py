@@ -7,7 +7,10 @@ one path.
 
 - Cache: an identical (model, messages, schema) is answered from the
   llm_calls table instead of billing again. Whitespace in the text is
-  normalized for the key, so a README fetched twice is one prompt.
+  normalized for the key, so a README fetched twice is one prompt. A
+  response that does not parse when a schema was asked for is never
+  served from the cache, and bypass_cache skips the lookup for a retry
+  the person asked for.
 - Budget: the monthly cap is checked before dispatch.
 - Recording: every call, cached or not, gets an LLMCall row with cost,
   tokens and the `purpose` the caller passed.
@@ -147,11 +150,21 @@ def _canonical_messages(messages: list[dict]) -> list[dict]:
     return canonical
 
 
+# Part of every cache key. Bump it when response parsing or post-processing
+# changes, so answers cached under the old handling are asked for again.
+_CACHE_VERSION = 1
+
+
 def _prompt_hash(model: str, messages: list[dict], schema: dict | None) -> str:
     """Keyed on the model rather than the tier: with the same model on
     both tiers, one prompt is one cache entry."""
     payload = json.dumps(
-        {"model": model, "messages": _canonical_messages(messages), "schema": schema},
+        {
+            "version": _CACHE_VERSION,
+            "model": model,
+            "messages": _canonical_messages(messages),
+            "schema": schema,
+        },
         sort_keys=True,
         default=str,
     )
@@ -256,7 +269,7 @@ def _record(
     tier: str,
     model: str,
     prompt_hash: str,
-    response_json: dict,
+    response_json: dict | None,
     tokens_in: int,
     tokens_out: int,
     cost_usd: float,
@@ -296,6 +309,8 @@ def complete(
     account_id: int | None = None,
     purpose: str | None = None,
     _completion_fn: Any = None,
+    *,
+    bypass_cache: bool = False,
 ) -> LLMResponse:
     """Sends one request for `tier` and returns the response.
 
@@ -304,18 +319,18 @@ def complete(
     account_id lets keys restricted to certain profiles serve the call;
     None can only use unrestricted keys. Callers never pick a key: every
     usable one is tried in order, and the LLMCall row records which paid.
+    bypass_cache skips the cache lookup, for a retry the person asked for;
+    the fresh answer is still recorded, so later calls can reuse it.
     _completion_fn replaces litellm.completion in tests.
     """
     settings = get_llm_settings()
     model = settings.model_for(tier)
     prompt_hash = _prompt_hash(model, messages, schema)
 
-    cached_row = _lookup_cache(prompt_hash)
-    if cached_row is not None:
-        # _lookup_cache only returns rows where response_json IS NOT NULL,
-        # but the column itself is nullable; narrow it for mypy.
-        cached_response = cached_row.response_json
-        assert cached_response is not None
+    cached_row = None if bypass_cache else _lookup_cache(prompt_hash)
+    cached_response = cached_row.response_json if cached_row is not None else None
+    cached_content = (cached_response or {}).get("content", "")
+    if cached_response is not None and (not schema or _try_parse(cached_content) is not None):
         _record(
             tier=tier,
             model=model,
@@ -329,9 +344,10 @@ def complete(
             account_id=account_id,
             purpose=purpose,
         )
-        content = cached_response.get("content", "")
-        parsed = _try_parse(content) if schema else None
-        return LLMResponse(content=content, parsed=parsed, cost_usd=0.0, cached=True, model=model)
+        parsed = _try_parse(cached_content) if schema else None
+        return LLMResponse(
+            content=cached_content, parsed=parsed, cost_usd=0.0, cached=True, model=model
+        )
 
     spent = _month_spend_usd()
     if spent >= settings.monthly_budget_usd:
@@ -397,12 +413,15 @@ def complete(
     tokens_out = getattr(usage, "completion_tokens", 0) or 0
 
     cost_usd = _safe_completion_cost(response)
+    parsed = _try_parse(content) if schema else None
 
+    # A response that does not parse is still recorded for its spend and
+    # tokens, but without its content, so the cache never replays it.
     _record(
         tier=tier,
         model=model,
         prompt_hash=prompt_hash,
-        response_json={"content": content},
+        response_json=None if schema and parsed is None else {"content": content},
         tokens_in=tokens_in,
         tokens_out=tokens_out,
         cost_usd=cost_usd,
@@ -413,7 +432,6 @@ def complete(
         purpose=purpose,
     )
 
-    parsed = _try_parse(content) if schema else None
     return LLMResponse(
         content=content,
         parsed=parsed,

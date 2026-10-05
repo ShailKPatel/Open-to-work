@@ -1047,3 +1047,31 @@ def test_signup_with_a_generated_resume_creates_nothing(tmp_path):
     db = get_db()
     assert db.execute(select(Account)).first() is None
     db.close()
+
+
+def test_large_resume_upload_asks_and_saves_nothing_until_confirmed(tmp_path, monkeypatch):
+    from app.api import input_limits
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    _fake_extraction(monkeypatch)
+    monkeypatch.setattr(input_limits, "SOFT_MAX_FILE_MB", 0.001)
+    client = _client()
+
+    big = b"%PDF-1.4 " + b"x" * 4096
+
+    def _send(**extra):
+        return client.post(
+            "/api/resume",
+            data={"account_id": account_id, **extra},
+            files={"file": ("resume.pdf", io.BytesIO(big), "application/pdf")},
+        )
+
+    asked = _send()
+    assert asked.status_code == 409
+    assert asked.json()["detail"]["code"] == "large_input"
+    assert not list(tmp_path.rglob("*.pdf"))
+
+    confirmed = _send(confirm_large="true")
+    assert confirmed.status_code == 200
+    assert confirmed.json()["extraction_status"] == "extracted"

@@ -220,6 +220,33 @@ def test_create_account_with_resume_stores_file(tmp_path):
     assert stored[0].read_bytes() == b"%PDF-1.4 fake"
 
 
+def test_create_account_with_a_large_resume_asks_first(tmp_path, monkeypatch):
+    from app.api import input_limits
+
+    _reset_db(tmp_path)
+    monkeypatch.setattr(input_limits, "SOFT_MAX_FILE_MB", 0.001)
+    client = _client()
+    form = {"first_name": "Grace", "last_name": "Hopper", "github_username": ""}
+
+    big = b"%PDF-1.4 " + b"x" * 4096
+
+    def _send(**extra):
+        return client.post(
+            "/accounts",
+            data={**form, **extra},
+            files={"resume": ("resume.pdf", io.BytesIO(big), "application/pdf")},
+        )
+
+    asked = _send()
+    assert asked.status_code == 409
+    assert asked.json()["detail"]["code"] == "large_input"
+    # Checked before the account exists, so saying no leaves nothing behind.
+    assert client.get("/accounts").json() == []
+
+    assert _send(confirm_large="true").status_code == 200
+    assert len(client.get("/accounts").json()) == 1
+
+
 def test_create_account_sanitizes_resume_filename_path_traversal(tmp_path):
     _reset_db(tmp_path)
     client = _client()

@@ -138,3 +138,35 @@ def test_status_endpoint(account_id):
     assert resp.status_code == 200
     body = resp.json()
     assert (body["done"], body["waiting"], body["next_repo"]) == (1, 1, "ada/r2")
+
+
+def test_worker_finishes_when_a_repo_keeps_failing(account_id, monkeypatch):
+    import threading
+
+    from app.core.jobs import Job
+    from app.core.llm import LLMProviderError
+
+    monkeypatch.setattr(jobs, "_EMPTY_PASS_DELAY_SECONDS", 0.01)
+    monkeypatch.setattr("app.profile.build.prefetch_repo_facts", lambda repos: {})
+    attempts = []
+
+    def _refuse(repo, **_):
+        attempts.append(repo.id)
+        raise LLMProviderError("content policy refusal")
+
+    monkeypatch.setattr("app.profile.build.extract_repo_facts", _refuse)
+    _repos(account_id, ["pending"])
+    job = Job(key="extraction-test")
+
+    worker = threading.Thread(target=jobs._worker, args=(account_id, job), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert len(attempts) == 1
+    assert job.snapshot()["stage"] == "done"
+    session = db_module.get_db()
+    try:
+        assert session.query(Repository).one().skill_extraction_status == "failed"
+    finally:
+        session.close()

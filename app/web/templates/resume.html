@@ -778,12 +778,19 @@
         this.uploading = true;
         this.uploadError = '';
         try {
-          const body = new FormData();
-          body.append('account_id', this.accountId);
-          body.append('name', this.uploadName);
-          body.append('notes', this.uploadNotes);
-          body.append('file', file);
-          const res = await fetch('/api/resume', { method: 'POST', body });
+          const res = await otwFetchConfirmingLarge((confirmLarge) => {
+            const body = new FormData();
+            body.append('account_id', this.accountId);
+            body.append('name', this.uploadName);
+            body.append('notes', this.uploadNotes);
+            body.append('file', file);
+            if (confirmLarge) body.append('confirm_large', 'true');
+            return fetch('/api/resume', { method: 'POST', body });
+          });
+          if (!res) {
+            event.target.value = '';
+            return;
+          }
           const data = await res.json();
           if (!res.ok) {
             this.uploadError = data.detail || 'Could not upload that.';

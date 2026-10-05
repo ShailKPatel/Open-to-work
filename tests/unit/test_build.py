@@ -35,7 +35,7 @@ def _stub_extraction(monkeypatch):
     test_batched_prefetch_* cover the batched one.
     """
     monkeypatch.setattr("app.profile.build.prefetch_repo_facts", lambda repos: {})
-    monkeypatch.setattr("app.profile.build.extract_repo_facts", lambda repo: RepoFacts())
+    monkeypatch.setattr("app.profile.build.extract_repo_facts", lambda repo, **_: RepoFacts())
 
 
 def _stub_skills(monkeypatch, fn):
@@ -45,14 +45,14 @@ def _stub_skills(monkeypatch, fn):
     test that only cares about skills gets the links half empty rather than
     stubbing a second function."""
     monkeypatch.setattr(
-        "app.profile.build.extract_repo_facts", lambda repo: RepoFacts(skills=fn(repo))
+        "app.profile.build.extract_repo_facts", lambda repo, **_: RepoFacts(skills=fn(repo))
     )
 
 
 def _stub_links(monkeypatch, fn):
     """_stub_skills' twin for the tests that care about the links half."""
     monkeypatch.setattr(
-        "app.profile.build.extract_repo_facts", lambda repo: RepoFacts(links=fn(repo))
+        "app.profile.build.extract_repo_facts", lambda repo, **_: RepoFacts(links=fn(repo))
     )
 
 
@@ -421,6 +421,35 @@ def test_reprocess_repo_clears_old_evidence_before_rewriting(tmp_path, monkeypat
     assert {e.skill for e in skill_evidence_for_repos([repo.id])} == {"FastAPI", "Vue"}
 
 
+def test_reprocess_removes_the_index_points_of_evidence_it_replaces(tmp_path):
+    """A skill dropped from a repo must leave Qdrant too, or resume
+    building would still find it there."""
+    from app.retrieval.index import COLLECTION
+    from app.retrieval.vectorstore import get_client
+
+    _reset_db(tmp_path)
+    repo = _persist_repo(
+        readme=None,
+        manifests_json={
+            "requirements.txt": {"ecosystem": "pip", "dependencies": ["pandas", "numpy"]}
+        },
+    )
+    build_profile([repo], now=NOW)
+
+    db = get_db()
+    db.get(Repository, repo.id).manifests_json = {
+        "requirements.txt": {"ecosystem": "pip", "dependencies": ["flask"]}
+    }
+    db.commit()
+    db.close()
+    reprocess_repo(repo.id, now=NOW)
+
+    points, _ = get_client().scroll(collection_name=COLLECTION, limit=100)
+    sql = {(e.id, e.skill) for e in skill_evidence_for_repos([repo.id])}
+    assert {(p.id, p.payload["skill"]) for p in points} == sql
+    assert {skill for _, skill in sql} == {"Flask"}
+
+
 def test_reprocess_repo_unknown_id_raises(tmp_path):
     _reset_db(tmp_path)
     try:
@@ -617,7 +646,7 @@ def test_repo_the_batched_pass_missed_falls_back_to_its_own_call(tmp_path, monke
     )
     asked: list[int] = []
 
-    def _per_repo(repo):
+    def _per_repo(repo, **_):
         asked.append(repo.id)
         return RepoFacts(
             skills=[SkillClaim(skill="Rust", evidence_type="readme_described", confidence=0.8)]

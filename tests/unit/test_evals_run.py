@@ -66,7 +66,7 @@ def test_no_golden_pairs_for_account_reports_zero_scored(tmp_path, monkeypatch, 
     report = run_eval(account_id, golden_path=golden_path, include_groundedness=False)
 
     assert report.pairs_scored == 0
-    assert report.hybrid_beats_baseline is None
+    assert report.dense_beats_bm25 is None
     assert any("no golden pairs" in n for n in report.notes)
 
 
@@ -121,7 +121,7 @@ def test_dense_and_bm25_scored_against_real_evidence(tmp_path, monkeypatch, tmp_
     # 1 relevant of 2 retrieved, recall is the 1 relevant id fully found.
     assert report.dense["precision_at_5"] == 0.5
     assert report.dense["recall_at_10"] == 1.0
-    assert report.context_precision is not None
+    assert report.precision_at_10 is not None
     assert report.groundedness is None  # skipped
     assert any("groundedness check skipped" in n for n in report.notes)
 

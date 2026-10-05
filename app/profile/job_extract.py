@@ -175,7 +175,9 @@ def parse_skills_required(raw: list) -> list[dict]:
     return out
 
 
-def extract_job_posting(raw_text: str, account_id: int | None = None) -> JobExtraction:
+def extract_job_posting(
+    raw_text: str, account_id: int | None = None, bypass_cache: bool = False
+) -> JobExtraction:
     messages = [
         system_message(_SYSTEM_PROMPT),
         user_message(
@@ -187,7 +189,12 @@ def extract_job_posting(raw_text: str, account_id: int | None = None) -> JobExtr
     ]
 
     response = complete(
-        "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="job_extract"
+        "quality",
+        messages,
+        schema=_SCHEMA,
+        account_id=account_id,
+        purpose="job_extract",
+        bypass_cache=bypass_cache,
     )
     if response.parsed is None:
         raise JobExtractionError("LLM response for job posting extraction was not valid JSON")

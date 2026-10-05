@@ -30,13 +30,13 @@ def _print_report(report: MetricsReport) -> None:
         f"{report.bm25['recall_at_10']:>14.3f}{report.bm25['pairs_scored']:>10}"
     )
     print()
-    if report.hybrid_beats_baseline is None:
+    if report.dense_beats_bm25 is None:
         print("dense vs baseline: not measured (no scored pairs)")
     else:
-        verdict = "beats" if report.hybrid_beats_baseline else "does NOT beat"
+        verdict = "beats" if report.dense_beats_bm25 else "does NOT beat"
         print(f"dense {verdict} the BM25 baseline")
-    if report.context_precision is not None:
-        print(f"context precision (top-10, vs ground truth): {report.context_precision:.3f}")
+    if report.precision_at_10 is not None:
+        print(f"precision@10 (vs ground truth): {report.precision_at_10:.3f}")
     if report.groundedness is not None:
         print(
             f"groundedness: {report.groundedness:.3f} "

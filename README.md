@@ -7,7 +7,7 @@
 [![CI](https://github.com/ShailKPatel/Open-to-work/actions/workflows/ci.yml/badge.svg)](https://github.com/ShailKPatel/Open-to-work/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
 ![Coverage gate](https://img.shields.io/badge/coverage%20gate-90%25-brightgreen)
-![Runs locally](https://img.shields.io/badge/runs-100%25%20local-5a67d8?logo=docker&logoColor=white)
+![Local-first](https://img.shields.io/badge/runs-local--first-5a67d8?logo=docker&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 <a href="#tech-stack"><img src="https://skillicons.dev/icons?i=py,fastapi,sqlite,docker,tailwind,latex,pytest,githubactions" alt="Tech stack icons" /></a>
@@ -230,7 +230,7 @@ docker compose up -d qdrant
 `make eval` scores retrieval against a hand-labeled golden set:
 
 - Dense retrieval vs. a BM25 baseline (precision@5, recall@10)
-- Context precision over the top 10
+- Precision over the top 10 (precision@10)
 - LLM-judged groundedness of generated bullets
 
 Label your own set with `python -m scripts.label_golden_set --account <id>`. CI runs the same eval on a synthetic fixture and fails if retrieval drops below the committed baseline.
@@ -263,7 +263,7 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Privacy
 
 > [!IMPORTANT]
-> Everything is stored and embedded locally. Only this text is sent to your chosen LLM provider: README and description text, job posting text and screenshots, uploaded resumes, and the profile content used to build a resume. Job posting text is always sent as a separate user message, never inside a system prompt.
+> Everything is stored and embedded locally. The web UI loads Tailwind and Alpine.js from a CDN, so the pages need an internet connection. Only this text is sent to your chosen LLM provider: README and description text, job posting text and screenshots, uploaded resumes, and the profile content used to build a resume. Job posting text is always sent as a separate user message, never inside a system prompt.
 
 ## Limitations
 

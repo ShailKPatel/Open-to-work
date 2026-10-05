@@ -226,6 +226,118 @@ def test_purpose_is_not_part_of_the_cache_key(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+_SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+
+def _ask_json(messages: list, text: str, calls: list, **kwargs):
+    return complete(
+        "bulk",
+        messages,
+        schema=_SCHEMA,
+        _completion_fn=_fake_completion_fn(text, calls=calls),
+        **kwargs,
+    )
+
+
+def test_unparseable_response_is_not_served_from_cache(tmp_path, monkeypatch):
+    """A truncated or empty answer would otherwise be replayed for free on
+    every retry and fail the same way each time."""
+    from app.core.db import LLMCall, get_db
+
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.02, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    first = _ask_json(messages, '{"ok": tr', calls)
+    second = _ask_json(messages, '{"ok": true}', calls)
+
+    assert first.parsed is None
+    assert second.cached is False
+    assert second.parsed == {"ok": True}
+    assert len(calls) == 2
+    db = get_db()
+    try:
+        rows = db.query(LLMCall).order_by(LLMCall.id).all()
+    finally:
+        db.close()
+    # The failed call still counts toward spend, just without content.
+    assert [r.cost_usd for r in rows] == [0.02, 0.02]
+    assert rows[0].response_json is None
+
+
+def test_unparseable_row_already_in_the_cache_is_not_served(tmp_path, monkeypatch):
+    from app.core.app_settings import get_llm_settings
+    from app.core.llm import _prompt_hash, _record
+
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.0, raising=False
+    )
+    messages = [{"role": "user", "content": "hello"}]
+    model = get_llm_settings().model_for("bulk")
+    _record(
+        tier="bulk", model=model, prompt_hash=_prompt_hash(model, messages, _SCHEMA),
+        response_json={"content": ""}, tokens_in=0, tokens_out=0,
+        cost_usd=0.0, latency_ms=0, cached=False,
+    )
+    calls: list = []
+
+    result = _ask_json(messages, '{"ok": true}', calls)
+
+    assert result.cached is False
+    assert result.parsed == {"ok": True}
+    assert len(calls) == 1
+
+
+def test_bypass_cache_makes_a_real_call_and_records_it(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    _ask_json(messages, '{"ok": false}', calls)
+    retried = _ask_json(messages, '{"ok": true}', calls, bypass_cache=True)
+    later = _ask_json(messages, "unused", calls)
+
+    assert retried.cached is False
+    assert retried.parsed == {"ok": True}
+    assert len(calls) == 2
+    # The fresh answer is what a later normal call reuses.
+    assert later.cached is True
+    assert later.parsed == {"ok": True}
+
+
+def test_without_a_schema_any_response_is_cached(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    complete("bulk", messages, _completion_fn=_fake_completion_fn("not json", calls=calls))
+    second = complete("bulk", messages, _completion_fn=_fake_completion_fn("other", calls=calls))
+
+    assert second.cached is True
+    assert second.content == "not json"
+    assert len(calls) == 1
+
+
+def test_cache_version_is_part_of_the_key(monkeypatch):
+    from app.core import llm
+
+    messages = [{"role": "user", "content": "hello"}]
+    before = llm._prompt_hash("openai/gpt-4o-mini", messages, None)
+    monkeypatch.setattr(llm, "_CACHE_VERSION", llm._CACHE_VERSION + 1)
+
+    assert llm._prompt_hash("openai/gpt-4o-mini", messages, None) != before
+
+
 def test_anthropic_system_prompt_is_marked_for_prompt_caching():
     messages = [system_message("fixed instructions"), user_message("per-item text")]
 

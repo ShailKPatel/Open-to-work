@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import delete, select
 
 from app.api.deps import DbSession
+from app.api.input_limits import file_notes, require_confirmation
 from app.core.db import (
     Account,
     Education,
@@ -94,6 +95,7 @@ def create_account(
     last_name: str = Form(...),
     github_username: str = Form(""),
     resume: UploadFile | None = File(None),
+    confirm_large: bool = Form(False),
     *,
     db: DbSession,
 ) -> AccountSummary:
@@ -105,8 +107,10 @@ def create_account(
         raise HTTPException(status_code=422, detail=f"GitHub user '{username}' not found")
     if resume is not None and resume.filename:
         # Checked before the account exists, so a refused file leaves nothing behind.
-        if is_generated_pdf(resume.file.read()):
+        data = resume.file.read()
+        if is_generated_pdf(data):
             raise HTTPException(status_code=422, detail=str(GeneratedResumeError()))
+        require_confirmation("file", file_notes(data), confirm_large)
         resume.file.seek(0)
 
     account = Account(

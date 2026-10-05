@@ -13,10 +13,11 @@ the skills it appears next to), which is what separates them.
 
 Projection. Flattening several hundred dimensions to two always loses
 most of the distances; the only question is which ones. PCA keeps the
-directions of largest variance, which on this data preserved under a
-fifth of each skill's true nearest neighbours, so the picture was noise.
-t-SNE optimises for keeping neighbours neighbours, which is exactly what
-a map is read for, and 100-odd points take under two seconds.
+directions of largest variance, which on this data kept 0.294 of each
+skill's true nearest neighbours against 0.530 for t-SNE
+(evals/results/embeddings-20260921T111424Z.md). t-SNE optimises for
+keeping neighbours neighbours, which is exactly what a map is read for,
+and 100-odd points take under two seconds.
 
 Model. The map compares skills only to each other and never writes to
 Qdrant, so it is free to use a different model from retrieval, and the

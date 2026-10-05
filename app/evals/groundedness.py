@@ -6,7 +6,7 @@ app/core/llm.py's cache, budget, attribution, and key-resolution layer, and
 pulls in a large dependency chain (langchain, datasets, pandas). The judge
 calls here go through complete() like every other LLM call instead.
 
-Context precision needs no LLM call at all: app/evals/run.py computes it
+Precision@10 needs no LLM call at all: app/evals/run.py computes it
 directly from precision_at_k against the golden set's hand-labeled ground
 truth. Groundedness is the one number that needs a judge call: whether a
 generated resume bullet is supported by the project evidence it was

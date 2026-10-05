@@ -9,8 +9,9 @@ type size moves in the steps LaTeX offers, and every value is clamped so
 no rung looks broken.
 
 DENSITY_LADDER is a fixed list because every probe is a real Tectonic
-run: thirteen rungs cover about a 35 percent swing in content per page,
-and a binary search over them takes four compiles.
+run: thirteen rungs cover about a 35 percent swing in content per page.
+pagefit.py walks it one rung at a time from the base rung rather than
+searching it, since page count is only nearly monotonic in density.
 """
 
 from __future__ import annotations
