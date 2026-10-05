@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.db import Repository, Resume, SkillEvidence, get_db
+from app.core.db import Repository, Resume, get_db
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
@@ -30,6 +30,7 @@ from app.core.llm import (
     system_message,
     user_message,
 )
+from app.resume_build.orchestrator import format_project_evidence, project_skills
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,9 @@ _SYSTEM_PROMPT = (
     "(technology used, what was built, scale or impact stated) is either "
     "directly stated in the evidence or a reasonable, conservative "
     "paraphrase of it. Answer `grounded: false` if the bullet states "
-    "anything the evidence doesn't support, even if it sounds plausible."
+    "anything the evidence doesn't support, even if it sounds plausible. "
+    "A user note is the account holder's own statement about the project "
+    "and counts as evidence."
 )
 
 _DEFAULT_SAMPLE_SIZE = 5
@@ -60,23 +63,18 @@ class GroundednessResult:
     skipped_reason: str | None = None
 
 
-def _project_evidence_text(db: Session, repo_id: int) -> str:
+def _project_evidence_text(
+    db: Session, account_id: int, repo_id: int, user_note: str | None
+) -> str:
+    """The project as the resume writer was shown it, read back from the
+    account's current data: the same truncated description, the same
+    non-archived skills and the note saved with the project. No README,
+    since the writer never saw one."""
     repo = db.get(Repository, repo_id)
-    if repo is None:
+    if repo is None or repo.account_id != account_id:
         return ""
-    parts = []
-    if repo.description:
-        parts.append(f"Description: {repo.description}")
-    skills = (
-        db.execute(select(SkillEvidence.skill).where(SkillEvidence.repo_id == repo_id))
-        .scalars()
-        .all()
-    )
-    if skills:
-        parts.append("Known skills/technologies: " + ", ".join(sorted(set(skills))))
-    if repo.readme:
-        parts.append("README excerpt: " + repo.readme[:1500])
-    return "\n".join(parts)
+    skills = project_skills(db, account_id, [repo_id]).get(repo_id, [])
+    return format_project_evidence(repo.name, repo.description or "", skills, user_note)
 
 
 def score_groundedness(
@@ -86,10 +84,10 @@ def score_groundedness(
 ) -> GroundednessResult:
     """Checks up to `max_checks` project bullets, drawn from the
     `sample_size` most-recently-generated resumes for this account,
-    against their own project's real evidence (description/README/known
-    skills), one bulk-tier LLM judge call per bullet, a true/false
-    factual check being the kind of classification the bulk tier is
-    for. `max_checks` bounds
+    against their own project's real evidence (the description, skills and
+    user note the writer was given, see _project_evidence_text()), one
+    bulk-tier LLM judge call per bullet, a true/false factual check being
+    the kind of classification the bulk tier is for. `max_checks` bounds
     worst-case cost/latency regardless of how many resumes or bullets
     exist; it is not a claim that a larger sample wouldn't be more
     reliable, just a ceiling on what one eval run spends.
@@ -128,7 +126,9 @@ def score_groundedness(
                 points = project.get("points") or []
                 if repo_id is None or not points:
                     continue
-                evidence = _project_evidence_text(db, repo_id)
+                evidence = _project_evidence_text(
+                    db, account_id, repo_id, project.get("user_note")
+                )
                 if not evidence.strip():
                     continue
                 for bullet in points:
