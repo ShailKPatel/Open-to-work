@@ -29,7 +29,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.db import Account, JobPosting, Repository, SkillEvidence, SocialLink, get_db
+from app.core.db import (
+    Account,
+    ExperienceSkillEvidence,
+    JobPosting,
+    Repository,
+    SkillEvidence,
+    SocialLink,
+    get_db,
+)
 from app.core.llm import complete, system_message, user_message
 from app.resume_build.context import (
     archived_skill_keys,
@@ -198,6 +206,33 @@ def format_project_evidence(
     return f"name={name!r} description={description!r} skills={skills_text}{note}"
 
 
+def _live_hits(db: Session, hits: list[Any]) -> list[Any]:
+    """Drops skill evidence hits whose SQL row is gone. A point can outlive
+    its row if a delete reached SQL but not Qdrant, and its payload would
+    otherwise still offer a removed skill or project. One query per kind of
+    evidence, not one per hit."""
+    from app.retrieval.index import experience_evidence_point_id
+
+    offset = experience_evidence_point_id(0)
+    repo_ids = [h.id for h in hits if "experience_id" not in h.payload]
+    experience_ids = [h.id - offset for h in hits if "experience_id" in h.payload]
+    live: set[int] = set()
+    if repo_ids:
+        live.update(
+            db.execute(select(SkillEvidence.id).where(SkillEvidence.id.in_(repo_ids))).scalars()
+        )
+    if experience_ids:
+        live.update(
+            evidence_id + offset
+            for evidence_id in db.execute(
+                select(ExperienceSkillEvidence.id).where(
+                    ExperienceSkillEvidence.id.in_(experience_ids)
+                )
+            ).scalars()
+        )
+    return [h for h in hits if h.id in live]
+
+
 def _candidate_projects(
     db: Session,
     account_id: int,
@@ -206,8 +241,11 @@ def _candidate_projects(
 ) -> list[dict[str, Any]]:
     from app.retrieval.search import search_skill_evidence
 
-    hits = search_skill_evidence(
-        job_text, account_id, top_k=_MAX_CANDIDATE_PROJECTS * 3, source_type="repo"
+    hits = _live_hits(
+        db,
+        search_skill_evidence(
+            job_text, account_id, top_k=_MAX_CANDIDATE_PROJECTS * 3, source_type="repo"
+        ),
     )
 
     best_score: dict[int, float] = {}
@@ -258,6 +296,7 @@ def _candidate_projects(
         for r in db.execute(
             select(Repository).where(
                 Repository.id.in_(top_repo_ids),
+                Repository.account_id == account_id,
                 Repository.is_profile_readme.is_(False),
                 Repository.exclude_from_resume.is_(False),
             )
@@ -289,7 +328,7 @@ def _candidate_skills(
 ) -> list[str]:
     from app.retrieval.search import search_skill_evidence
 
-    hits = search_skill_evidence(job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS)
+    hits = _live_hits(db, search_skill_evidence(job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS))
     excluded_repos, excluded_roles = excluded_sources(db, account_id)
     archived_skills = archived_skill_keys(db, account_id)
     seen: dict[str, str] = {}
@@ -591,12 +630,14 @@ def _build_reserve(
         if len(reserve_projects) >= _MAX_RESERVE_PROJECTS:
             break
 
+    # Keyed by role id, as a string so a checkpoint saved as JSON reads
+    # back the same: two roles at one company each keep their own points.
     held_points: dict[str, list[str]] = {}
     for role in experience:
         shown = role.get("source_points", role["points"])
         dropped = [p for p in ctx.experience_all_points.get(role["id"], []) if p not in shown]
         if dropped:
-            held_points[role["company"]] = dropped
+            held_points[str(role["id"])] = dropped
 
     shown_skills = {s.casefold() for s in skills}
     reserve_skills = [

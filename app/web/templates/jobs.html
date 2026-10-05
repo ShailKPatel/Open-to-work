@@ -224,11 +224,15 @@
         this.composeError = '';
         this.composeWarnings = [];
         try {
-          const form = new FormData();
-          form.append('account_id', this.accountId);
-          form.append('text', this.composeText);
-          for (const f of this.composeFiles) form.append('files', f.file);
-          const res = await fetch('/api/job-postings/compose', { method: 'POST', body: form });
+          const res = await otwFetchConfirmingLarge((confirmLarge) => {
+            const form = new FormData();
+            form.append('account_id', this.accountId);
+            form.append('text', this.composeText);
+            for (const f of this.composeFiles) form.append('files', f.file);
+            if (confirmLarge) form.append('confirm_large', 'true');
+            return fetch('/api/job-postings/compose', { method: 'POST', body: form });
+          });
+          if (!res) return;
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             this.composeError = typeof err.detail === 'string' ? err.detail : 'Could not save this job.';

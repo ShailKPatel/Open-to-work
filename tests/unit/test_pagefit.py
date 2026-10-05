@@ -31,6 +31,8 @@ from app.resume_build.latex import render_resume
 from app.resume_build.pagefit import (
     _MAX_PLANNED_CUTS,
     PageFitNotAchievedError,
+    _apply_addition,
+    _apply_cut,
     _apply_rewrite,
     _is_faithful_shortening,
     fit_to_page_limit,
@@ -43,7 +45,7 @@ _BASE_DATA = {
     "summary": "A summary.",
     "experience": [
         {
-            "title": "Engineer", "company": "Acme", "location": None,
+            "id": 1, "title": "Engineer", "company": "Acme", "location": None,
             "date_range": "Jan. 2020 -- present",
             "points": ["Did the important thing", "Did another thing"],
         }
@@ -370,7 +372,7 @@ def test_adds_the_largest_reserve_item_first(monkeypatch):
                 "points": ["A real repository description"], "note": None,
             }
         ],
-        "experience_points": {"Acme": ["A narrowed-away point"]},
+        "experience_points": {"1": ["A narrowed-away point"]},
         "skills": ["Held Back Skill"],
     }
     _install(monkeypatch, capacity_at_base=18, base_margin_cm=1.5)
@@ -470,7 +472,7 @@ def test_reserve_items_already_on_the_resume_are_skipped(monkeypatch):
     shows. Adding it twice would be worse than not filling the page."""
     reserve = {
         "projects": [{**_BASE_DATA["projects"][0]}],
-        "experience_points": {"Acme": ["Did the important thing", "A narrowed-away point"]},
+        "experience_points": {"1": ["Did the important thing", "A narrowed-away point"]},
         "skills": ["Python"],
     }
     _install(monkeypatch, capacity_at_base=18, base_margin_cm=1.5)
@@ -594,6 +596,59 @@ def test_rewrite_needs_the_original_quoted_exactly():
 
     assert _apply_rewrite(data, {**wrong_owner, "owner": "Acme"})
     assert data["experience"][0]["points"] == [shorter]
+
+
+def _two_roles_at_acme() -> dict:
+    """A promotion: two roles at the same company, each its own row."""
+    return {
+        "summary": "A summary.",
+        "experience": [
+            {"id": 1, "company": "Acme", "points": ["Led the team", "Hired four people"]},
+            {"id": 2, "company": "Acme", "points": [_LONG_POINT, "Wrote the docs"]},
+        ],
+        "projects": [],
+        "skills": [],
+    }
+
+
+def test_held_back_point_goes_back_to_its_own_role_at_the_same_company():
+    data = _two_roles_at_acme()
+    reserve = {"projects": [], "experience_points": {"2": ["Fixed the pager"]}, "skills": []}
+
+    assert _apply_addition(data, reserve)
+
+    assert data["experience"][0]["points"] == ["Led the team", "Hired four people"]
+    assert data["experience"][1]["points"] == [_LONG_POINT, "Wrote the docs", "Fixed the pager"]
+
+
+def test_reserve_saved_with_company_keys_still_adds():
+    """A build checkpoint saved before the reserve was keyed by role id."""
+    data = _two_roles_at_acme()
+    reserve = {"projects": [], "experience_points": {"Acme": ["Fixed the pager"]}, "skills": []}
+
+    assert _apply_addition(data, reserve)
+
+    assert data["experience"][0]["points"][-1] == "Fixed the pager"
+
+
+def test_cut_and_rewrite_reach_the_second_role_at_the_same_company():
+    data = _two_roles_at_acme()
+    shorter = "Built the internal billing service handling 40 requests per second"
+
+    assert _apply_cut(
+        data,
+        {"cut_type": "experience_point", "project_name": "Acme", "point_text": "Wrote the docs"},
+    )
+    assert _apply_rewrite(
+        data,
+        {
+            "target": "experience_point", "owner": "Acme",
+            "original": _LONG_POINT, "shorter": shorter,
+        },
+    )
+
+    assert data["experience"][0]["points"] == ["Led the team", "Hired four people"]
+    assert data["experience"][1]["points"] == [shorter]
 
 
 def test_rewording_runs_once_before_any_cut(monkeypatch):

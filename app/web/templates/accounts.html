@@ -344,13 +344,16 @@
         this.submitting = true;
         this.createError = '';
         try {
-          const body = new FormData();
-          body.append('first_name', this.form.first_name);
-          body.append('last_name', this.form.last_name);
-          body.append('github_username', this.form.github_username);
-          if (this.resumeFile) body.append('resume', this.resumeFile);
-
-          const res = await fetch('/accounts', { method: 'POST', body });
+          const res = await otwFetchConfirmingLarge((confirmLarge) => {
+            const body = new FormData();
+            body.append('first_name', this.form.first_name);
+            body.append('last_name', this.form.last_name);
+            body.append('github_username', this.form.github_username);
+            if (this.resumeFile) body.append('resume', this.resumeFile);
+            if (confirmLarge) body.append('confirm_large', 'true');
+            return fetch('/accounts', { method: 'POST', body });
+          });
+          if (!res) return;
           const data = await res.json();
           if (!res.ok) {
             this.createError = data.detail || 'Could not create profile.';

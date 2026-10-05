@@ -24,6 +24,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, object_session
 
 from app.api.deps import DbSession
+from app.api.input_limits import file_notes, require_confirmation
 from app.core.db import (
     Account,
     Education,
@@ -267,6 +268,7 @@ def upload_resume(
     name: str = Form(""),
     notes: str = Form(""),
     file: UploadFile = File(...),
+    confirm_large: bool = Form(False),
     *,
     db: DbSession,
 ) -> ResumeItem:
@@ -276,6 +278,8 @@ def upload_resume(
     account = db.get(Account, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+    require_confirmation("file", file_notes(file.file.read()), confirm_large)
+    file.file.seek(0)
     try:
         row = ingest_resume(db, account_id, file, name=name, notes=notes)
     except DuplicateResumeError as e:

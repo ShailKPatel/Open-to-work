@@ -688,6 +688,24 @@
       });
     };
 
+    // Sends an upload or paste that may be past a soft size limit
+    // (app/api/input_limits.py). send(confirmLarge) makes the request; a
+    // 409 with code "large_input" asks the person, and a yes sends it
+    // again with confirmLarge true. Resolves to the last Response, or
+    // null when the person said no.
+    window.otwFetchConfirmingLarge = async function (send) {
+      var res = await send(false);
+      if (res.status !== 409) return res;
+      var data = await res.clone().json().catch(function () { return {}; });
+      if (!data.detail || data.detail.code !== 'large_input') return res;
+      var ok = await otwConfirm({
+        title: 'Process a large input?',
+        body: data.detail.message,
+        confirmLabel: 'Process anyway',
+      });
+      return ok ? send(true) : null;
+    };
+
     // Reprocesses one project and keeps a notice for it in `notices` (an
     // Alpine array rendered by _ui.html's task_notices). The notice stays
     // until dismissed; dismissing it while the request runs only hides it.

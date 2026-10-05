@@ -20,6 +20,8 @@ dependencies = [
     "httpx>=0.27",  # provider key checks and raw file fetches (app/core/llm_providers.py, app/ingest/github/client.py)
     "rank-bm25>=0.2",  # keyword-only baseline retrieval, app/evals/bm25.py (pure Python)
     "pyyaml>=6.0",  # golden-set file format, app/evals/golden.py (imported directly)
+    "numpy>=2.5",  # skill map vectors, app/profile/skill_map.py (imported directly)
+    "scikit-learn>=1.9",  # PCA and clustering for the skill map, app/profile/skill_map.py
 ]
 
 [project.optional-dependencies]

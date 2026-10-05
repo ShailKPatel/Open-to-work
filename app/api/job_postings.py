@@ -29,6 +29,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
+from app.api.input_limits import file_notes, files_notes, require_confirmation, text_notes
 from app.core.db import (
     JobPosting,
     Resume,
@@ -72,7 +73,7 @@ def _apply_salary(posting: JobPosting) -> None:
     posting.salary_currency = salary.currency
 
 
-def _run_extraction(posting: JobPosting, db: Session) -> None:
+def _run_extraction(posting: JobPosting, db: Session, bypass_cache: bool = False) -> None:
     """Best-effort structured extraction, same posture as
     app/profile/resume_ingest.py's run_extraction: a failed call never
     loses the posting itself, just leaves extraction_status at "failed"
@@ -80,11 +81,14 @@ def _run_extraction(posting: JobPosting, db: Session) -> None:
     only where they were left at their unset default, never overwrites
     a value actually typed in. On success, also (best-effort, never
     blocking the posting save) resolves this posting's canonical role
-    family and indexes it for semantic search.
+    family and indexes it for semantic search. bypass_cache is set by
+    Reprocess, so the posting is read again rather than replayed.
     """
     try:
         extraction = extract_job_posting(
-            posting.raw_text_quarantined, account_id=posting.account_id
+            posting.raw_text_quarantined,
+            account_id=posting.account_id,
+            bypass_cache=bypass_cache,
         )
         posting.extracted_json = extraction.as_extracted_json()
         _apply_salary(posting)
@@ -218,6 +222,9 @@ class JobPostingCreate(BaseModel):
     company: str | None = None
     title: str | None = None
     location: str | None = None
+    # Set on the second send, once the person has agreed to process text
+    # past the soft size limit (app/api/input_limits.py).
+    confirm_large: bool = False
 
 
 class RequiredSkillOut(BaseModel):
@@ -406,6 +413,7 @@ def _role_family_for(db: Session, posting: JobPosting) -> RoleFamily | None:
 
 @router.post("", response_model=JobPostingDetail)
 def create_posting(body: JobPostingCreate, *, db: DbSession) -> JobPostingDetail:
+    require_confirmation("text", text_notes(body.raw_text), body.confirm_large)
     posting = _create_posting_from_text(
         account_id=body.account_id,
         raw_text=body.raw_text,
@@ -424,6 +432,7 @@ def create_posting(body: JobPostingCreate, *, db: DbSession) -> JobPostingDetail
 def create_posting_from_screenshot(
     account_id: int = Form(...),
     file: UploadFile = File(...),
+    confirm_large: bool = Form(False),
     *,
     db: DbSession,
 ) -> JobPostingDetail:
@@ -435,6 +444,7 @@ def create_posting_from_screenshot(
     app/api/resume.py's uploads.
     """
     file_bytes = file.file.read()
+    require_confirmation("file", file_notes(file_bytes), confirm_large)
     mime_type = file.content_type or ""
     try:
         result = extract_job_posting_from_image(file_bytes, mime_type, account_id=account_id)
@@ -507,6 +517,7 @@ def compose_posting(
     text: str = Form(""),
     links: str = Form(""),
     files: list[UploadFile] | None = File(None),
+    confirm_large: bool = Form(False),
     *,
     db: DbSession,
 ) -> JobPostingComposed:
@@ -533,6 +544,11 @@ def compose_posting(
                 detail=f"{upload.filename or 'that file'} is not an image; attach screenshots only",
             )
         images.append((data, mime, Path(upload.filename or "screenshot").name))
+    require_confirmation(
+        "job posting",
+        text_notes(text) + files_notes([data for data, _, _ in images]),
+        confirm_large,
+    )
 
     kinds: set[str] = set()
     sections: list[str] = []
@@ -723,7 +739,7 @@ def reprocess_posting(posting_id: int, *, db: DbSession) -> JobPostingDetail:
     posting = db.get(JobPosting, posting_id)
     if posting is None:
         raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
-    _run_extraction(posting, db)
+    _run_extraction(posting, db, bypass_cache=True)
     return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 

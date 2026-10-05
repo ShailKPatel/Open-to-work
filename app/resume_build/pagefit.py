@@ -281,6 +281,17 @@ def _describe_data(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _role_holding(data: dict[str, Any], company: str, point_text: str) -> dict[str, Any] | None:
+    """The role a suggestion naming `company` and quoting `point_text`
+    means. The model only sees company names (see _describe_data), so two
+    roles at the same company are told apart by which one holds the
+    quoted point; the first in resume order wins if both do."""
+    for role in data.get("experience", []):
+        if role["company"] == company and point_text in role.get("points", []):
+            return role
+    return None
+
+
 def _apply_cut(data: dict[str, Any], suggestion: dict[str, Any]) -> bool:
     """Mutates data in place. Returns True if something was actually
     removed, False if the suggestion didn't match anything current
@@ -315,18 +326,15 @@ def _apply_cut(data: dict[str, Any], suggestion: dict[str, Any]) -> bool:
         # suggestion shape uniform rather than adding a third field name.
         company = str(suggestion.get("project_name", "")).strip()
         point_text = str(suggestion.get("point_text", "")).strip()
-        for role in data.get("experience", []):
-            if role["company"] != company:
-                continue
-            points = role.get("points", [])
-            if point_text in points and len(points) > 1:
-                index = points.index(point_text)
-                del points[index]
-                sources = role.get("source_points")
-                if isinstance(sources, list) and index < len(sources):
-                    del sources[index]
-                return True
-        return False
+        role = _role_holding(data, company, point_text)
+        if role is None or len(role["points"]) <= 1:
+            return False
+        index = role["points"].index(point_text)
+        del role["points"][index]
+        sources = role.get("source_points")
+        if isinstance(sources, list) and index < len(sources):
+            del sources[index]
+        return True
 
     return False
 
@@ -376,19 +384,23 @@ def _apply_rewrite(data: dict[str, Any], rewrite: dict[str, Any]) -> bool:
         return False
 
     if target == "project_point":
-        entries, owner_key = data.get("projects", []), "name"
+        entry = next(
+            (
+                p
+                for p in data.get("projects", [])
+                if p.get("name") == owner and original in p.get("points", [])
+            ),
+            None,
+        )
     elif target == "experience_point":
-        entries, owner_key = data.get("experience", []), "company"
+        entry = _role_holding(data, owner, original)
     else:
         return False
-    for entry in entries:
-        if entry.get(owner_key) != owner:
-            continue
-        points = entry.get("points", [])
-        if original in points:
-            points[points.index(original)] = shorter
-            return True
-    return False
+    if entry is None:
+        return False
+    points = entry["points"]
+    points[points.index(original)] = shorter
+    return True
 
 
 def _plan_rewrites(
@@ -442,12 +454,18 @@ def _apply_addition(data: dict[str, Any], reserve: dict[str, Any]) -> bool:
         data.setdefault("projects", []).append(project)
         return True
 
+    # Keyed by role id (see orchestrator.py's _build_reserve). A build
+    # checkpoint saved before that was keyed by company, so a key that is
+    # no current role's id still matches by company.
     held_points: dict[str, list[str]] = reserve.get("experience_points") or {}
-    for company, points in held_points.items():
+    roles = data.get("experience", [])
+    role_ids = {str(role.get("id")) for role in roles}
+    for key, points in held_points.items():
+        match_on = "id" if key in role_ids else "company"
         while points:
             point = points.pop(0)
-            for role in data.get("experience", []):
-                if role["company"] != company:
+            for role in roles:
+                if str(role.get(match_on)) != key:
                     continue
                 shown = role.setdefault("points", [])
                 sources = role.get("source_points")

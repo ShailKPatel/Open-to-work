@@ -120,7 +120,8 @@ def _process_repo(
 
     prefetched holds what the batched pass already got; a repo it missed
     gets its own call. batch=False (a single Reprocess) leaves out the
-    note about stopping the remaining projects, since there are none.
+    note about stopping the remaining projects, since there are none, and
+    skips the LLM cache so the repo is really read again.
 
     Commits before calling the LLM: complete() records the call in its own
     session, and SQLite would deadlock on a write lock this session still
@@ -132,11 +133,9 @@ def _process_repo(
     # Manual evidence_type rows are hand-added on the project detail page
     # (app/api/projects.py add_skill): a person's own claim, not something
     # extraction produced, so Reprocess must not wipe it out from under them.
-    db.execute(
-        delete(SkillEvidence).where(
-            SkillEvidence.repo_id == repo.id, SkillEvidence.evidence_type != "manual"
-        )
-    )
+    stale = (SkillEvidence.repo_id == repo.id, SkillEvidence.evidence_type != "manual")
+    old_ids = list(db.execute(select(SkillEvidence.id).where(*stale)).scalars())
+    db.execute(delete(SkillEvidence).where(*stale))
     # Same manual-vs-derived split as SkillEvidence above: a link someone
     # typed in by hand (or edited, see app/api/projects.py update_link) is
     # "manual" and survives Reprocess; only "readme_extracted" rows get
@@ -147,6 +146,8 @@ def _process_repo(
     manifest_claims = skills_from_manifests(repo.manifests_json)  # never raises
     _write_claims(db, repo, manifest_claims, now)
     db.commit()  # release the write lock before the nested LLM-call session runs
+    # Before the new rows are indexed, which may reuse these ids.
+    _delete_index_points(old_ids)
 
     stop_batch = False
     facts = (prefetched or {}).get(repo.id)
@@ -156,7 +157,7 @@ def _process_repo(
         repo.skill_extraction_error = None
     else:
         try:
-            facts = extract_repo_facts(repo)
+            facts = extract_repo_facts(repo, bypass_cache=not batch)
         except NoSourceTextError:
             repo.skill_extraction_status = "no_signal"
             repo.skill_extraction_error = None

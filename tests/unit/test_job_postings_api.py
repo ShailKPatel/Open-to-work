@@ -692,3 +692,70 @@ def test_pasted_posting_keeps_its_source_text_and_links(tmp_path):
 
     assert body["source_text"] == "Backend role, see https://acme.example/j/1"
     assert body["source_links"] == ["https://acme.example/j/1"]
+
+
+def test_long_pasted_text_asks_before_it_is_processed(tmp_path, monkeypatch):
+    from app.api import input_limits
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    monkeypatch.setattr(input_limits, "SOFT_MAX_TEXT_CHARS", 20)
+    calls = []
+    monkeypatch.setattr(
+        "app.api.job_postings._run_extraction", lambda posting, db, **_: calls.append(1)
+    )
+    client = _client()
+    body = {"account_id": account_id, "raw_text": "A very long job posting text."}
+
+    asked = client.post("/api/job-postings", json=body)
+    confirmed = client.post("/api/job-postings", json={**body, "confirm_large": True})
+
+    assert asked.status_code == 409
+    assert asked.json()["detail"]["code"] == "large_input"
+    assert "29 characters" in asked.json()["detail"]["message"]
+    assert confirmed.status_code == 200
+    assert len(calls) == 1
+    assert len(client.get(f"/api/job-postings?account_id={account_id}").json()) == 1
+
+
+def test_large_screenshot_asks_before_the_llm_reads_it(tmp_path, monkeypatch):
+    from app.api import input_limits
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    monkeypatch.setattr(input_limits, "SOFT_MAX_FILE_MB", 0.001)
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("the screenshot was sent before the person agreed")
+
+    monkeypatch.setattr("app.api.job_postings.extract_job_posting_from_image", _unexpected)
+    resp = _client().post(
+        "/api/job-postings/from-screenshot",
+        data={"account_id": str(account_id)},
+        files={"file": ("shot.png", b"x" * 4096, "image/png")},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "large_input"
+
+
+def test_compose_asks_for_large_text_or_screenshots(tmp_path, monkeypatch):
+    from app.api import input_limits
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    monkeypatch.setattr(input_limits, "SOFT_MAX_TEXT_CHARS", 20)
+    monkeypatch.setattr(
+        "app.api.job_postings._run_extraction", lambda posting, db, **_: None
+    )
+    client = _client()
+    form = {"account_id": str(account_id), "text": "A very long job posting text."}
+
+    asked = client.post("/api/job-postings/compose", data=form)
+    confirmed = client.post(
+        "/api/job-postings/compose", data={**form, "confirm_large": "true"}
+    )
+
+    assert asked.status_code == 409
+    assert asked.json()["detail"]["message"].startswith("This job posting is 29 characters")
+    assert confirmed.status_code == 200

@@ -15,6 +15,7 @@ from app.core.db import (
     Account,
     Experience,
     ExperiencePoint,
+    ExperienceSkillEvidence,
     JobPosting,
     Repository,
     SkillEvidence,
@@ -26,6 +27,7 @@ from app.resume_build.orchestrator import (
     edit_resume_content,
     generate_resume,
 )
+from app.retrieval.index import experience_evidence_point_id
 
 
 def _reset_db(tmp_path: Path):
@@ -402,6 +404,13 @@ def _seed_with_leftovers(tmp_path: Path) -> tuple[int, int, int, int]:
     db.add(ExperiencePoint(experience_id=role.id, text="Also did a spare thing", order_index=2))
     db.commit()
     db.refresh(spare)
+    db.add(
+        SkillEvidence(
+            skill="Spare Skill", repo_id=spare.id, evidence_type="declared_dependency",
+            weight=0.5, confidence=1.0,
+        )
+    )
+    db.commit()
     ids = (account_id, posting_id, picked_repo.id, spare.id)
     db.close()
     return ids
@@ -456,8 +465,35 @@ def test_reserve_holds_what_the_resume_is_not_showing(tmp_path, monkeypatch):
     # A held-back project's bullet is the repository's own description,
     # never anything a model wrote for it.
     assert reserve["projects"][0]["points"] == ["A spare project nobody picked"]
-    assert reserve["experience_points"] == {"Acme": ["Also did a spare thing"]}
+    role_id = data["experience"][0]["id"]
+    assert reserve["experience_points"] == {str(role_id): ["Also did a spare thing"]}
     assert reserve["skills"] == ["Spare Skill"]
+
+
+def test_reserve_keeps_each_role_at_the_same_company_apart():
+    """A promotion is two roles at one company; neither role's held-back
+    points may overwrite the other's."""
+    from app.resume_build.orchestrator import _build_reserve, _DeterministicContext
+
+    experience = [
+        {"id": 1, "company": "Acme", "points": ["Led the team"]},
+        {"id": 2, "company": "Acme", "points": ["Wrote the docs"]},
+    ]
+    ctx = _DeterministicContext(
+        header={}, experience=experience, education=[], candidates=[],
+        candidate_skill_names=[], experience_pool=experience,
+        experience_all_points={
+            1: ["Led the team", "Hired four people"],
+            2: ["Wrote the docs", "Fixed the pager"],
+        },
+    )
+
+    reserve = _build_reserve(ctx, experience, [], [])
+
+    assert reserve["experience_points"] == {
+        "1": ["Hired four people"],
+        "2": ["Fixed the pager"],
+    }
 
 
 def test_reserve_never_reaches_the_rendered_tex(tmp_path, monkeypatch):
@@ -640,7 +676,7 @@ def test_reworded_experience_point_is_kept_unless_it_adds_a_number(tmp_path, mon
     role = data["experience"][0]
     assert role["points"] == ["Halved CI build time", "Shipped a thing"]
     assert role["source_points"] == ["Cut build time in half", "Shipped a thing"]
-    held = data["reserve"]["experience_points"].get(role["company"], [])
+    held = data["reserve"]["experience_points"].get(str(role["id"]), [])
     assert "Cut build time in half" not in held
     assert "Organized the office party" in held
 
@@ -740,11 +776,23 @@ def test_resume_building_never_sees_entries_left_off_resumes(tmp_path, monkeypat
     )
     db.add_all([hidden, hidden_role])
     db.commit()
+    qr = SkillEvidence(
+        skill="QR codes", repo_id=hidden.id, evidence_type="declared_dependency",
+        weight=0.5, confidence=1.0,
+    )
+    excel = ExperienceSkillEvidence(skill="Excel", experience_id=hidden_role.id)
+    db.add_all([qr, excel])
+    db.commit()
+    python_id = db.query(SkillEvidence).filter_by(repo_id=project_id).first().id
 
     hits = [
-        Hit(id=1, score=0.95, payload={"repo_id": hidden.id, "skill": "QR codes"}),
-        Hit(id=2, score=0.9, payload={"experience_id": hidden_role.id, "skill": "Excel"}),
-        Hit(id=3, score=0.5, payload={"repo_id": project_id, "skill": "Python"}),
+        Hit(id=qr.id, score=0.95, payload={"repo_id": hidden.id, "skill": "QR codes"}),
+        Hit(
+            id=experience_evidence_point_id(excel.id),
+            score=0.9,
+            payload={"experience_id": hidden_role.id, "skill": "Excel"},
+        ),
+        Hit(id=python_id, score=0.5, payload={"repo_id": project_id, "skill": "Python"}),
     ]
     monkeypatch.setattr(
         "app.retrieval.search.search_skill_evidence",
@@ -804,3 +852,63 @@ def test_resume_building_never_sees_archived_education_or_skills(tmp_path, monke
     assert [e["institution"] for e in schools] == ["State University"]
     assert skills == ["Python"]
     assert "QR Codes" not in candidates[0]["skills"]
+
+
+def test_hits_whose_evidence_row_is_gone_are_ignored(tmp_path, monkeypatch):
+    """A Qdrant point left behind by a delete that never reached the index
+    must not offer its skill or its project to the resume writer."""
+    from app.resume_build.orchestrator import _candidate_projects, _candidate_skills
+    from app.retrieval.search import Hit
+
+    account_id, _ = _seed(tmp_path)
+    db = get_db()
+    project = db.query(Repository).filter_by(account_id=account_id).first()
+    python_id = db.query(SkillEvidence).filter_by(repo_id=project.id).first().id
+    gone = Repository(
+        account_id=account_id, github_id=2, name="gone", full_name="janedoe/gone",
+        url="https://github.com/janedoe/gone", is_fork=False,
+    )
+    db.add(gone)
+    db.commit()
+
+    hits = [
+        Hit(id=python_id + 100, score=0.95, payload={"repo_id": project.id, "skill": "NumPy"}),
+        Hit(id=python_id + 101, score=0.9, payload={"repo_id": gone.id, "skill": "Go"}),
+        Hit(id=python_id, score=0.5, payload={"repo_id": project.id, "skill": "Python"}),
+    ]
+    monkeypatch.setattr(
+        "app.retrieval.search.search_skill_evidence",
+        lambda query_text, account_id, top_k=10, source_type=None: hits,
+    )
+
+    skills = _candidate_skills(db, account_id, "Python")
+    candidates = _candidate_projects(db, account_id, "Python")
+    db.close()
+
+    assert skills == ["Python"]
+    assert [c["repo_id"] for c in candidates] == [project.id]
+
+
+def test_selected_project_from_another_account_is_not_loaded(tmp_path, monkeypatch):
+    from app.resume_build.orchestrator import _candidate_projects
+
+    account_id, _ = _seed(tmp_path)
+    db = get_db()
+    project_id = db.query(Repository).filter_by(account_id=account_id).first().id
+    other = Account(first_name="Bo", last_name="B", github_username="bo")
+    db.add(other)
+    db.commit()
+    foreign = Repository(
+        account_id=other.id, github_id=3, name="theirs", full_name="bo/theirs",
+        url="https://github.com/bo/theirs", is_fork=False,
+    )
+    db.add(foreign)
+    db.commit()
+    _stub_search(monkeypatch, project_id)
+
+    candidates = _candidate_projects(
+        db, account_id, "Python", selected_project_ids=[foreign.id]
+    )
+    db.close()
+
+    assert [c["repo_id"] for c in candidates] == [project_id]

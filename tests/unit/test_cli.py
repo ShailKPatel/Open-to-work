@@ -20,8 +20,8 @@ def _report(**overrides) -> MetricsReport:
         pairs_scored=3,
         dense={"precision_at_5": 0.6, "recall_at_10": 0.8, "pairs_scored": 3},
         bm25={"precision_at_5": 0.4, "recall_at_10": 0.5, "pairs_scored": 3},
-        hybrid_beats_baseline=True,
-        context_precision=0.75,
+        dense_beats_bm25=True,
+        precision_at_10=0.75,
         groundedness=0.9,
         groundedness_checked=10,
         cost_usd=0.0123,
@@ -82,7 +82,7 @@ def test_evals_cli_full_run_prints_every_metric(monkeypatch, tmp_path, capsys):
     assert calls["run_eval"] == (7, True)
     assert "Eval report for account 7" in out
     assert "dense beats the BM25 baseline" in out
-    assert "context precision (top-10, vs ground truth): 0.750" in out
+    assert "precision@10 (vs ground truth): 0.750" in out
     assert "groundedness: 0.900 (10 bullets checked)" in out
     assert "cost this run: $0.0123" in out
     assert "two pairs had no labeled hits" in out
@@ -92,8 +92,8 @@ def test_evals_cli_full_run_prints_every_metric(monkeypatch, tmp_path, capsys):
 def test_evals_cli_no_groundedness_flag_and_unmeasured_metrics(monkeypatch, tmp_path, capsys):
     report = _report(
         pairs_scored=0,
-        hybrid_beats_baseline=None,
-        context_precision=None,
+        dense_beats_bm25=None,
+        precision_at_10=None,
         groundedness=None,
         groundedness_checked=0,
         notes=[],
@@ -104,12 +104,12 @@ def test_evals_cli_no_groundedness_flag_and_unmeasured_metrics(monkeypatch, tmp_
     assert calls["run_eval"] == (7, False)
     assert "dense vs baseline: not measured" in out
     assert "groundedness: not measured" in out
-    assert "context precision" not in out
+    assert "precision@10" not in out
     assert "Notes:" not in out
 
 
 def test_evals_cli_reports_when_dense_loses_to_baseline(monkeypatch, tmp_path, capsys):
-    _run_evals_cli(monkeypatch, tmp_path, ["7"], _report(hybrid_beats_baseline=False))
+    _run_evals_cli(monkeypatch, tmp_path, ["7"], _report(dense_beats_bm25=False))
 
     assert "dense does NOT beat the BM25 baseline" in capsys.readouterr().out
 
