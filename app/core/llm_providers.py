@@ -190,9 +190,11 @@ def validate_credentials(provider: str, credentials: dict) -> tuple[CheckStatus,
                 timeout=10.0,
             )
         elif provider == "gemini":
+            # In a header, not the ?key= query parameter: a URL ends up in
+            # httpx's request log and in error messages.
             r = httpx.get(
                 "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": credentials["api_key"]},
+                headers={"x-goog-api-key": credentials["api_key"]},
                 timeout=10.0,
             )
         elif provider == "mistral":

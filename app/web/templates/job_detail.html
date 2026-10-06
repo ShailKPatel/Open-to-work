@@ -44,7 +44,8 @@
 
         <!-- Primary actions -->
         <div class="mt-4 flex items-center gap-3 flex-wrap">
-          <a :href="'/portfolio/resume/build?job_posting_id=' + job.id" class="otw-btn text-sm px-4 py-2">Build resume for this job</a>
+          <a x-show="!isReading()" :href="'/portfolio/resume/build?job_posting_id=' + job.id" class="otw-btn text-sm px-4 py-2">Build resume for this job</a>
+          <button x-show="isReading()" type="button" disabled class="otw-btn text-sm px-4 py-2" title="Available once the posting has been read">Build resume for this job</button>
           <a x-show="job.apply_url" :href="job.apply_url" target="_blank" rel="noopener" class="otw-btn-ghost text-sm px-4 py-2 inline-flex items-center gap-2">
             Apply <span class="otw-meta-item" x-html="otwIcon('arrow')"></span>
           </a>
@@ -139,7 +140,19 @@
           </label>
         </div>
 
-        <p x-show="job.extraction_status === 'failed'" class="mt-4 text-sm otw-error" x-text="job.extraction_error || 'Could not read the details of this posting. Try Reprocess below.'"></p>
+        <p x-show="job.extraction_status === 'pending'" class="mt-4 text-sm flex items-center gap-2 text-[color:var(--muted)]">
+          <svg class="animate-spin w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.22-8.56"/></svg>
+          Extracting details in the background, you can keep using the app. This page updates when it is done.
+        </p>
+        <p x-show="job.extraction_status === 'failed' && !otwIsLlmKind(job.extraction_error_kind)" class="mt-4 text-sm otw-error" x-text="job.extraction_error || 'Could not read the details of this posting. Try Reprocess below.'"></p>
+        <!-- Failed because of the AI provider: the posting is saved, only the
+             read waits. Re-read below retries it. -->
+        <div x-show="job.extraction_status === 'failed' && otwIsLlmKind(job.extraction_error_kind)" class="mt-4 text-sm">
+          <p class="otw-error" x-text="otwLlmMessage(job.extraction_error_kind, null, false) + ' The posting is saved; use Re-read posting below to try again.'"></p>
+          <p class="mt-1 text-xs text-[color:var(--muted)]" x-text="job.extraction_error"></p>
+          <a href="/apis" class="mt-1 inline-block text-xs underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Manage APIs →</a>
+        </div>
+        <p x-show="job.extraction_status === 'extracted' && job.extraction_error" class="mt-4 text-xs text-[color:var(--muted)]" x-text="job.extraction_error"></p>
 
         <!-- The facts: each its own labeled field, editable in place -->
         <section class="mt-8">
@@ -275,9 +288,9 @@
         </details>
 
         <div class="mt-10 pt-4 flex items-center gap-4" style="border-top: 1px solid var(--line);">
-          <button @click="reprocess()" :disabled="Boolean(reprocessing)" class="otw-btn-ghost text-xs px-3 py-1.5">
-            <span x-show="!reprocessing">Re-read posting</span>
-            <span x-show="reprocessing" class="otw-working">Reading…</span>
+          <button @click="reprocess()" :disabled="Boolean(reprocessing) || isReading()" class="otw-btn-ghost text-xs px-3 py-1.5">
+            <span x-show="!reprocessing && !isReading()">Re-read posting</span>
+            <span x-show="reprocessing || isReading()" class="otw-working">Reading…</span>
           </button>
           {{ ui.bin_button("remove()", label="Delete posting", disabled="Boolean(deleting)") }}
           <p x-show="saveError" class="text-xs otw-error ml-auto" x-text="saveError"></p>
@@ -339,6 +352,8 @@
       editingSalary: false,
       salaryDraft: { text: '', min: '', max: '', currency: '' },
       reprocessing: false,
+      // Set while the posting is being read in the background.
+      readTimer: null,
       deleting: false,
       saveError: '',
       sourceOpen: false,
@@ -359,6 +374,39 @@
           this.loading = false;
         }
         if (this.job) await Promise.all([this.loadGap(), this.loadBuiltResumes()]);
+        this.watchRead();
+      },
+
+      isReading() {
+        return Boolean(this.job) && this.job.extraction_status === 'pending';
+      },
+
+      // The posting is read in the background after saving or Re-read.
+      // Looks again every few seconds and swaps in the result once done,
+      // leaving the page alone meanwhile so an edit in progress is kept.
+      watchRead() {
+        clearTimeout(this.readTimer);
+        if (!this.isReading()) return;
+        this.readTimer = setTimeout(async () => {
+          try {
+            const res = await fetch(`/api/job-postings/${this.jobId}`);
+            const job = res.ok ? await res.json() : null;
+            if (job && job.extraction_status !== 'pending') {
+              this.setJob(job);
+              if (job.extraction_status === 'failed' && otwIsLlmKind(job.extraction_error_kind)) {
+                otwLlmProblem({
+                  kind: job.extraction_error_kind,
+                  detail: job.extraction_error,
+                  retry: () => this.reprocess(),
+                });
+              }
+              await this.loadGap();
+            }
+          } catch {
+            // Tried again on the next round.
+          }
+          this.watchRead();
+        }, 3000);
       },
 
       async loadBuiltResumes() {
@@ -493,7 +541,8 @@
           const res = await fetch(`/api/job-postings/${this.jobId}/reprocess`, { method: 'POST' });
           if (res.ok) {
             this.setJob(await res.json());
-            await this.loadGap();
+            if (this.isReading()) this.watchRead();
+            else await this.loadGap();
           }
         } finally {
           this.reprocessing = false;

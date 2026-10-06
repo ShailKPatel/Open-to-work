@@ -279,7 +279,7 @@ def test_unparseable_row_already_in_the_cache_is_not_served(tmp_path, monkeypatc
     messages = [{"role": "user", "content": "hello"}]
     model = get_llm_settings().model_for("bulk")
     _record(
-        tier="bulk", model=model, prompt_hash=_prompt_hash(model, messages, _SCHEMA),
+        tier="bulk", model=model, prompt_hash=_prompt_hash(model, messages, _SCHEMA, None),
         response_json={"content": ""}, tokens_in=0, tokens_out=0,
         cost_usd=0.0, latency_ms=0, cached=False,
     )
@@ -332,10 +332,33 @@ def test_cache_version_is_part_of_the_key(monkeypatch):
     from app.core import llm
 
     messages = [{"role": "user", "content": "hello"}]
-    before = llm._prompt_hash("openai/gpt-4o-mini", messages, None)
+    before = llm._prompt_hash("openai/gpt-4o-mini", messages, None, None)
     monkeypatch.setattr(llm, "_CACHE_VERSION", llm._CACHE_VERSION + 1)
 
-    assert llm._prompt_hash("openai/gpt-4o-mini", messages, None) != before
+    assert llm._prompt_hash("openai/gpt-4o-mini", messages, None, None) != before
+
+
+def test_cache_is_not_shared_between_accounts(tmp_path, monkeypatch):
+    _reset_db(tmp_path)
+    monkeypatch.setattr(
+        "litellm.completion_cost", lambda completion_response: 0.01, raising=False
+    )
+    calls: list = []
+    messages = [{"role": "user", "content": "hello"}]
+
+    first = complete(
+        "bulk", messages, account_id=1, _completion_fn=_fake_completion_fn("a", calls=calls)
+    )
+    other = complete(
+        "bulk", messages, account_id=2, _completion_fn=_fake_completion_fn("b", calls=calls)
+    )
+    again = complete(
+        "bulk", messages, account_id=1, _completion_fn=_fake_completion_fn("c", calls=calls)
+    )
+
+    assert (first.cached, other.cached, again.cached) == (False, False, True)
+    assert (other.content, again.content) == ("b", "a")
+    assert len(calls) == 2
 
 
 def test_anthropic_system_prompt_is_marked_for_prompt_caching():

@@ -6,10 +6,7 @@ batched pass first; any repo it misses gets its own call, so nothing
 depends on the batch succeeding.
 
 Each claim is weighted by weighting.compute_weight (fork, recency, commit
-volume, evidence type) and stored as a SkillEvidence row. Evidence for
-the same skill across repos combines by noisy-OR into
-Profile.skills_json: corroboration raises confidence with diminishing
-returns and never past 1.0.
+volume, evidence type) and stored as a SkillEvidence row.
 
 A failure specific to one repo marks it "failed" and the batch moves on;
 each repo commits on its own. Running out of budget, rate limit or keys
@@ -26,14 +23,12 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Iterator
-from functools import reduce
 from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.db import (
-    Profile,
     ProjectLink,
     Repository,
     SkillEvidence,
@@ -225,23 +220,6 @@ def _index_repo_evidence(db: Session, repo: Repository) -> None:
         logger.exception("could not index skill evidence for repo id=%s", repo.id)
 
 
-def _aggregate(evidence: list[SkillEvidence]) -> dict:
-    by_skill: dict[str, list[tuple[float, str]]] = {}
-    for row in evidence:
-        by_skill.setdefault(row.skill, []).append((row.weight, row.evidence_type))
-
-    skills_json = {}
-    for skill, entries in by_skill.items():
-        weights = [w for w, _ in entries]
-        combined = 1.0 - reduce(lambda acc, w: acc * (1.0 - w), weights, 1.0)
-        skills_json[skill] = {
-            "weight": round(combined, 4),
-            "repo_count": len(entries),
-            "evidence_types": sorted({et for _, et in entries}),
-        }
-    return skills_json
-
-
 def _prefetch_facts(db: Session, repos: list[Repository], force: bool) -> dict[int, RepoFacts]:
     """One batched extraction pass, ahead of the per-repo loop, over the
     repos this run will actually process (the same skip rule the loop
@@ -272,18 +250,10 @@ def _prefetch_facts(db: Session, repos: list[Repository], force: bool) -> dict[i
 
 def build_profile(
     repos: list[Repository], now: dt.datetime | None = None, force: bool = False
-) -> Profile:
-    """Blocking form of build_profile_progress; returns the profile snapshot."""
-    profile_id = None
-    for event in build_profile_progress(repos, now, force):
-        profile_id = event.get("profile_id", profile_id)
-    db = get_db()
-    try:
-        profile = db.get(Profile, profile_id)
-        assert profile is not None
-        return profile
-    finally:
-        db.close()
+) -> None:
+    """Blocking form of build_profile_progress."""
+    for _ in build_profile_progress(repos, now, force):
+        pass
 
 
 def build_profile_progress(
@@ -292,12 +262,12 @@ def build_profile_progress(
     """Extracts skills for each repo, yielding progress as it goes:
 
       {"stage": "repo_progress", "index", "total", "name", "status"}  (repeated)
-      {"stage": "done", "total", "processed", "profile_id"}
+      {"stage": "done", "total", "processed"}
 
     status is the repo's extraction status afterwards, or "skipped" when it
     was already done and force is False. When the budget, rate limit or keys
     run out, the batch stops and ends with {"stage": "rate_limited",
-    "index", "total", "profile_id"} instead; the repos after it stay pending
+    "index", "total"} instead; the repos after it stay pending
     for the next run. Either way the profile snapshot is rebuilt from the
     evidence written so far.
     """
@@ -359,17 +329,6 @@ def build_profile_progress(
 
         db.commit()  # end any open read before review's nested LLM-call sessions
         review_skill_evidence([r.account_id for r in repos])
-        evidence = list(
-            db.execute(
-                select(SkillEvidence).where(
-                    SkillEvidence.repo_id.in_([r.id for r in repos])
-                )
-            ).scalars()
-        )
-        profile = Profile(skills_json=_aggregate(evidence))
-        db.add(profile)
-        db.commit()
-        profile_id = profile.id
     finally:
         db.close()
     if stopped_at is not None:
@@ -377,14 +336,12 @@ def build_profile_progress(
             "stage": "rate_limited",
             "index": stopped_at,
             "total": total,
-            "profile_id": profile_id,
         }
     else:
         yield {
             "stage": "done",
             "total": total,
             "processed": processed,
-            "profile_id": profile_id,
         }
 
 

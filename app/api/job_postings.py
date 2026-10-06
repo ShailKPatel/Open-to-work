@@ -4,7 +4,9 @@ single-input routes remain for pasted text and a single screenshot. Every
 path ends up as one JobPosting row, structured-extracted the same way
 (app/profile/job_extract.py), best-effort role-family resolved
 (app/profile/role_family.py), and best-effort indexed for semantic search
-(app/retrieval/index.py's index_job_posting).
+(app/retrieval/index.py's index_job_posting). Saving returns at once with
+extraction_status "pending"; the LLM read runs in a worker thread
+(app/core/jobs.py) and the pages poll until it is done.
 
 raw_text lands in JobPosting.raw_text_quarantined untouched regardless of
 which path produced it (typed by a human or transcribed by an LLM from a
@@ -26,16 +28,20 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
 from app.api.input_limits import file_notes, files_notes, require_confirmation, text_notes
+from app.core import jobs
 from app.core.db import (
     JobPosting,
     Resume,
     RoleFamily,
     get_db,
 )
+from app.core.filetypes import sniff_file, sniff_image_type
+from app.core.llm import error_kind
 from app.core.settings import get_settings
 from app.profile.job_extract import (
     JobExtraction,
@@ -47,7 +53,6 @@ from app.profile.job_place import cities, work_mode_kind
 from app.profile.job_screenshot_extract import (
     ScreenshotExtractionError,
     UnsupportedScreenshotType,
-    extract_job_posting_from_image,
     extract_job_posting_from_images,
 )
 from app.profile.role_family import resolve_role_family
@@ -57,6 +62,10 @@ router = APIRouter(prefix="/api/job-postings")
 logger = logging.getLogger(__name__)
 
 _UNSPECIFIED = "(unspecified)"
+
+# extraction_status while a background read is under way.
+_READING = "pending"
+_INTERRUPTED = "The app restarted before this posting was read. Reprocess it to try again."
 
 
 def _content_hash(raw_text: str) -> str:
@@ -73,7 +82,9 @@ def _apply_salary(posting: JobPosting) -> None:
     posting.salary_currency = salary.currency
 
 
-def _run_extraction(posting: JobPosting, db: Session, bypass_cache: bool = False) -> None:
+def _run_extraction(
+    posting: JobPosting, db: Session, bypass_cache: bool = False, note: str | None = None
+) -> None:
     """Best-effort structured extraction, same posture as
     app/profile/resume_ingest.py's run_extraction: a failed call never
     loses the posting itself, just leaves extraction_status at "failed"
@@ -82,7 +93,9 @@ def _run_extraction(posting: JobPosting, db: Session, bypass_cache: bool = False
     a value actually typed in. On success, also (best-effort, never
     blocking the posting save) resolves this posting's canonical role
     family and indexes it for semantic search. bypass_cache is set by
-    Reprocess, so the posting is read again rather than replayed.
+    Reprocess, so the posting is read again rather than replayed. note
+    is kept in extraction_error on success, for a read that only partly
+    worked (screenshots that could not be read next to usable text).
     """
     try:
         extraction = extract_job_posting(
@@ -99,15 +112,18 @@ def _run_extraction(posting: JobPosting, db: Session, bypass_cache: bool = False
         if not posting.location and extraction.location:
             posting.location = extraction.location
         posting.extraction_status = "extracted"
-        posting.extraction_error = None
+        posting.extraction_error = note
+        posting.extraction_error_kind = None
         posting.extracted_at = dt.datetime.now(dt.UTC)
     except JobExtractionError as e:
         posting.extraction_status = "failed"
         posting.extraction_error = str(e)
+        posting.extraction_error_kind = None
     except Exception as e:
         logger.warning("job posting extraction failed for id=%s", posting.id, exc_info=True)
         posting.extraction_status = "failed"
         posting.extraction_error = str(e)
+        posting.extraction_error_kind = error_kind(e)
     db.commit()
     db.refresh(posting)
 
@@ -129,6 +145,7 @@ def _store_extraction(posting: JobPosting, extraction: JobExtraction, db: Sessio
         posting.location = extraction.location
     posting.extraction_status = "extracted"
     posting.extraction_error = None
+    posting.extraction_error_kind = None
     posting.extracted_at = dt.datetime.now(dt.UTC)
     db.commit()
     db.refresh(posting)
@@ -155,65 +172,235 @@ def _enrich(posting: JobPosting, db: Session) -> None:
         logger.warning("could not index posting id=%s for search", posting.id, exc_info=True)
 
 
-def _create_posting_from_text(
+def _job_key(posting_id: int) -> str:
+    return f"job_posting_read:{posting_id}"
+
+
+def _reading(posting_id: int) -> bool:
+    state = jobs.snapshot(_job_key(posting_id))
+    return state is not None and state["running"]
+
+
+def _start_extraction(posting_id: int, bypass_cache: bool = False) -> bool:
+    """Reads the posting in a worker thread (app/core/jobs.py), so saving
+    returns at once and the page polls until extraction_status leaves
+    "pending". False when a read of this posting is already running: a
+    second click or a resent request never starts another.
+    """
+    return jobs.start(
+        _job_key(posting_id), lambda job: _read_posting(posting_id, bypass_cache=bypass_cache)
+    )
+
+
+def _read_posting(posting_id: int, bypass_cache: bool = False) -> None:
+    """The worker. Reads the screenshots when the posting has some whose
+    text never landed in raw_text, otherwise extracts from the saved text.
+    Whatever goes wrong (the posting deleted mid-read, say), the row never
+    stays "pending".
+    """
+    db = get_db()
+    try:
+        posting = db.get(JobPosting, posting_id)
+        if posting is None:
+            return
+        try:
+            if _needs_image_read(posting):
+                _read_images(posting, db)
+            else:
+                _run_extraction(posting, db, bypass_cache=bypass_cache)
+        except Exception:
+            logger.warning("reading job posting id=%s failed", posting_id, exc_info=True)
+            db.rollback()
+            db.execute(
+                update(JobPosting)
+                .where(JobPosting.id == posting_id, JobPosting.extraction_status == _READING)
+                .values(
+                    extraction_status="failed",
+                    extraction_error="Internal error, see server logs.",
+                    extraction_error_kind=None,
+                )
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
+def _typed_text(posting: JobPosting) -> str:
+    """What the person typed next to the screenshots, or "" when it was
+    only links. Sent along with the images, and kept as the posting's
+    text when the images cannot be read."""
+    text = (posting.source_text or "").strip()
+    return text if _URL_RE.sub("", text).strip() else ""
+
+
+def _needs_image_read(posting: JobPosting) -> bool:
+    """Screenshots whose transcription is not in raw_text yet: just saved,
+    or an earlier read failed."""
+    return bool(_image_paths(posting)) and (
+        posting.raw_text_quarantined.strip() == _typed_text(posting)
+    )
+
+
+def _read_images(posting: JobPosting, db: Session) -> None:
+    """One call over every saved screenshot, the typed text as context.
+    When the images cannot be read the typed text alone still makes a
+    posting, with a note saying the screenshots were skipped."""
+    typed = _typed_text(posting)
+    images: list[tuple[bytes, str]] = []
+    for path in _image_paths(posting):
+        stored = Path(path)
+        data = stored.read_bytes() if stored.is_file() else b""
+        mime = sniff_image_type(data)
+        if mime is not None:
+            images.append((data, mime))
+    try:
+        if not images:
+            raise ScreenshotExtractionError("the screenshots saved with this posting are missing")
+        result = extract_job_posting_from_images(
+            images, context_text=typed, account_id=posting.account_id
+        )
+    except Exception as e:
+        if not isinstance(e, ScreenshotExtractionError | UnsupportedScreenshotType):
+            logger.warning("screenshot read failed for posting id=%s", posting.id, exc_info=True)
+        if typed:
+            posting.source = "pasted"
+            _run_extraction(posting, db, note=f"Could not read the screenshots: {e}")
+        else:
+            posting.extraction_status = "failed"
+            posting.extraction_error = str(e)
+            posting.extraction_error_kind = error_kind(e)
+            db.commit()
+        return
+    posting.source = "mixed" if typed else "screenshot"
+    if result.raw_text_transcribed:
+        posting.raw_text_quarantined = "\n\n".join(
+            part for part in (typed, result.raw_text_transcribed) if part
+        )
+    # The image call already extracted the fields; running text
+    # extraction on the transcription would pay a second call for the
+    # same answer.
+    _store_extraction(posting, result.extraction, db)
+
+
+def fail_interrupted_extractions() -> int:
+    """Called at startup. Reads run in this process (app/core/jobs.py is
+    memory only), so a posting still "pending" now lost its worker to the
+    restart. Marked failed with a note to reprocess instead of showing as
+    in progress forever. Returns how many were marked."""
+    db = get_db()
+    try:
+        result = db.execute(
+            update(JobPosting)
+            .where(JobPosting.extraction_status == _READING)
+            .values(
+                extraction_status="failed",
+                extraction_error=_INTERRUPTED,
+                extraction_error_kind=None,
+            )
+        )
+        db.commit()
+        return int(getattr(result, "rowcount", 0) or 0)
+    finally:
+        db.close()
+
+
+def _input_hash(text: str, images: list[bytes]) -> str:
+    """Dedup key for what was sent. Text alone hashes as before; with
+    screenshots it covers the image bytes too, since their text is not
+    known until the background read."""
+    if not images:
+        return _content_hash(text)
+    digest = hashlib.sha256(text.encode("utf-8"))
+    for data in images:
+        digest.update(b"\0" + hashlib.sha256(data).digest())
+    return digest.hexdigest()
+
+
+def _find_posting(db: Session, account_id: int, content_hash: str) -> JobPosting | None:
+    return db.execute(
+        select(JobPosting).where(
+            JobPosting.account_id == account_id, JobPosting.content_hash == content_hash
+        )
+    ).scalar_one_or_none()
+
+
+def _save_posting(
+    db: Session,
     *,
     account_id: int,
     raw_text: str,
+    content_hash: str,
     source: str,
     external_id: str,
     company: str | None = None,
     title: str | None = None,
     location: str | None = None,
     apply_url: str | None = None,
-    screenshot_paths: list[str] | None = None,
+    images: list[tuple[bytes, str]] | None = None,
     source_text: str | None = None,
     source_links: list[str] | None = None,
-    extraction: JobExtraction | None = None,
-) -> JobPosting:
-    """Shared core of the text-based ingestion paths: dedup by content
-    hash, create the row, run extraction. Raises HTTPException(422) on
-    blank text. Callers translate their own failure modes (an unsupported
-    image type, say) before reaching here, so a 422 from this function
-    always means "the text we ended up with was empty."
+) -> tuple[JobPosting, bool]:
+    """Shared core of every way in: dedup by content hash, keep any
+    screenshots (bytes, file name) on disk, create the row as "pending"
+    and start reading it in the background. Returns (posting, created).
+    A posting this account already saved comes back as it is, read or
+    still reading, and nothing new starts for it.
     """
-    raw_text = raw_text.strip()
-    if not raw_text:
-        raise HTTPException(status_code=422, detail="no readable text to save")
+    existing = _find_posting(db, account_id, content_hash)
+    if existing is not None:
+        return existing, False
 
-    content_hash = _content_hash(raw_text)
-    db = get_db()
+    screenshot_paths: list[str] = []
+    if images:
+        account_dir = Path(get_settings().job_screenshot_storage_dir) / str(account_id)
+        account_dir.mkdir(parents=True, exist_ok=True)
+        for i, (data, name) in enumerate(images):
+            stored = account_dir / f"{content_hash[:16]}_{i}_{Path(name).name}"
+            stored.write_bytes(data)
+            screenshot_paths.append(str(stored))
+
+    posting = JobPosting(
+        account_id=account_id,
+        source=source,
+        external_id=external_id,
+        company=(company or "").strip() or _UNSPECIFIED,
+        title=(title or "").strip() or _UNSPECIFIED,
+        location=(location or "").strip() or None,
+        apply_url=(apply_url or None),
+        raw_text_quarantined=raw_text,
+        content_hash=content_hash,
+        screenshot_path=screenshot_paths[0] if screenshot_paths else None,
+        screenshot_paths=screenshot_paths or None,
+        source_text=source_text or None,
+        source_links=source_links or None,
+        extraction_status=_READING,
+    )
+    db.add(posting)
     try:
-        existing = db.execute(
-            select(JobPosting).where(JobPosting.content_hash == content_hash)
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-
-        posting = JobPosting(
-            account_id=account_id,
-            source=source,
-            external_id=external_id,
-            company=(company or "").strip() or _UNSPECIFIED,
-            title=(title or "").strip() or _UNSPECIFIED,
-            location=(location or "").strip() or None,
-            apply_url=(apply_url or None),
-            raw_text_quarantined=raw_text,
-            content_hash=content_hash,
-            screenshot_path=screenshot_paths[0] if screenshot_paths else None,
-            screenshot_paths=screenshot_paths or None,
-            source_text=source_text or None,
-            source_links=source_links or None,
-        )
-        db.add(posting)
         db.commit()
-        db.refresh(posting)
-        if extraction is not None:
-            _store_extraction(posting, extraction, db)
-        else:
-            _run_extraction(posting, db)
-        return posting
-    finally:
-        db.close()
+    except IntegrityError:
+        # The same input sent twice at once; the other request saved it.
+        # Its screenshots have the same names and bytes, so nothing to undo.
+        db.rollback()
+        existing = _find_posting(db, account_id, content_hash)
+        if existing is None:
+            raise
+        return existing, False
+    db.refresh(posting)
+    _start_extraction(posting.id)
+    db.refresh(posting)
+    return posting, True
+
+
+def _check_image(data: bytes, filename: str | None) -> None:
+    if sniff_image_type(data) is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{filename or 'that file'} is not a PNG, JPEG, WebP or GIF image; "
+                "attach screenshots only"
+            ),
+        )
 
 
 class JobPostingCreate(BaseModel):
@@ -247,6 +434,9 @@ class JobPostingSummary(BaseModel):
     fetched_at: dt.datetime
     extraction_status: str
     extraction_error: str | None
+    # Set when a failed read was the AI provider's doing (app/core/llm.py's
+    # error_kind), so the page can point to Manage APIs.
+    extraction_error_kind: str | None = None
     salary_range: str
     salary_min_annual: int | None
     salary_max_annual: int | None
@@ -281,6 +471,7 @@ class JobPostingSummary(BaseModel):
             id=p.id, source=p.source, company=p.company, title=p.title,
             location=p.location, apply_url=p.apply_url, fetched_at=p.fetched_at,
             extraction_status=p.extraction_status, extraction_error=p.extraction_error,
+            extraction_error_kind=p.extraction_error_kind,
             salary_range=extracted.get("salary_range", ""),
             salary_min_annual=p.salary_min_annual,
             salary_max_annual=p.salary_max_annual,
@@ -413,14 +604,22 @@ def _role_family_for(db: Session, posting: JobPosting) -> RoleFamily | None:
 
 @router.post("", response_model=JobPostingDetail)
 def create_posting(body: JobPostingCreate, *, db: DbSession) -> JobPostingDetail:
+    """Saves the text and returns at once with extraction_status
+    "pending"; the fields are read in the background."""
     require_confirmation("text", text_notes(body.raw_text), body.confirm_large)
-    posting = _create_posting_from_text(
+    raw_text = body.raw_text.strip()
+    if not raw_text:
+        raise HTTPException(status_code=422, detail="no readable text to save")
+    content_hash = _content_hash(raw_text)
+    posting, _ = _save_posting(
+        db,
         account_id=body.account_id,
-        raw_text=body.raw_text,
+        raw_text=raw_text,
+        content_hash=content_hash,
         source="pasted",
-        external_id=_content_hash(body.raw_text.strip()),
-        source_text=body.raw_text.strip(),
-        source_links=_find_urls(body.raw_text),
+        external_id=content_hash,
+        source_text=raw_text,
+        source_links=_find_urls(raw_text),
         company=body.company,
         title=body.title,
         location=body.location,
@@ -436,59 +635,26 @@ def create_posting_from_screenshot(
     *,
     db: DbSession,
 ) -> JobPostingDetail:
-    """Screenshot ingestion: the LLM transcribes the visible posting text
-    (see app/profile/job_screenshot_extract.py) and that transcription
-    becomes raw_text_quarantined, exactly as if it had been pasted. The
-    original image is also kept on disk (screenshot_path) so it can be
-    viewed later, same per-account storage convention as
-    app/api/resume.py's uploads.
+    """Screenshot ingestion: the image is kept on disk (same per-account
+    storage convention as app/api/resume.py's uploads) and the posting is
+    saved as "pending". In the background the LLM transcribes the visible
+    posting text (see app/profile/job_screenshot_extract.py) and that
+    transcription becomes raw_text_quarantined, exactly as if it had been
+    pasted.
     """
     file_bytes = file.file.read()
     require_confirmation("file", file_notes(file_bytes), confirm_large)
-    mime_type = file.content_type or ""
-    try:
-        result = extract_job_posting_from_image(file_bytes, mime_type, account_id=account_id)
-    except UnsupportedScreenshotType as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-    except ScreenshotExtractionError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    settings = get_settings()
-    account_dir = Path(settings.job_screenshot_storage_dir) / str(account_id)
-    account_dir.mkdir(parents=True, exist_ok=True)
-    safe_name = Path(file.filename or "screenshot").name
-    content_hash = _content_hash(result.raw_text_transcribed)
-    stored_path = account_dir / f"{content_hash[:16]}_{safe_name}"
-    stored_path.write_bytes(file_bytes)
-
-    existing = db.execute(
-        select(JobPosting).where(JobPosting.content_hash == content_hash)
-    ).scalar_one_or_none()
-    if existing is not None:
-        return JobPostingDetail.from_posting(existing, _role_family_for(db, existing))
-
-    posting = JobPosting(
+    _check_image(file_bytes, file.filename)
+    content_hash = _input_hash("", [file_bytes])
+    posting, _ = _save_posting(
+        db,
         account_id=account_id,
+        raw_text="",
+        content_hash=content_hash,
         source="screenshot",
         external_id=content_hash,
-        company=result.extraction.company or _UNSPECIFIED,
-        title=result.extraction.title or _UNSPECIFIED,
-        location=result.extraction.location or None,
-        raw_text_quarantined=result.raw_text_transcribed,
-        content_hash=content_hash,
-        screenshot_path=str(stored_path),
-        screenshot_paths=[str(stored_path)],
+        images=[(file_bytes, file.filename or "screenshot")],
     )
-    db.add(posting)
-    db.commit()
-    db.refresh(posting)
-    # Extraction already ran (as part of reading the screenshot); store
-    # it directly rather than re-running text extraction on the
-    # transcription, which would just cost a second LLM call to
-    # re-derive the same structured fields the image call already
-    # produced.
-    _store_extraction(posting, result.extraction, db)
-
     return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 
@@ -506,8 +672,8 @@ def _find_urls(*texts: str) -> list[str]:
 
 
 class JobPostingComposed(JobPostingDetail):
-    # Inputs that could not be used (screenshots that could not be read,
-    # say) while the rest still made a posting.
+    # Notes about the save itself (the same posting was already saved,
+    # say). Problems reading the inputs show up later in extraction_error.
     warnings: list[str]
 
 
@@ -524,6 +690,7 @@ def compose_posting(
     """One way in for every kind of input: any mix of pasted text, links
     and screenshots describing a single posting. Nobody has to say which
     kind they are giving; links are also picked out of the pasted text.
+    Saves and returns at once; the posting is read in the background.
 
     Links are never opened. The first one is kept as the apply link, and
     the posting itself has to come from the text or the screenshots.
@@ -532,51 +699,20 @@ def compose_posting(
     urls = _find_urls(links, text)
     typed = _URL_RE.sub("", text).strip()
 
-    images: list[tuple[bytes, str, str]] = []
+    images: list[tuple[bytes, str]] = []
     for upload in files or []:
         data = upload.file.read()
         if not data:
             continue
-        mime = (upload.content_type or "").lower()
-        if not mime.startswith("image/"):
-            raise HTTPException(
-                status_code=422,
-                detail=f"{upload.filename or 'that file'} is not an image; attach screenshots only",
-            )
-        images.append((data, mime, Path(upload.filename or "screenshot").name))
+        _check_image(data, upload.filename)
+        images.append((data, upload.filename or "screenshot"))
     require_confirmation(
         "job posting",
-        text_notes(text) + files_notes([data for data, _, _ in images]),
+        text_notes(text) + files_notes([data for data, _ in images]),
         confirm_large,
     )
 
-    kinds: set[str] = set()
-    sections: list[str] = []
-    if typed:
-        sections.append(text.strip())
-        kinds.add("pasted")
-
-    extraction: JobExtraction | None = None
-    if images:
-        try:
-            result = extract_job_posting_from_images(
-                [(data, mime) for data, mime, _ in images],
-                context_text="\n\n".join(sections),
-                account_id=account_id,
-            )
-        except UnsupportedScreenshotType as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
-        except ScreenshotExtractionError as e:
-            if not sections:
-                raise HTTPException(status_code=422, detail=str(e)) from e
-            warnings.append(f"Could not read the screenshots: {e}")
-        else:
-            extraction = result.extraction
-            if result.raw_text_transcribed:
-                sections.append(result.raw_text_transcribed)
-            kinds.add("screenshot")
-
-    if not sections:
+    if not typed and not images:
         if urls:
             detail = (
                 "Only a link was given. Paste the posting text or add a "
@@ -586,31 +722,23 @@ def compose_posting(
             detail = "Add the posting text or a screenshot."
         raise HTTPException(status_code=422, detail=detail)
 
-    raw_text = "\n\n".join(sections)
-    # Every image is kept with the posting, read or not, so it can be
-    # looked at again next to the text.
-    screenshot_paths: list[str] = []
-    if images:
-        account_dir = Path(get_settings().job_screenshot_storage_dir) / str(account_id)
-        account_dir.mkdir(parents=True, exist_ok=True)
-        prefix = _content_hash(raw_text.strip())[:16]
-        for i, (data, _, name) in enumerate(images):
-            stored = account_dir / f"{prefix}_{i}_{name}"
-            stored.write_bytes(data)
-            screenshot_paths.append(str(stored))
-
+    raw_text = text.strip() if typed else ""
+    content_hash = _input_hash(raw_text, [data for data, _ in images])
     apply_url = urls[0] if urls else None
-    posting = _create_posting_from_text(
+    posting, created = _save_posting(
+        db,
         account_id=account_id,
         raw_text=raw_text,
-        source=kinds.pop() if len(kinds) == 1 else "mixed",
-        external_id=apply_url or _content_hash(raw_text.strip()),
+        content_hash=content_hash,
+        source=("mixed" if typed else "screenshot") if images else "pasted",
+        external_id=apply_url or content_hash,
         apply_url=apply_url,
-        screenshot_paths=screenshot_paths,
+        images=images,
         source_text=text.strip(),
         source_links=urls,
-        extraction=extraction,
     )
+    if not created:
+        warnings.append("This posting was already saved, so the saved one was kept.")
     return JobPostingComposed(
         **JobPostingDetail.from_posting(posting, _role_family_for(db, posting)).model_dump(),
         warnings=warnings,
@@ -680,7 +808,10 @@ def posting_image(posting_id: int, index: int, *, db: DbSession) -> FileResponse
     paths = _image_paths(posting)
     if not 0 <= index < len(paths) or not Path(paths[index]).is_file():
         raise HTTPException(status_code=404, detail="no such image on this posting")
-    return FileResponse(paths[index])
+    # The type comes from the bytes, never the uploaded file name, so a
+    # file named .html can never be served as a page.
+    media_type = sniff_file(paths[index]) or "application/octet-stream"
+    return FileResponse(paths[index], media_type=media_type)
 
 
 @router.patch("/{posting_id}", response_model=JobPostingDetail)
@@ -739,7 +870,15 @@ def reprocess_posting(posting_id: int, *, db: DbSession) -> JobPostingDetail:
     posting = db.get(JobPosting, posting_id)
     if posting is None:
         raise HTTPException(status_code=404, detail=f"no job posting with id={posting_id}")
-    _run_extraction(posting, db, bypass_cache=True)
+    # A read already running for this posting is left to finish; the
+    # posting comes back as it is, still "pending".
+    if not _reading(posting_id):
+        posting.extraction_status = _READING
+        posting.extraction_error = None
+        posting.extraction_error_kind = None
+        db.commit()
+        _start_extraction(posting_id, bypass_cache=True)
+        db.refresh(posting)
     return JobPostingDetail.from_posting(posting, _role_family_for(db, posting))
 
 

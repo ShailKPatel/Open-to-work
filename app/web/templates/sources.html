@@ -244,13 +244,13 @@
           });
           const data = await res.json();
           if (!res.ok) {
-            this.addError = data.detail || 'Could not add that.';
+            this.addError = otwResponseError(data, 'Could not add that.');
             return;
           }
           this.sources.push(data);
           this.newInput = '';
         } catch (e) {
-          this.addError = String(e);
+          this.addError = otwErrorText(e);
         } finally {
           this.adding = false;
         }

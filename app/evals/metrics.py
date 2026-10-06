@@ -6,10 +6,15 @@ with zero mocking needed, same posture as app/profile/weighting.py.
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 
-def precision_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
+# Ids are ints for search hits, skill names for app/evals/candidates.py.
+def precision_at_k[Id: Hashable](
+    retrieved: Sequence[Id], relevant: AbstractSet[Id], k: int
+) -> float:
     """Of the top-k retrieved ids, what fraction are actually relevant.
     An empty top-k (nothing retrieved) scores 0.0, not undefined; a
     system that returns nothing gets no credit."""
@@ -20,7 +25,9 @@ def precision_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
     return hits / len(top)
 
 
-def recall_at_k(retrieved: list[int], relevant: set[int], k: int) -> float:
+def recall_at_k[Id: Hashable](
+    retrieved: Sequence[Id], relevant: AbstractSet[Id], k: int
+) -> float:
     """Of everything actually relevant, what fraction shows up in the
     top-k retrieved ids. An empty relevant set (a mislabeled or
     accidentally-empty golden pair) scores 0.0 rather than dividing by

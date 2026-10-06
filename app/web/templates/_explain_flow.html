@@ -94,7 +94,7 @@
                 <p class="ex-store-h">SQLite · rows</p>
                 <ul class="ex-store-list">
                   <li>SyncSource</li><li>Repository</li><li>SkillEvidence</li><li>ProjectLink</li>
-                  <li>Profile</li><li>Skill</li><li>Experience</li><li>ExperiencePoint</li>
+                  <li>Skill</li><li>Experience</li><li>ExperiencePoint</li>
                   <li>Resume</li><li>JobPosting</li><li>RoleFamily</li><li>LLMCall</li>
                 </ul>
               </div>
@@ -232,7 +232,7 @@ data: {"stage": "done", "total_repos": 8,
           </p>
           <div class="ex-meta">
             <span><b>Trigger</b> sync start and finish, page loads</span>
-            <span><b>Writes</b> SkillEvidence, ProjectLink, Profile, Qdrant skill_evidence</span>
+            <span><b>Writes</b> SkillEvidence, ProjectLink, Qdrant skill_evidence</span>
             <span><b>Code</b> app/profile/jobs.py · build.py · extract.py · weighting.py</span>
           </div>
         </div>
@@ -256,7 +256,7 @@ data: {"stage": "done", "total_repos": 8,
             {{ ex.node('b-nosig', 'No LLM spent', 'no_signal', 'No README, no description. Manifest skills are still kept.', 'alert', variant='err', area='grid-column:5;grid-row:3') }}
 
             {{ ex.node('b-progress', '10 · Event', 'Progress state', 'Job registry snapshot. The SSE stream tails it and can reattach.', 'stream', area='grid-column:1;grid-row:4', tip=T_THREAD) }}
-            {{ ex.node('b-aggregate', '11 · Profile', 'Noisy-OR aggregate', '1 − Π(1 − wᵢ) per skill: corroboration raises it, never past 1.', 'merge', area='grid-column:2;grid-row:4') }}
+            {{ ex.node('b-aggregate', '11 · LLM (bulk)', 'Skill review', 'New skill names checked once per account; junk like type stubs is dropped.', 'filter', area='grid-column:2;grid-row:4') }}
             {{ ex.node('b-efail', 'This repo only', 'failed', 'Error saved on the repo, the batch moves on.', 'alert', variant='err', area='grid-column:3;grid-row:4') }}
             {{ ex.node('b-erl', 'Stops batch', 'rate_limited', 'Rate limit or budget cap. Remaining repos stay pending for the next run.', 'alert', variant='err', area='grid-column:4;grid-row:4') }}
           </div>

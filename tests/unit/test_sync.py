@@ -683,6 +683,36 @@ def test_sync_refetch_moves_repo_to_the_syncing_account(tmp_path, monkeypatch):
     db.close()
 
 
+def test_two_accounts_syncing_one_repo_each_keep_their_own_row(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _reset_db(tmp_path)
+    db = db_module.get_db()
+    a = Account(first_name="Ada", last_name="Lovelace", github_username="octocat")
+    b = Account(first_name="Grace", last_name="Hopper", github_username="octocat")
+    db.add_all([a, b])
+    db.commit()
+    account_a, account_b = a.id, b.id
+    db.close()
+    repo = _make_repos(1)[0]
+    client = FakeClient([repo])
+
+    sync_account("octocat", client=client, account_id=account_a)
+    sync_account("octocat", client=client, account_id=account_b)
+    repo.pushed_at = repo.pushed_at + dt.timedelta(days=1)
+    sync_account("octocat", client=client, account_id=account_a)
+    again = sync_account("octocat", client=client, account_id=account_b)
+
+    db = db_module.get_db()
+    rows = db.query(Repository).order_by(Repository.id).all()
+    assert [(r.account_id, r.github_id, r.full_name) for r in rows] == [
+        (account_a, repo.id, repo.full_name),
+        (account_b, repo.id, repo.full_name),
+    ]
+    db.close()
+    # B's row was not touched by A's later sync, so B still sees the push.
+    assert again.fetched == 1
+
+
 class _StatsPendingClient(FakeClient):
     """GitHub couldn't answer the commits query: authorship unknown."""
 

@@ -67,7 +67,7 @@ The cheap check lists models rather than generating, so it proves a credential i
 
 - `manifest_skills.py`: turns manifest dependencies into skill claims deterministically, with confidence 1.0.
 - `extract.py`: one bulk-tier LLM call per repository extracts both skills and project links from the README, or from the description when there is no README. If neither exists, it raises `NoSourceTextError` and the repository is marked `no_signal`. The README is cleaned before it is sent (badges, raw HTML, fenced code blocks, and boilerplate tail sections such as License and Contributing are dropped) and then cut to a character limit, so the budget is spent on prose rather than on markup that carries no skill signal. `prefetch_repo_facts()` covers several repositories per call; `build.py` runs it ahead of its per-repository loop, and anything it misses falls back to a single call, so nothing depends on the batched pass succeeding.
-- `weighting.py`: computes evidence weight from evidence type, fork status, commit recency, and commit volume.
+- `weighting.py`: computes evidence weight from evidence type, fork status, commit recency, and commit volume. Resume building uses it after relevance is decided: it orders the selected skills and the page-fit reserve, and breaks near-ties (within 0.02 similarity) between candidate projects and skills.
 - `build.py`: `build_profile`, `build_profile_progress`, and `reprocess_repo`. Behavior:
   - Each repository commits independently.
   - A failure marks only that repository.
@@ -77,7 +77,7 @@ The cheap check lists models rather than generating, so it proves a credential i
   - Evidence is re-indexed into Qdrant on a best-effort basis.
 - `jobs.py`: a background extraction worker per account. It rechecks for pending repositories after each pass, so it can run while a sync is still adding them.
 - `evidence.py`: skill-evidence CRUD shared by projects and experience.
-- `resume_extract.py`, `resume_ingest.py`, `resume_profile_merge.py`: take a resume upload through multimodal extraction (PDF and images) into `Skill` and `Experience` rows. Skills are deduplicated by casefolded name. Roles are matched on company and title, and dates are filled in only where they are empty. A resume this app generated is refused on upload, so the LLM's job-tailored wording never flows back into the profile: every generated PDF carries `Creator: Open to Work`, and older builds are caught by comparing bytes with the library's compiled PDFs.
+- `resume_extract.py`, `resume_ingest.py`, `resume_profile_merge.py`: take a resume upload through multimodal extraction (PDF and images) into `Skill` and `Experience` rows. The read runs in a worker thread, so an upload answers at once; an upload left "pending" by a restart is marked failed at startup. Skills are deduplicated by casefolded name. Roles are matched on company and title, and dates are filled in only where they are empty. A resume this app generated is refused on upload, so the LLM's job-tailored wording never flows back into the profile: every generated PDF carries `Creator: Open to Work`, and older builds are caught by comparing bytes with the library's compiled PDFs.
 - `job_extract.py`, `job_screenshot_extract.py`: extract structured fields from postings. `skills_required` is stored as a list of `{skill, level}`; `parse_skills_required()` also reads the older plain list-of-strings format.
 - `skill_map.py`: builds the 2D skill map. Each skill is embedded together with its evidence context (the languages of the repositories it came from and the skills it appears beside), because bare names embed by spelling: without context, `ElasticNet` and `EfficientNet` land on top of each other. It embeds with `bge-small`, not the `EMBEDDING_MODEL` retrieval uses: the map never writes to Qdrant, and `embedding_cache` is keyed by model, so the two coexist without a reindex. Vectors are projected with t-SNE, not PCA: on the committed benchmark PCA kept 0.294 of each skill's true nearest neighbours against 0.530 for t-SNE (`evals/results/embeddings-20260921T111424Z.md`), then clustered on the projected coordinates so the drawn groups match what is on screen. The finished layout is stored whole in `skill_map_cache` against a fingerprint of the exact texts that produced it, so `GET /api/skills/map` normally embeds nothing. `scripts/benchmark_embeddings.py` is what these choices are measured with.
 - `role_family.py`: searches the `role_families` collection (cosine similarity of at least 0.86) before creating a new family with a bulk-tier LLM call. `canonical_name` is unique; if a concurrent insert wins, the existing row is reused.
@@ -92,13 +92,14 @@ The cheap check lists models rather than generating, so it proves a credential i
 
 - `context.py`: deterministic header, experience, and education data taken straight from the database.
 - `orchestrator.py`: `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`. Steps:
-  1. Candidate projects and skills come from semantic search over the posting text.
+  1. Candidate projects and skills come from semantic search over the posting text. Similarity decides the order; evidence weight only breaks near-ties.
   2. Experience points are selected per role (up to 5 per role, falling back to all of the role's points if the search returns nothing).
   3. One quality-tier call returns JSON with the summary, projects, and skills, guided by length rules for the chosen template. Those rules aim slightly over the target, since the page-fit loop trims more cheaply than it fills.
-  4. Any repository id or skill that wasn't a candidate is dropped.
+  4. Any repository id or skill that wasn't a candidate is dropped. Project bullets and the summary go through `grounding.py`: a bullet with a number its project's evidence does not state, or a technology the project does not have, is dropped (a project left with none falls back to its description), and a summary sentence with an unsupported number is removed. The selected skills are then ordered by evidence weight.
   5. Everything left over goes into a `reserve` on the returned dict for `pagefit.py` to draw on. It never reaches a prompt or the rendered `.tex`, and the page-fit loop strips it before the content is saved.
 
   Job text is always a separate user message. Experience, education, and the header are rebuilt from the database and never sent to an edit call.
+- `grounding.py`: the number and technology checks on project bullets and the summary. Any skill name the account has counts as a technology, matched case-insensitively on word boundaries with a small alias map. `pagefit.py` uses it too, so a shorter wording cannot name a technology its original did not.
 - `latex.py`: a Jinja2 environment with LaTeX-safe delimiters (`\BLOCK{}`, `\VAR{}`, `\#{}`), plus `escape_latex()` and `escape_latex_url()`.
 - `compile.py`: runs Tectonic as a subprocess. It raises `TectonicNotInstalledError` when the binary is missing and `CompileError` when compilation fails.
 - `layout.py`: the geometry the templates read (margins, section and bullet spacing, type size, leading) as parameters rather than hardcoded lengths, plus `DENSITY_LADDER`, 13 rungs from tight (9pt on `extarticle`, 0.72 cm margins) to airy (12pt, 1.5 cm). Density 1.0 reproduces each template's original geometry exactly.
@@ -112,6 +113,7 @@ The cheap check lists models rather than generating, so it proves a credential i
 - `golden.py`: golden-set pairs stored in YAML.
 - `bm25.py`: the keyword baseline, using `rank_bm25`.
 - `metrics.py`: precision@k and recall@k.
+- `candidates.py`: scores what the resume builder hands the model (`_candidate_skills` by name, `_candidate_projects` by repository) against the same golden pairs, so a change to candidate ranking shows up even though the dense numbers cannot see it. The CI gate checks these against `evals/ci_baseline.json` alongside the dense numbers.
 - `groundedness.py`: an LLM judge that checks generated bullets against project evidence, bounded by `max_checks`.
 - `run.py`: `run_eval(account_id) -> MetricsReport` and `write_report()`. The BM25 corpus is built from SQLite using the same text builders as the dense index.
 
@@ -163,8 +165,7 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `skills`, `skill_stars`, `skill_archives` | Skills with no linked evidence, starred skill names, and archived skill names. |
 | `social_links` | Contact links with a free-form platform. |
 | `resumes` | Uploaded and generated resumes: extracted fields, `content_json`, compiled PDF path. |
-| `profiles` | Aggregated skill snapshots (`skills_json`). |
-| `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is globally unique. |
+| `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is unique per account: a hash of the pasted text, or of the text and screenshot bytes when there are screenshots. |
 | `role_families` | Canonical job-title clusters. |
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |
 | `app_settings` | One row per setting picked in the app: bulk model, quality model, monthly budget. A missing row means the default. |
@@ -173,11 +174,28 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `embedding_cache` | Embedding vectors by content hash and model. |
 | `skill_map_cache` | One stored skill-map layout per account, with the fingerprint of the skills it was built from. |
 
+Saving a job posting returns at once with `extraction_status` "pending". The LLM read (text extraction, or the screenshot transcription) runs in a worker thread through `app/core/jobs.py`, keyed by posting id, so a resent save or a second Reprocess never starts a second read. The jobs list and the posting page poll until the status changes. Rows still "pending" at startup lost their worker to the restart and are marked failed with a note to reprocess.
+
 Archived projects, roles, education entries and skills stay on their pages under an Archived section but are left out of resume building, the portfolio counts, the skill map and job analytics. A skill whose every project and role is archived counts as archived too.
+
+## Security model
+
+The app has no login. It is built for one person on their own machine, and the Docker ports bind to 127.0.0.1. Whoever can send it requests can do anything the UI can. `app/api/security.py` protects against other web pages reaching it through that person's browser:
+
+- **Cross-site requests.** POST, PUT, PATCH and DELETE are refused (403) when `Sec-Fetch-Site` is anything but `same-origin` or `none`, or when `Origin` (or `Referer` when there is no `Origin`) is not the app's own origin. A request with none of these headers is not from a web page and is allowed.
+- **DNS rebinding.** Every request must carry a loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`, any port), else 400.
+- **Response headers.** `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN` and a CSP of `frame-ancestors 'self'; base-uri 'self'; form-action 'self'`. Framing is `'self'` rather than `'none'` because the resume pages show PDFs in an iframe. There is no `script-src`: Tailwind and Alpine.js load from a CDN and the pages use inline scripts and Alpine expressions, so a script policy would need `'unsafe-inline'` and `'unsafe-eval'` and would block very little.
+- **Uploaded files.** Screenshots must be PNG, JPEG, WebP or GIF by their bytes. Resumes are typed by their bytes, and files are served with that type. Only a PDF or an image is shown inline. Anything else downloads as `application/octet-stream`, so an uploaded page never runs on the app's origin. Stored file names are reduced to their base name and prefixed with an id or hash.
+- **LaTeX.** Every value in a resume template goes through `escape_latex` or `escape_latex_url` (`app/resume_build/latex.py`). Tectonic runs with shell escape off and in untrusted mode.
+- **Secrets.** API keys are encrypted at rest and shown only as masked previews. Provider keys travel in request headers, never in URLs.
+- **Fetching.** Links in job postings are stored, never opened. The server only calls GitHub, the configured LLM providers, and the embedding model and Tectonic package downloads. No endpoint fetches a URL a person typed, apart from the `api_base` of an Azure OpenAI or Ollama key, which is the person's own setting.
+
+Out of scope: anyone else with access to the machine or the `data/` directory (the encryption key file sits next to the database), other local processes, which can call the API directly, exposing the port to a network, which this model does not cover, and XSS through a compromised CDN script.
 
 ## Conventions
 
 - **LLM calls.** All LLM calls go through `app.core.llm.complete()`. Nothing else imports a provider SDK.
+- **LLM failures.** A request handler never waits on the model for work it can save first: signup, resume upload and job posting saves commit their rows and read in a worker thread (`app/core/jobs.py`), leaving `extraction_status` at "pending". A failed read keeps `extraction_error_kind` (`app.core.llm.error_kind()`: `provider_unavailable`, `no_key`, `provider_rejected` or `budget`), and reprocess retries it from the saved file. Routes that do call the model answer an LLM failure with `{detail, error_kind, model}` (`app/api/llm_errors.py`); pages show it through `otwFetch`/`otwResponseError` and the shared AI provider notice in `_base.html`, and the nav shows "AI degraded" while `GET /api/app-settings/llm/health` says so. `POST /accounts` takes a `request_id` per form, so a resent signup returns the profile it already made.
 - **Untrusted text.** Job posting text is untrusted. It is never inserted into a system prompt or formatted into a prompt template; it is sent as a separate user message that is labeled as reference material. Repository README and description text is handled the same way (`app/profile/extract.py`), since a repository can be anyone's.
 - **Tiers.** Bulk-tier models handle high-volume, per-item work. Quality-tier models handle single-document extraction and resume generation.
 - **Source of truth.** SQLite is authoritative. Qdrant writes are best-effort: a failure is logged and never rolls back a database write.

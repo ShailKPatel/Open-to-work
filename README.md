@@ -31,7 +31,7 @@ Most resume tools let a language model write whatever sounds good. Open to Work 
 ### Profile
 - Sync any GitHub user or repo
 - Skills from manifests (Python, JS, Go, Rust, Ruby, JVM) with **no LLM**
-- Evidence weighted by recency, volume, and fork status
+- Evidence weighted by recency, volume, and fork status; weight orders skills and breaks near-ties in resume candidates
 - Interactive **skill map** built from embeddings
 - Import existing PDF or image resumes
 
@@ -124,7 +124,7 @@ flowchart LR
 
 - Dependencies are parsed straight from manifests, with no model involved.
 - One LLM call reads the README (or the repo description if there is none). Repos with neither cost nothing.
-- Evidence for the same skill across repos is combined with a **noisy-OR**, weighted by source type, fork status, commit recency, and commit volume.
+- Each piece of evidence is weighted by source type, fork status, commit recency, and commit volume. Weight never decides which projects or skills match a job; it orders the chosen skills, orders what page-fit adds back, and breaks near-ties between candidates.
 - Only repos pushed since the last sync are refetched. A rate limit mid-sync keeps everything already fetched.
 
 </details>

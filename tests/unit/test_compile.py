@@ -78,3 +78,19 @@ def test_uses_tectonic_and_the_written_tex_path():
     assert captured["cmd"][1] == "--outdir"
     assert captured["cmd"][3].endswith("resume.tex")
     assert captured["tex_content"] == "x"
+
+
+def test_tectonic_runs_in_untrusted_mode():
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env") or {}
+        (Path(cmd[2]) / "resume.pdf").write_bytes(b"%PDF")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    compile_tex("x", _run_fn=_fake_run)
+
+    assert captured["env"]["TECTONIC_UNTRUSTED_MODE"] == "1"
+    # Shell escape is never asked for on the command line either.
+    assert "shell-escape" not in " ".join(captured["cmd"])

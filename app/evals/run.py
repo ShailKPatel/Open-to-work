@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from sqlalchemy import select
@@ -27,6 +27,7 @@ from app.core.db import (
 )
 from app.core.settings import get_settings
 from app.evals.bm25 import Bm25Corpus
+from app.evals.candidates import score_candidates
 from app.evals.golden import GoldenPair, load_golden_set
 from app.evals.groundedness import score_groundedness
 from app.evals.metrics import SystemScore, mean_system_score, precision_at_k, recall_at_k
@@ -55,6 +56,10 @@ class MetricsReport:
     latency_ms_avg: float
     llm_calls: int
     notes: list[str]
+    # What the resume builder hands the model, scored against the same
+    # pairs (app/evals/candidates.py): {"skills": ..., "projects": ...},
+    # each shaped like `dense`.
+    candidates: dict = field(default_factory=dict)
 
 
 def _corpus_for(collection: str, account_id: int) -> list[tuple[int, str]]:
@@ -248,6 +253,9 @@ def run_eval(
         latency_ms_avg=latency_ms_avg,
         llm_calls=llm_calls,
         notes=notes,
+        candidates={
+            name: asdict(score) for name, score in score_candidates(account_id, pairs).items()
+        },
     )
 
 

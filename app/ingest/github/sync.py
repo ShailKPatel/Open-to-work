@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from github import GithubException, RateLimitExceededException
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, select
 from sqlalchemy.orm import Session
 
 from app.core.db import Account, Repository, get_db, is_profile_repo
@@ -117,6 +117,14 @@ def _source_changed(existing: Repository, readme: str | None, description: str |
     return (description or "").strip() != (existing.description or "").strip()
 
 
+def _owned_by(account_id: int | None) -> ColumnElement[bool]:
+    """Repos are unique per account, so every lookup by github_id is
+    scoped to the syncing account (or to unowned rows when there is none)."""
+    if account_id is None:
+        return Repository.account_id.is_(None)
+    return Repository.account_id == account_id
+
+
 # _upsert outcomes
 CACHE_HIT = "cache_hit"  # not pushed since the last sync, nothing fetched
 REFRESHED = "refreshed"  # pushed, README unchanged: stats and manifests only
@@ -134,8 +142,15 @@ def _upsert(
     """Returns CACHE_HIT, REFRESHED or FETCHED. force skips the pushed_at
     cache check and refetches README, manifests and stats regardless."""
     existing = db.execute(
-        select(Repository).where(Repository.github_id == gh_repo.id)
+        select(Repository).where(_owned_by(account_id), Repository.github_id == gh_repo.id)
     ).scalar_one_or_none()
+    if existing is None and account_id is not None:
+        # An unowned row (synced from the command line) is claimed, not copied.
+        existing = db.execute(
+            select(Repository).where(_owned_by(None), Repository.github_id == gh_repo.id)
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.account_id = account_id
 
     pushed_at = gh_repo.pushed_at
     if pushed_at and pushed_at.tzinfo is None:
@@ -178,8 +193,6 @@ def _upsert(
         db.add(existing)
     else:
         changed = _source_changed(existing, readme, gh_repo.description)
-        if account_id is not None:
-            existing.account_id = account_id
 
     existing.name = gh_repo.name
     existing.full_name = gh_repo.full_name
@@ -214,7 +227,7 @@ def _save(
     db.commit()
     if outcome == REFRESHED:
         repo_id = db.execute(
-            select(Repository.id).where(Repository.github_id == gh_repo.id)
+            select(Repository.id).where(_owned_by(account_id), Repository.github_id == gh_repo.id)
         ).scalar_one()
         db.commit()  # end the read before refresh opens its own session
         # imported here to keep the LLM stack out of this module's import

@@ -29,6 +29,11 @@ def _print_report(report: MetricsReport) -> None:
         f"{'bm25 baseline':20}{report.bm25['precision_at_5']:>14.3f}"
         f"{report.bm25['recall_at_10']:>14.3f}{report.bm25['pairs_scored']:>10}"
     )
+    for name, score in report.candidates.items():
+        print(
+            f"{'candidate ' + name:20}{score['precision_at_5']:>14.3f}"
+            f"{score['recall_at_10']:>14.3f}{score['pairs_scored']:>10}"
+        )
     print()
     if report.dense_beats_bm25 is None:
         print("dense vs baseline: not measured (no scored pairs)")

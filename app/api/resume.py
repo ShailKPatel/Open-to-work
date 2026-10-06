@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session, object_session
 
 from app.api.deps import DbSession
 from app.api.input_limits import file_notes, require_confirmation
+from app.api.llm_errors import llm_http_error
 from app.core.db import (
     Account,
     Education,
@@ -36,6 +37,7 @@ from app.core.db import (
     ResumeProfileLink,
     Skill,
 )
+from app.core.filetypes import sniff_file
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
@@ -47,7 +49,8 @@ from app.profile.resume_ingest import (
     DuplicateResumeError,
     GeneratedResumeError,
     ingest_resume,
-    run_extraction,
+    is_reading,
+    start_extraction,
 )
 from app.resume_build.checkpoint import progress_steps
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
@@ -61,18 +64,9 @@ _DEFAULT_MAX_PAGES = {"onepage": 1, "twopage": 2}
 
 
 def _map_llm_error(e: Exception) -> HTTPException:
-    """Same mapping as app/api/resume_build.py's own _map_llm_error, for
-    the AI-edit endpoint below, which goes through the same
-    orchestrator/pagefit LLM calls."""
-    if isinstance(e, ApiKeyMissingError):
-        return HTTPException(status_code=422, detail=str(e))
-    if isinstance(e, BudgetExceededError):
-        return HTTPException(status_code=402, detail=str(e))
-    if isinstance(e, LLMRateLimitedError):
-        return HTTPException(status_code=503, detail=str(e))
-    if isinstance(e, LLMProviderError):
-        return HTTPException(status_code=502, detail=str(e))
-    return HTTPException(status_code=502, detail=f"resume edit failed: {e}")
+    """For the AI-edit endpoint below, which goes through the same
+    orchestrator/pagefit LLM calls as app/api/resume_build.py."""
+    return llm_http_error(e, "resume edit failed")
 
 
 class ResumeItem(BaseModel):
@@ -92,6 +86,9 @@ class ResumeItem(BaseModel):
     contact: dict
     extraction_status: str
     extraction_error: str | None
+    # Set when a failed read was the AI provider's doing (app/core/llm.py's
+    # error_kind): the page names the cause and links to Manage APIs.
+    extraction_error_kind: str | None = None
     extracted_at: dt.datetime | None
     job_posting_id: int | None
     # Built by this app (app/api/resume_build.py) rather than uploaded:
@@ -112,6 +109,7 @@ class ResumeItem(BaseModel):
     build_progress: list[dict] = []
     build_stopped_at: str | None = None
     build_error: str | None = None
+    build_error_kind: str | None = None
     build_attempts: int = 0
 
     @classmethod
@@ -140,6 +138,7 @@ class ResumeItem(BaseModel):
             contact=row.contact_json or {},
             extraction_status=row.extraction_status,
             extraction_error=row.extraction_error,
+            extraction_error_kind=row.extraction_error_kind,
             extracted_at=row.extracted_at,
             job_posting_id=row.job_posting_id,
             is_generated=not row.stored_path,
@@ -153,6 +152,7 @@ class ResumeItem(BaseModel):
             build_progress=progress_steps(state),
             build_stopped_at=(state or {}).get("stopped_at"),
             build_error=(state or {}).get("error"),
+            build_error_kind=(state or {}).get("error_kind"),
             build_attempts=int((state or {}).get("attempts") or 0),
         )
 
@@ -313,10 +313,17 @@ def download_resume(
     row = db.get(Resume, resume_id)
     if row is None or not row.stored_path or not Path(row.stored_path).exists():
         raise HTTPException(status_code=404, detail=f"no resume file with id={resume_id}")
+    # Only a PDF or image, judged by its bytes, is shown in the browser.
+    # Anything else is a download, whatever type it was uploaded with, so
+    # an uploaded page never runs as part of this app.
+    media_type = sniff_file(row.stored_path)
+    if media_type is None:
+        media_type = "application/octet-stream"
+        disposition = "attachment"
     return FileResponse(
         row.stored_path,
         filename=row.filename,
-        media_type=row.mime_type,
+        media_type=media_type,
         content_disposition_type=disposition,
     )
 
@@ -389,6 +396,8 @@ def update_resume(resume_id: int, body: ResumeUpdate, *, db: DbSession) -> Resum
 
 @router.post("/{resume_id}/reprocess", response_model=ResumeItem)
 def reprocess_resume(resume_id: int, *, db: DbSession) -> ResumeItem:
+    """Retry for a resume whose read failed (or a fresh read of one that
+    worked). Answers at once with extraction_status "pending"."""
     row = db.get(Resume, resume_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"no resume with id={resume_id}")
@@ -399,7 +408,16 @@ def reprocess_resume(resume_id: int, *, db: DbSession) -> ResumeItem:
         )
     if not Path(row.stored_path).exists():
         raise HTTPException(status_code=409, detail="the resume's file is missing on disk")
-    row = run_extraction(db, row)
+    # Reads the saved file again in the background, skipping the cache;
+    # the account, the row and the file stay as they are. A read already
+    # running is left to finish and the row comes back still "pending".
+    if not is_reading(resume_id):
+        row.extraction_status = "pending"
+        row.extraction_error = None
+        row.extraction_error_kind = None
+        db.commit()
+        start_extraction(resume_id, bypass_cache=True)
+        db.refresh(row)
     return ResumeItem.from_row(row)
 
 

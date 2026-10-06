@@ -1075,3 +1075,52 @@ def test_large_resume_upload_asks_and_saves_nothing_until_confirmed(tmp_path, mo
     confirmed = _send(confirm_large="true")
     assert confirmed.status_code == 200
     assert confirmed.json()["extraction_status"] == "extracted"
+
+
+def test_uploaded_page_is_never_served_as_html(tmp_path):
+    """A file whose bytes are not a PDF or image is a download, whatever
+    type it was uploaded with, so it cannot run as part of the app."""
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+
+    upload = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("cv.html", io.BytesIO(b"<script>alert(1)</script>"), "text/html")},
+    )
+    resume_id = upload.json()["id"]
+
+    resp = client.get(f"/api/resume/{resume_id}/file?disposition=inline")
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/octet-stream"
+    assert resp.headers["content-disposition"].startswith("attachment")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+
+
+def test_resume_type_comes_from_its_bytes(tmp_path):
+    from app.core.db import Resume
+
+    _reset_db(tmp_path)
+    account_id = _make_account()
+    client = _client()
+
+    pdf = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("cv.bin", io.BytesIO(b"%PDF-1.4 real pdf"), "application/octet-stream")},
+    ).json()
+    fake = client.post(
+        "/api/resume",
+        data={"account_id": account_id},
+        files={"file": ("cv.pdf", io.BytesIO(b"<html>not a pdf</html>"), "application/pdf")},
+    ).json()
+
+    db = get_db()
+    assert db.get(Resume, pdf["id"]).mime_type == "application/pdf"
+    assert db.get(Resume, fake["id"]).mime_type == "application/octet-stream"
+    db.close()
+    served = client.get(f"/api/resume/{pdf['id']}/file?disposition=inline")
+    assert served.headers["content-type"] == "application/pdf"
+    assert served.headers["content-disposition"].startswith("inline")

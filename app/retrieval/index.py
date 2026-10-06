@@ -212,8 +212,7 @@ def index_resume(resume: Resume) -> bool:
 def index_role_family(role_family: RoleFamily) -> None:
     """Embeds a RoleFamily's canonical_name into its own collection, id ==
     RoleFamily.id, no account_id payload: this taxonomy is global, not
-    per-account, same posture as JobPosting.content_hash's shared-cache
-    reasoning. app/profile/role_family.py's resolve_role_family() searches
+    per-account. app/profile/role_family.py's resolve_role_family() searches
     this collection before ever creating a new row, so most titles after
     the first few dozen postings should resolve without a new LLM call.
     """

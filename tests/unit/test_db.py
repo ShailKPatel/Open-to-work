@@ -368,7 +368,7 @@ def test_drop_retired_tables_removes_them_and_is_idempotent(tmp_path):
 
     engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
     with engine.connect() as conn:
-        for table in ("auth_sources", "detections", "match_results", "accounts"):
+        for table in ("auth_sources", "detections", "match_results", "profiles", "accounts"):
             conn.execute(text(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
         conn.commit()
 
@@ -376,3 +376,201 @@ def test_drop_retired_tables_removes_them_and_is_idempotent(tmp_path):
     _drop_retired_tables(engine)
 
     assert inspect(engine).get_table_names() == ["accounts"]
+
+
+def _index_shape(engine, table: str) -> dict[str, tuple[bool, tuple[str, ...]]]:
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        shape = {}
+        for row in conn.execute(text(f"PRAGMA index_list({table})")):
+            columns = tuple(r[2] for r in conn.execute(text(f"PRAGMA index_info({row[1]})")))
+            shape[row[1]] = (bool(row[2]), columns)
+        return shape
+
+
+def _old_schema_db(path: Path):
+    """Today's tables with the global unique indexes they carried before
+    repos and postings became unique per account, holding one row per
+    account and rows in every table that points at them."""
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.orm import Session
+
+    from app.core.db import (
+        Account,
+        Base,
+        JobPosting,
+        ProjectLink,
+        Repository,
+        Resume,
+        SkillEvidence,
+    )
+    from app.core.db.migrations import _PER_ACCOUNT_UNIQUE
+
+    engine = create_engine(f"sqlite:///{path}")
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for table, column, old_index, new_index in _PER_ACCOUNT_UNIQUE:
+            conn.execute(text(f"DROP INDEX {new_index}"))
+            conn.execute(text(f"DROP INDEX {old_index}"))
+            conn.execute(text(f"CREATE UNIQUE INDEX {old_index} ON {table} ({column})"))
+    with Session(engine) as db:
+        db.add_all(
+            [
+                Account(id=1, first_name="A", last_name="A", github_username="a"),
+                Account(id=2, first_name="B", last_name="B", github_username="b"),
+            ]
+        )
+        db.flush()
+        db.add_all(
+            [
+                Repository(id=7, account_id=1, github_id=100, name="x", full_name="o/x", url=""),
+                Repository(id=9, account_id=2, github_id=200, name="y", full_name="o/y", url=""),
+                JobPosting(
+                    id=3, account_id=1, source="pasted", external_id="e", company="c",
+                    title="t", raw_text_quarantined="text", content_hash="h1",
+                ),
+            ]
+        )
+        db.flush()
+        db.add_all(
+            [
+                ProjectLink(repo_id=7, label="Demo", url="https://example.com"),
+                SkillEvidence(
+                    skill="Python", repo_id=9, evidence_type="readme", weight=1.0, confidence=1.0
+                ),
+                Resume(account_id=1, filename="r.pdf", mime_type="application/pdf",
+                       job_posting_id=3),
+            ]
+        )
+        db.commit()
+    engine.dispose()
+
+
+def _init_db_at(path: Path, monkeypatch) -> None:
+    from app.core.db import reset_engine
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{path}")
+    get_settings.cache_clear()
+    reset_engine()
+    try:
+        init_db()
+    finally:
+        get_settings.cache_clear()
+
+
+def test_per_account_unique_migration_keeps_rows_ids_and_references(tmp_path, monkeypatch):
+    import pytest
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import IntegrityError
+
+    db_path = tmp_path / "app.db"
+    _old_schema_db(db_path)
+    assert _index_shape(create_engine(f"sqlite:///{db_path}"), "repositories")[
+        "ix_repositories_github_id"
+    ] == (True, ("github_id",))
+
+    _init_db_at(db_path, monkeypatch)
+
+    engine = create_engine(f"sqlite:///{db_path}")
+    repos = _index_shape(engine, "repositories")
+    postings = _index_shape(engine, "job_postings")
+    assert repos["ix_repositories_github_id"] == (False, ("github_id",))
+    assert repos["ix_repositories_full_name"] == (False, ("full_name",))
+    assert repos["uq_repositories_account_github_id"] == (True, ("account_id", "github_id"))
+    assert repos["uq_repositories_account_full_name"] == (True, ("account_id", "full_name"))
+    assert postings["ix_job_postings_content_hash"] == (False, ("content_hash",))
+    assert postings["uq_job_postings_account_content_hash"] == (
+        True,
+        ("account_id", "content_hash"),
+    )
+    assert list((tmp_path / "backups").iterdir())
+
+    with engine.connect() as conn:
+        assert conn.execute(
+            text("SELECT id, account_id, github_id, full_name FROM repositories ORDER BY id")
+        ).all() == [(7, 1, 100, "o/x"), (9, 2, 200, "o/y")]
+        postings = conn.execute(text("SELECT id, account_id, content_hash FROM job_postings"))
+        assert postings.all() == [(3, 1, "h1")]
+        assert conn.execute(text("SELECT repo_id FROM project_links")).scalar() == 7
+        assert conn.execute(text("SELECT repo_id FROM skill_evidence")).scalar() == 9
+        assert conn.execute(text("SELECT job_posting_id FROM resumes")).scalar() == 3
+        assert conn.execute(text("PRAGMA foreign_key_check")).all() == []
+
+    insert_repo = text(
+        "INSERT INTO repositories (account_id, github_id, name, full_name, url, is_fork, "
+        "stars, manifests_json, commits_authored, fetched_at, skill_extraction_status, "
+        "starred, is_profile_readme, exclude_from_resume) VALUES (:acc, :gh, 'n', :fn, '', "
+        "0, 0, '{}', 0, '2026-01-01', 'pending', 0, 0, 0)"
+    )
+    insert_posting = text(
+        "INSERT INTO job_postings (account_id, source, external_id, company, title, "
+        "raw_text_quarantined, content_hash, fetched_at, extraction_status, applied) "
+        "VALUES (:acc, 'pasted', 'e', 'c', 't', 'text', 'h1', '2026-01-01', 'pending', 0)"
+    )
+    with engine.connect() as conn:
+        conn.execute(insert_repo, {"acc": 2, "gh": 100, "fn": "o/x"})
+        conn.execute(insert_posting, {"acc": 2})
+        conn.commit()
+        for statement, params in (
+            (insert_repo, {"acc": 1, "gh": 100, "fn": "o/other"}),
+            (insert_repo, {"acc": 1, "gh": 101, "fn": "o/x"}),
+            (insert_posting, {"acc": 1}),
+        ):
+            with pytest.raises(IntegrityError):
+                conn.execute(statement, params)
+            conn.rollback()
+
+
+def test_per_account_unique_migration_twice_is_a_no_op(tmp_path, monkeypatch):
+    from sqlalchemy import create_engine, text
+
+    from app.core.db import Base
+
+    db_path = tmp_path / "app.db"
+    _old_schema_db(db_path)
+    _init_db_at(db_path, monkeypatch)
+    engine = create_engine(f"sqlite:///{db_path}")
+
+    def snapshot():
+        with engine.connect() as conn:
+            rows = {
+                table: conn.execute(text(f"SELECT * FROM {table} ORDER BY id")).all()
+                for table in ("repositories", "job_postings")
+            }
+        return rows, {t: _index_shape(engine, t) for t in ("repositories", "job_postings")}
+
+    before = snapshot()
+    _init_db_at(db_path, monkeypatch)
+    assert snapshot() == before
+
+    fresh = create_engine(f"sqlite:///{tmp_path / 'fresh.db'}")
+    Base.metadata.create_all(fresh)
+    assert {t: _index_shape(fresh, t) for t in ("repositories", "job_postings")} == before[1]
+
+
+def test_per_account_unique_migration_rolls_back_on_failure(tmp_path, monkeypatch):
+    """A failure partway leaves every old index in place, not half of them."""
+    import pytest
+    from sqlalchemy import create_engine
+    from sqlalchemy.exc import OperationalError
+
+    from app.core.db import migrations
+
+    db_path = tmp_path / "app.db"
+    _old_schema_db(db_path)
+    monkeypatch.setattr(
+        migrations,
+        "_PER_ACCOUNT_UNIQUE",
+        (*migrations._PER_ACCOUNT_UNIQUE, ("job_postings", "missing", "ix_none", "uq_none")),
+    )
+    engine = create_engine(f"sqlite:///{db_path}")
+
+    with pytest.raises(OperationalError):
+        migrations._migrate_per_account_unique_indexes(engine)
+
+    repos = _index_shape(engine, "repositories")
+    assert repos["ix_repositories_github_id"] == (True, ("github_id",))
+    assert "uq_repositories_account_github_id" not in repos
+    assert _index_shape(engine, "job_postings")["ix_job_postings_content_hash"][0] is True

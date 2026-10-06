@@ -126,15 +126,10 @@ def test_build_profile_writes_skill_evidence_from_manifest_and_readme(tmp_path, 
     )
     repo = _persist_repo()
 
-    profile = build_profile([repo], now=NOW)
+    build_profile([repo], now=NOW)
 
-    assert "FastAPI" in profile.skills_json
-    assert "React" in profile.skills_json
-    assert profile.skills_json["FastAPI"]["repo_count"] == 1
-    assert profile.skills_json["FastAPI"]["evidence_types"] == ["declared_dependency"]
-
-    evidence = skill_evidence_for_repos([repo.id])
-    assert {e.skill for e in evidence} == {"FastAPI", "React"}
+    evidence = {e.skill: e.evidence_type for e in skill_evidence_for_repos([repo.id])}
+    assert evidence == {"FastAPI": "declared_dependency", "React": "readme_described"}
 
 
 def test_build_profile_persists_extracted_status(tmp_path, monkeypatch):
@@ -185,7 +180,7 @@ def test_llm_failure_on_one_repo_does_not_lose_other_repos(tmp_path, monkeypatch
     good = _persist_repo(github_id=1, full_name="octocat/good")
     bad = _persist_repo(github_id=2, full_name="octocat/bad")
 
-    profile = build_profile([good, bad], now=NOW)
+    build_profile([good, bad], now=NOW)
 
     good_reloaded = _fresh(good.id)
     bad_reloaded = _fresh(bad.id)
@@ -199,8 +194,6 @@ def test_llm_failure_on_one_repo_does_not_lose_other_repos(tmp_path, monkeypatch
     # bad repo still got its manifest-based (free, no-LLM) evidence
     bad_evidence = {e.skill for e in skill_evidence_for_repos([bad.id])}
     assert bad_evidence == {"FastAPI"}
-    # profile aggregation reflects both repos' surviving evidence
-    assert profile.skills_json["FastAPI"]["repo_count"] == 2
 
 
 def test_rate_limit_mid_batch_stops_and_leaves_rest_untouched(tmp_path, monkeypatch):
@@ -460,32 +453,6 @@ def test_reprocess_repo_unknown_id_raises(tmp_path):
     assert raised
 
 
-def test_same_skill_from_two_repos_aggregates_via_noisy_or(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    _stub_skills(monkeypatch, lambda repo: [])
-    repo_a = _persist_repo(github_id=1, full_name="octocat/a")
-    repo_b = _persist_repo(github_id=2, full_name="octocat/b")
-
-    profile = build_profile([repo_a, repo_b], now=NOW)
-
-    fastapi = profile.skills_json["FastAPI"]
-    assert fastapi["repo_count"] == 2
-    # noisy-OR of two positive weights must exceed either weight alone
-    single_repo_profile = build_profile([repo_a], now=NOW)
-    assert fastapi["weight"] > single_repo_profile.skills_json["FastAPI"]["weight"]
-
-
-def test_profile_skills_property_matches_skills_json(tmp_path, monkeypatch):
-    _reset_db(tmp_path)
-    _stub_skills(monkeypatch, lambda repo: [])
-    repo = _persist_repo()
-
-    profile = build_profile([repo], now=NOW)
-
-    skills_by_name = {s["skill"]: s for s in profile.skills}
-    assert skills_by_name["FastAPI"]["weight"] == profile.skills_json["FastAPI"]["weight"]
-
-
 def test_rebuild_manifest_evidence_replaces_only_manifest_rows(tmp_path, monkeypatch):
     _reset_db(tmp_path)
     calls = []
@@ -620,11 +587,11 @@ def test_batched_prefetch_answer_is_used_without_a_second_call(tmp_path, monkeyp
     per_repo = MagicMock()
     monkeypatch.setattr("app.profile.build.extract_repo_facts", per_repo)
 
-    profile = build_profile([repo_a, repo_b], now=NOW)
+    build_profile([repo_a, repo_b], now=NOW)
 
     per_repo.assert_not_called()
-    assert "React" in profile.skills_json
-    assert "Rust" in profile.skills_json
+    skills = {e.skill for e in skill_evidence_for_repos([repo_a.id, repo_b.id])}
+    assert {"React", "Rust"} <= skills
     assert [link.label for link in _links_for(repo_a.id)] == ["Docs"]
     assert _fresh(repo_a.id).skill_extraction_status == "extracted"
     assert _fresh(repo_b.id).skill_extraction_status == "extracted"
@@ -654,10 +621,11 @@ def test_repo_the_batched_pass_missed_falls_back_to_its_own_call(tmp_path, monke
 
     monkeypatch.setattr("app.profile.build.extract_repo_facts", _per_repo)
 
-    profile = build_profile([repo_a, repo_b], now=NOW)
+    build_profile([repo_a, repo_b], now=NOW)
 
     assert asked == [repo_b.id]
-    assert {"React", "Rust"} <= set(profile.skills_json)
+    skills = {e.skill for e in skill_evidence_for_repos([repo_a.id, repo_b.id])}
+    assert {"React", "Rust"} <= skills
 
 
 def test_prefetch_is_skipped_for_a_single_repo(tmp_path, monkeypatch):

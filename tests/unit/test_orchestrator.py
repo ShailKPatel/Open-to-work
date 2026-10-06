@@ -912,3 +912,228 @@ def test_selected_project_from_another_account_is_not_loaded(tmp_path, monkeypat
     db.close()
 
     assert [c["repo_id"] for c in candidates] == [project_id]
+
+
+def _seed_grounding(tmp_path: Path) -> tuple[int, int, int, int]:
+    """_seed() plus a project with numbers and two tools in its evidence,
+    a project with no description, and a role skill (Redis) none of the
+    projects has, so Redis is a technology the account knows but that no
+    project bullet may name. The role spans four years."""
+    account_id, posting_id = _seed(tmp_path)
+    db = get_db()
+    api = Repository(
+        account_id=account_id, github_id=2, name="api-server", full_name="janedoe/api-server",
+        url="https://github.com/janedoe/api-server", is_fork=False,
+        description="Job queue API serving 40 requests per second",
+    )
+    bare = Repository(
+        account_id=account_id, github_id=3, name="bare", full_name="janedoe/bare",
+        url="https://github.com/janedoe/bare", is_fork=False,
+    )
+    db.add_all([api, bare])
+    db.commit()
+    for skill in ("PostgreSQL", "FastAPI"):
+        db.add(
+            SkillEvidence(
+                skill=skill, repo_id=api.id, evidence_type="declared_dependency",
+                weight=0.7, confidence=1.0,
+            )
+        )
+    role = db.query(Experience).filter_by(account_id=account_id).first()
+    role.start_date, role.end_date = "jan 2020", "dec 2023"
+    db.add(ExperienceSkillEvidence(skill="Redis", experience_id=role.id))
+    db.commit()
+    api_id, bare_id = api.id, bare.id
+    db.close()
+    return account_id, posting_id, api_id, bare_id
+
+
+def _stub_grounding_search(monkeypatch, *repo_ids: int):
+    from app.retrieval.search import Hit
+
+    hits = [
+        Hit(id=i, score=0.9 - i / 100, payload={"repo_id": rid, "skill": "Python"})
+        for i, rid in enumerate(repo_ids)
+    ]
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: hits)
+    monkeypatch.setattr("app.retrieval.search.search_experience_points", lambda *a, **k: [])
+    monkeypatch.setattr("app.resume_build.orchestrator._live_hits", lambda db, h: list(h))
+
+
+def _stub_llm(monkeypatch, parsed: dict):
+    fake_response = MagicMock()
+    fake_response.parsed = parsed
+    monkeypatch.setattr(
+        "app.resume_build.orchestrator.complete", MagicMock(return_value=fake_response)
+    )
+
+
+def _build_with_api_points(tmp_path, monkeypatch, points: list[str], tagline: str = ""):
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id, api_id, _ = _seed_grounding(tmp_path)
+    _stub_grounding_search(monkeypatch, api_id)
+    _stub_llm(
+        monkeypatch,
+        {
+            "summary": "",
+            "projects": [{"repo_id": api_id, "tagline": tagline, "points": points}],
+            "skills": [],
+        },
+    )
+    (project,) = build_resume_data(account_id, posting_id)["projects"]
+    return project
+
+
+def test_project_bullet_with_invented_metric_is_dropped(tmp_path, monkeypatch):
+    project = _build_with_api_points(
+        tmp_path, monkeypatch,
+        ["Served 40 requests per second with FastAPI", "Cut p99 latency by 70%"],
+    )
+
+    assert project["points"] == ["Served 40 requests per second with FastAPI"]
+
+
+def test_project_bullet_naming_a_tool_the_project_lacks_is_dropped(tmp_path, monkeypatch):
+    """Redis is the account's (a role skill), not this project's. Postgres
+    is an alias of the project's PostgreSQL, so it stays, in a bullet and
+    in the tagline alike."""
+    project = _build_with_api_points(
+        tmp_path, monkeypatch,
+        ["Cached job results in Redis", "Stored jobs in Postgres"],
+        tagline="Queue API on Postgres",
+    )
+
+    assert project["points"] == ["Stored jobs in Postgres"]
+    assert project["tagline"] == "Queue API on Postgres"
+
+
+def test_project_with_every_bullet_dropped_falls_back_to_its_description(tmp_path, monkeypatch):
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id, api_id, bare_id = _seed_grounding(tmp_path)
+    _stub_grounding_search(monkeypatch, api_id, bare_id)
+    _stub_llm(
+        monkeypatch,
+        {
+            "summary": "",
+            "projects": [
+                {"repo_id": api_id, "tagline": "Redis queue", "points": ["Scaled it 10x"]},
+                {"repo_id": bare_id, "tagline": "", "points": ["Built it on Redis"]},
+            ],
+            "skills": [],
+        },
+    )
+
+    data = build_resume_data(account_id, posting_id)
+
+    (project,) = data["projects"]
+    assert project["repo_id"] == api_id
+    assert project["points"] == ["Job queue API serving 40 requests per second"]
+    assert project["tagline"] is None
+
+
+def test_summary_sentence_with_invented_number_is_removed(tmp_path, monkeypatch):
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id, api_id, _ = _seed_grounding(tmp_path)
+    _stub_grounding_search(monkeypatch, api_id)
+    _stub_llm(
+        monkeypatch,
+        {
+            "summary": (
+                "Backend engineer with 4 years of experience. "
+                "Grew throughput 300% at Acme. "
+                "Built an API serving 40 requests per second."
+            ),
+            "projects": [],
+            "skills": [],
+        },
+    )
+
+    data = build_resume_data(account_id, posting_id)
+
+    assert data["summary"] == (
+        "Backend engineer with 4 years of experience. "
+        "Built an API serving 40 requests per second."
+    )
+
+
+def test_edit_path_grounds_project_bullets_and_summary(tmp_path, monkeypatch):
+    account_id, _, api_id, _ = _seed_grounding(tmp_path)
+    _stub_grounding_search(monkeypatch, api_id)
+    _stub_llm(
+        monkeypatch,
+        {
+            "summary": "Saved $2M a year.",
+            "projects": [
+                {
+                    "repo_id": api_id,
+                    "tagline": "",
+                    "points": ["Served 40 requests per second", "Handled 5,000 users"],
+                }
+            ],
+            "skills": [],
+        },
+    )
+
+    data = edit_resume_content(account_id, "Python backend", {}, "Tighten it", "onepage")
+
+    assert data["projects"][0]["points"] == ["Served 40 requests per second"]
+    assert data["summary"] is None
+
+
+
+def test_near_ties_go_to_the_stronger_evidence_and_nothing_else_moves():
+    from app.resume_build.orchestrator import _break_near_ties
+
+    items = [("a", 0.90, 0.1), ("b", 0.89, 0.9), ("c", 0.80, 1.0), ("d", 0.79, 0.2)]
+
+    ordered = _break_near_ties(items, lambda i: i[1], lambda i: i[2])
+
+    assert [i[0] for i in ordered] == ["b", "a", "c", "d"]
+
+
+def test_selected_skills_and_reserve_are_ordered_by_evidence_strength(tmp_path, monkeypatch):
+    """The model picks which skills (relevance); evidence weight orders
+    them, and orders what the reserve adds back first."""
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id, api_id, bare_id = _seed_grounding(tmp_path)
+    db = get_db()
+    for evidence in db.query(SkillEvidence).filter_by(repo_id=api_id):
+        evidence.weight = 0.9 if evidence.skill == "FastAPI" else 0.2
+    db.add(
+        SkillEvidence(
+            skill="Rust", repo_id=bare_id, evidence_type="declared_dependency",
+            weight=0.99, confidence=1.0,
+        )
+    )
+    cool_id = db.query(Repository).filter_by(name="cool-project").one().id
+    db.query(SkillEvidence).filter_by(repo_id=cool_id).one().weight = 0.95
+    db.commit()
+    db.close()
+
+    from app.retrieval.search import Hit
+
+    hits = [
+        Hit(id=i, score=0.9 - i / 10, payload={"repo_id": repo_id, "skill": skill})
+        for i, (repo_id, skill) in enumerate(
+            [(api_id, "PostgreSQL"), (api_id, "FastAPI"), (cool_id, "Python"), (bare_id, "Rust")]
+        )
+    ]
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: hits)
+    monkeypatch.setattr("app.retrieval.search.search_experience_points", lambda *a, **k: [])
+    monkeypatch.setattr("app.resume_build.orchestrator._live_hits", lambda db, h: list(h))
+    _stub_llm(
+        monkeypatch,
+        {"summary": "", "projects": [], "skills": ["PostgreSQL", "Python", "FastAPI"]},
+    )
+
+    data = build_resume_data(account_id, posting_id)
+
+    assert data["skills"] == ["Python", "FastAPI", "PostgreSQL"]
+    assert data["reserve"]["skills"] == ["Rust"]
+    # Relevance order is api-server, then cool-project; cool-project's
+    # evidence (0.95) is stronger than api-server's best (0.9).
+    assert [p["name"] for p in data["reserve"]["projects"]] == ["cool-project", "api-server"]

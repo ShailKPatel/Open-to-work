@@ -17,11 +17,14 @@ from app.api.experience import router as experience_router
 from app.api.github_profile import router as github_profile_router
 from app.api.github_sync import router as github_sync_router
 from app.api.job_analytics import router as job_analytics_router
+from app.api.job_postings import fail_interrupted_extractions
 from app.api.job_postings import router as job_postings_router
+from app.api.llm_errors import install as install_llm_error_handlers
 from app.api.monitor import router as monitor_router
 from app.api.projects import router as projects_router
 from app.api.resume import router as resume_router
 from app.api.resume_build import router as resume_build_router
+from app.api.security import SecurityMiddleware
 from app.api.skills import router as skills_router
 from app.api.skills import warm_skill_maps
 from app.api.sources import router as sources_router
@@ -32,11 +35,16 @@ from app.core.key_refresh import start_key_refresh
 from app.core.settings import get_settings
 from app.ingest.github import background as github_background
 from app.ingest.github.auto_sync import start_auto_sync
+from app.profile.resume_ingest import fail_interrupted_reads as fail_interrupted_resume_reads
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     init_db()
+    # Job posting and resume reads run in memory, so one cut off by the restart would
+    # otherwise show as in progress forever.
+    fail_interrupted_extractions()
+    fail_interrupted_resume_reads()
     # The skill map needs an embedding model in memory, which takes a few
     # seconds to load. Doing it here, off the request path, means the
     # first person to open the map gets a cached layout instead of a
@@ -62,6 +70,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Open to Work", lifespan=_lifespan)
+# Host check, cross-site request check and security headers; see
+# app/api/security.py.
+app.add_middleware(SecurityMiddleware)
+# Typed LLM failures answer with an error_kind the pages understand; see
+# app/api/llm_errors.py.
+install_llm_error_handlers(app)
 app.include_router(accounts_router)
 app.include_router(api_keys_router)
 app.include_router(app_settings_router)

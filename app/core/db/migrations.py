@@ -594,16 +594,88 @@ def _migrate_month_year_dates(engine: Engine) -> None:
         conn.commit()
 
 
+# (table, column, old global unique index, new per-account unique index)
+_PER_ACCOUNT_UNIQUE = (
+    ("repositories", "github_id", "ix_repositories_github_id", "uq_repositories_account_github_id"),
+    ("repositories", "full_name", "ix_repositories_full_name", "uq_repositories_account_full_name"),
+    (
+        "job_postings",
+        "content_hash",
+        "ix_job_postings_content_hash",
+        "uq_job_postings_account_content_hash",
+    ),
+)
+
+
+def _migrate_per_account_unique_indexes(engine: Engine) -> None:
+    """Turn the global unique indexes on repositories.github_id/full_name
+    and job_postings.content_hash into per-account ones, so two accounts
+    can hold the same repo or posting as separate rows. Older databases
+    carry these as unique indexes (unique=True, index=True), not inline
+    UNIQUE constraints, so no table rebuild is needed: each one is dropped
+    and recreated as a plain index, then the (account_id, column) unique
+    index is added. Row ids and every foreign key are untouched. Runs in
+    one explicit transaction, since the sqlite3 driver would otherwise
+    commit each DDL statement on its own. Idempotent: an index that is
+    already non-unique is left alone and the new ones use IF NOT EXISTS.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        conn.exec_driver_sql("BEGIN")
+        for table, column, old_index, new_index in _PER_ACCOUNT_UNIQUE:
+            is_unique = {
+                row[1]: bool(row[2]) for row in conn.execute(text(f"PRAGMA index_list({table})"))
+            }
+            if is_unique.get(old_index):
+                conn.execute(text(f"DROP INDEX {old_index}"))
+                conn.execute(text(f"CREATE INDEX {old_index} ON {table} ({column})"))
+            conn.execute(
+                text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {new_index} "
+                    f"ON {table} (account_id, {column})"
+                )
+            )
+        conn.commit()
+
+
 # Tables an older database may still carry that no model declares any more.
 # auth_sources held encrypted job-site logins, so it is dropped rather than
-# left on disk; the other two were never written to.
-_RETIRED_TABLES = ("auth_sources", "detections", "match_results")
+# left on disk; detections and match_results were never written to, and
+# profiles was written once per extraction run but never read.
+_RETIRED_TABLES = ("auth_sources", "detections", "match_results", "profiles")
 
 
 def _drop_retired_tables(engine: Engine) -> None:
     with engine.connect() as conn:
         for table in _RETIRED_TABLES:
             conn.execute(text(f"DROP TABLE IF EXISTS {table}"))
+        conn.commit()
+
+
+def _migrate_llm_failure_columns(engine: Engine) -> None:
+    """Add resumes.extraction_error_kind, job_postings.extraction_error_kind
+    and accounts.request_id (with its unique index), same idempotent
+    PRAGMA-check pattern as the migrations above. Existing rows read as
+    having no recorded kind and no request id."""
+    if engine.dialect.name != "sqlite":
+        return
+
+    with engine.connect() as conn:
+        for table in ("resumes", "job_postings"):
+            existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            if "extraction_error_kind" not in existing:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN extraction_error_kind TEXT"))
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(accounts)"))}
+        if "request_id" not in existing:
+            conn.execute(text("ALTER TABLE accounts ADD COLUMN request_id TEXT"))
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_accounts_request_id "
+                    "ON accounts (request_id)"
+                )
+            )
         conn.commit()
 
 
@@ -632,6 +704,8 @@ def init_db() -> None:
     _migrate_exclude_from_resume_columns(engine)
     _migrate_resumes_build_state_column(engine)
     _migrate_education_extras_columns(engine)
+    _migrate_llm_failure_columns(engine)
     _migrate_month_year_date_column_types(engine)
     _migrate_month_year_dates(engine)
+    _migrate_per_account_unique_indexes(engine)
     _drop_retired_tables(engine)

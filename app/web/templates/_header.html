@@ -20,6 +20,16 @@
       <a href="/monitor" class="otw-topnav-link {{ 'active' if top_active == 'monitor' }}">Monitor</a>
       <a href="/explanation" class="otw-topnav-link {{ 'active' if top_active == 'explanation' }}">How it works</a>
     </nav>
+    <!-- Up while the AI provider was found unavailable in the last few
+         minutes with nothing succeeding since (GET /api/app-settings/llm/health). -->
+    <a
+      x-data="otwLlmHealthPill"
+      x-show="degraded"
+      x-cloak
+      href="/apis"
+      class="otw-pill otw-pill-warn"
+      :title="model ? model + ' is unavailable right now. Manage APIs' : 'Manage APIs'"
+    >AI degraded</a>
     <a href="/settings" class="otw-settings-btn {{ 'active' if top_active == 'settings' }}" aria-label="Settings" title="Settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
@@ -107,6 +117,7 @@
         <a x-show="build.has_pdf" :href="`/api/resume-build/builds/${build.id}/pdf`" target="_blank" class="otw-btn-accent text-xs px-3 py-1.5">Open PDF</a>
         <a :href="otwWork.buildHref(build)" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]"
           x-text="build.state === 'done' ? 'See the result' : 'Back to the build'"></a>
+        <a x-show="otwIsLlmKind(build.error_kind)" href="/apis" class="underline text-[color:var(--muted)] hover:text-[color:var(--ink)]">Manage APIs</a>
       </div>
     </div>
   </template>

@@ -86,6 +86,50 @@ class LLMProviderError(LLMDispatchError):
     rejected key, an unknown model name, or input it can't handle."""
 
 
+def error_kind(error: BaseException) -> str | None:
+    """What an LLM failure means to the person, as one of a few fixed
+    names the pages turn into a message: "provider_unavailable" (overloaded
+    or rate-limited, worth retrying later), "no_key", "provider_rejected"
+    (a bad or revoked key, an unknown model, input it refused) or "budget".
+    None for anything that is not an LLM failure."""
+    if isinstance(error, ApiKeyMissingError):
+        return "no_key"
+    if isinstance(error, BudgetExceededError):
+        return "budget"
+    if isinstance(error, LLMRateLimitedError):
+        return "provider_unavailable"
+    if isinstance(error, LLMProviderError):
+        return "provider_rejected"
+    return None
+
+
+# How long one "provider unavailable" keeps the nav's status pill up when
+# nothing has succeeded since.
+_HEALTH_WINDOW_S = 300.0
+_health: dict[str, Any] = {"failed_at": None, "model": None, "detail": None}
+
+
+def _record_health(failed_model: str | None, detail: str | None = None) -> None:
+    """None clears the degraded state; a model name sets it."""
+    _health.update(
+        failed_at=time.monotonic() if failed_model else None,
+        model=failed_model,
+        detail=detail,
+    )
+
+
+def llm_health() -> dict[str, Any]:
+    """Whether a call found the provider unavailable within the last few
+    minutes, with no successful call since. In memory only."""
+    failed_at = _health["failed_at"]
+    degraded = failed_at is not None and time.monotonic() - failed_at < _HEALTH_WINDOW_S
+    return {
+        "degraded": degraded,
+        "model": _health["model"] if degraded else None,
+        "detail": _health["detail"] if degraded else None,
+    }
+
+
 def is_out_of_keys(error: Exception) -> bool:
     """True when nothing is left to dispatch with: no key, a budget used
     up, or every key spent. A batch uses this to stop after the first such
@@ -155,13 +199,18 @@ def _canonical_messages(messages: list[dict]) -> list[dict]:
 _CACHE_VERSION = 1
 
 
-def _prompt_hash(model: str, messages: list[dict], schema: dict | None) -> str:
+def _prompt_hash(
+    model: str, messages: list[dict], schema: dict | None, account_id: int | None
+) -> str:
     """Keyed on the model rather than the tier: with the same model on
-    both tiers, one prompt is one cache entry."""
+    both tiers, one prompt is one cache entry. Keyed on the account too,
+    so an answer paid for by a key restricted to one profile is never
+    served to another."""
     payload = json.dumps(
         {
             "version": _CACHE_VERSION,
             "model": model,
+            "account_id": account_id,
             "messages": _canonical_messages(messages),
             "schema": schema,
         },
@@ -317,15 +366,16 @@ def complete(
     purpose labels the feature spending the call ("repo_facts",
     "resume_build", ...) for /monitor; it is not part of the cache key.
     account_id lets keys restricted to certain profiles serve the call;
-    None can only use unrestricted keys. Callers never pick a key: every
-    usable one is tried in order, and the LLMCall row records which paid.
+    None can only use unrestricted keys. It is part of the cache key.
+    Callers never pick a key: every usable one is tried in order, and the
+    LLMCall row records which paid.
     bypass_cache skips the cache lookup, for a retry the person asked for;
     the fresh answer is still recorded, so later calls can reuse it.
     _completion_fn replaces litellm.completion in tests.
     """
     settings = get_llm_settings()
     model = settings.model_for(tier)
-    prompt_hash = _prompt_hash(model, messages, schema)
+    prompt_hash = _prompt_hash(model, messages, schema, account_id)
 
     cached_row = None if bypass_cache else _lookup_cache(prompt_hash)
     cached_response = cached_row.response_json if cached_row is not None else None
@@ -382,30 +432,35 @@ def complete(
     if other_model != model and provider_of_model(other_model) == provider:
         candidates.append(other_model)
 
-    if _completion_fn is not None:
-        response, latency_ms, answered_model = _dispatch(
-            _completion_fn, kwargs, candidates, label, None, account_id
-        )
-    else:
-        from app.core.api_keys_store import resolve_dispatch_keys
-
-        keys = resolve_dispatch_keys(provider, account_id)
-        if not keys:
-            raise ApiKeyMissingError(
-                f"No {label} API key is available"
-                f"{' for this account' if account_id is not None else ''}. "
-                "Add one, or turn an existing one on, from Manage APIs."
+    try:
+        if _completion_fn is not None:
+            response, latency_ms, answered_model = _dispatch(
+                _completion_fn, kwargs, candidates, label, None, account_id
             )
+        else:
+            from app.core.api_keys_store import resolve_dispatch_keys
 
-        import litellm
+            keys = resolve_dispatch_keys(provider, account_id)
+            if not keys:
+                raise ApiKeyMissingError(
+                    f"No {label} API key is available"
+                    f"{' for this account' if account_id is not None else ''}. "
+                    "Add one, or turn an existing one on, from Manage APIs."
+                )
 
-        response, latency_ms, answered_model, key_id = _dispatch_over_keys(
-            litellm.completion, kwargs, candidates, provider, label, keys, account_id
-        )
+            import litellm
+
+            response, latency_ms, answered_model, key_id = _dispatch_over_keys(
+                litellm.completion, kwargs, candidates, provider, label, keys, account_id
+            )
+    except LLMRateLimitedError as e:
+        _record_health(model, str(e))
+        raise
+    _record_health(None)
 
     if answered_model != model:
         model = answered_model
-        prompt_hash = _prompt_hash(model, messages, schema)
+        prompt_hash = _prompt_hash(model, messages, schema, account_id)
 
     content = response.choices[0].message.content or ""
     usage = getattr(response, "usage", None)

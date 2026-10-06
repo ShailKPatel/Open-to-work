@@ -356,7 +356,7 @@ def test_multiple_accounts_coexist_independently(tmp_path):
 
 
 def test_delete_account_removes_it_and_its_repos_and_evidence(tmp_path):
-    from app.core.db import Profile, Repository, SkillEvidence, get_db
+    from app.core.db import Repository, SkillEvidence, get_db
 
     _reset_db(tmp_path)
     client = _client()
@@ -383,7 +383,6 @@ def test_delete_account_removes_it_and_its_repos_and_evidence(tmp_path):
             weight=0.5, confidence=1.0,
         )
     )
-    db.add(Profile(account_id=account["id"], skills_json={"Rust": {"weight": 0.5}}))
     db.commit()
     repo_id = repo.id
     db.close()
@@ -397,7 +396,6 @@ def test_delete_account_removes_it_and_its_repos_and_evidence(tmp_path):
     db = get_db()
     assert db.get(Repository, repo_id) is None
     assert db.query(SkillEvidence).filter_by(repo_id=repo_id).count() == 0
-    assert db.query(Profile).filter_by(account_id=account["id"]).count() == 0
     db.close()
 
 
@@ -535,8 +533,8 @@ def test_delete_account_removes_job_screenshot_files(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "app.api.job_postings.extract_job_posting_from_image",
-        lambda image_bytes, mime_type, account_id=None: fake_result,
+        "app.api.job_postings.extract_job_posting_from_images",
+        lambda images, context_text="", account_id=None: fake_result,
     )
 
     client = _client()
@@ -547,7 +545,7 @@ def test_delete_account_removes_job_screenshot_files(tmp_path, monkeypatch):
     client.post(
         "/api/job-postings/from-screenshot",
         data={"account_id": str(account["id"])},
-        files={"file": ("shot.png", io.BytesIO(b"fake"), "image/png")},
+        files={"file": ("shot.png", io.BytesIO(b"\x89PNG\r\n\x1a\nfake"), "image/png")},
     )
     screenshot_dir = tmp_path / "job_screenshots" / str(account["id"])
     assert screenshot_dir.exists()
