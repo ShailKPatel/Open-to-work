@@ -28,7 +28,6 @@ from app.core.db import (
     ExperienceSkillEvidence,
     GitHubSyncRun,
     JobPosting,
-    Profile,
     Repository,
     Resume,
     ResumeProfileLink,
@@ -405,7 +404,6 @@ def delete_account(account_id: int, *, db: DbSession) -> dict:
     db.execute(delete(Skill).where(Skill.account_id == account_id))
     db.execute(delete(SkillStar).where(SkillStar.account_id == account_id))
     db.execute(delete(SkillVerdict).where(SkillVerdict.account_id == account_id))
-    db.execute(delete(Profile).where(Profile.account_id == account_id))
     db.execute(delete(SyncSource).where(SyncSource.account_id == account_id))
     db.execute(delete(GitHubSyncRun).where(GitHubSyncRun.account_id == account_id))
     db.execute(

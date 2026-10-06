@@ -642,8 +642,9 @@ def _migrate_per_account_unique_indexes(engine: Engine) -> None:
 
 # Tables an older database may still carry that no model declares any more.
 # auth_sources held encrypted job-site logins, so it is dropped rather than
-# left on disk; the other two were never written to.
-_RETIRED_TABLES = ("auth_sources", "detections", "match_results")
+# left on disk; detections and match_results were never written to, and
+# profiles was written once per extraction run but never read.
+_RETIRED_TABLES = ("auth_sources", "detections", "match_results", "profiles")
 
 
 def _drop_retired_tables(engine: Engine) -> None:

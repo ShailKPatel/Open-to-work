@@ -4,8 +4,10 @@ retrieval got worse.
 The eval harness prints numbers; on its own it cannot tell a regression
 from a Tuesday. This is the part that decides. It reads a report written
 by `python -m app.evals` and the expected numbers in evals/ci_baseline.json,
-and exits non-zero when dense precision@5 or recall@10 has dropped by more
-than the baseline's stated tolerance. Improvements never fail.
+and exits non-zero when dense precision@5 or recall@10, or the same two
+numbers for each candidate list the baseline has a `candidates` entry for
+(app/evals/candidates.py), has dropped by more than the baseline's stated
+tolerance. Improvements never fail.
 
 Both paths are explicit arguments with no env-var default, same rule as
 `python -m app.evals` and scripts/label_golden_set.py: which report and
@@ -31,15 +33,27 @@ from pathlib import Path
 _METRICS = (("precision_at_5", "precision@5"), ("recall_at_10", "recall@10"))
 
 
-def _rows(report: dict, baseline: dict) -> list[tuple[str, float, float, float, bool]]:
-    """(label, actual, expected, drop, ok) per gated metric."""
+def _rows(
+    report: dict, baseline: dict
+) -> list[tuple[str, float, float, float, bool, float | None]]:
+    """(label, actual, expected, drop, ok, bm25) per gated metric: dense
+    retrieval, then each candidate list (app/evals/candidates.py) the
+    baseline has numbers for. bm25 is the reference value, dense only."""
     tolerance = float(baseline["tolerance"])
+    systems = [("dense", "", report["dense"], baseline["dense"], report["bm25"])]
+    for name, expected_scores in baseline.get("candidates", {}).items():
+        actual_scores = report.get("candidates", {}).get(name)
+        if actual_scores is None:
+            raise SystemExit(f"report has no candidate {name} scores; baseline expects them")
+        systems.append((name, f"candidate {name} ", actual_scores, expected_scores, None))
     rows = []
-    for key, label in _METRICS:
-        actual = float(report["dense"][key])
-        expected = float(baseline["dense"][key])
-        drop = expected - actual
-        rows.append((label, actual, expected, drop, drop <= tolerance))
+    for _, prefix, actual_scores, expected_scores, bm25 in systems:
+        for key, label in _METRICS:
+            actual = float(actual_scores[key])
+            expected = float(expected_scores[key])
+            drop = expected - actual
+            reference = float(bm25[key]) if bm25 is not None else None
+            rows.append((prefix + label, actual, expected, drop, drop <= tolerance, reference))
     return rows
 
 
@@ -49,12 +63,13 @@ def _summary_table(report: dict, baseline: dict, rows: list) -> str:
         "",
         f"Account {report['account_id']}, {report['pairs_scored']} golden pairs scored.",
         "",
-        "| metric | dense | bm25 | baseline | change | verdict |",
+        "| metric | value | bm25 | baseline | change | verdict |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for (key, label), (_, actual, expected, drop, ok) in zip(_METRICS, rows, strict=True):
+    for label, actual, expected, drop, ok, bm25 in rows:
+        reference = f"{bm25:.3f}" if bm25 is not None else ""
         lines.append(
-            f"| {label} | {actual:.3f} | {float(report['bm25'][key]):.3f} | "
+            f"| {label} | {actual:.3f} | {reference} | "
             f"{expected:.3f} | {-drop:+.3f} | {'pass' if ok else 'FAIL'} |"
         )
     lines += [
@@ -93,9 +108,9 @@ def main() -> None:
         )
 
     rows = _rows(report, baseline)
-    for label, actual, expected, drop, ok in rows:
+    for label, actual, expected, drop, ok, _ in rows:
         verdict = "ok" if ok else "REGRESSED"
-        print(f"{label:14}{actual:8.3f}  baseline {expected:.3f}  change {-drop:+.3f}  {verdict}")
+        print(f"{label:30}{actual:8.3f}  baseline {expected:.3f}  change {-drop:+.3f}  {verdict}")
 
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:

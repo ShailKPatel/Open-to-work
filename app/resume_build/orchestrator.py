@@ -28,7 +28,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,6 +83,11 @@ _DEFAULT_POINTS_PER_ROLE = {"onepage": 3, "twopage": 5}
 _MAX_POINTS_PER_ROLE_CHOICE = 8
 _MAX_RESERVE_PROJECTS = 4
 _MAX_RESERVE_SKILLS = 20
+# Candidates whose search similarity is within this of each other are a
+# tie on relevance, and the stronger evidence (app/profile/weighting.py)
+# goes first. Outside a tie similarity alone decides, so evidence weight
+# never pushes a better match out of the candidate list.
+_NEAR_TIE = 0.02
 
 _LENGTH_GUIDANCE = {
     "onepage": (
@@ -248,6 +253,38 @@ def _live_hits(db: Session, hits: list[Any]) -> list[Any]:
     return [h for h in hits if h.id in live]
 
 
+def _hit_weight(hit: Any) -> float:
+    """A search hit's evidence weight, 0 when the point carries none."""
+    try:
+        return float(hit.payload.get("weight"))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _break_near_ties[T](
+    items: list[T], score: Callable[[T], float], weight: Callable[[T], float]
+) -> list[T]:
+    """items best similarity first, with each run of items within
+    _NEAR_TIE of the run's first one reordered by weight, strongest first.
+    Equal weights keep their similarity order."""
+    ordered = sorted(items, key=score, reverse=True)
+    result: list[T] = []
+    start = 0
+    while start < len(ordered):
+        lead = score(ordered[start])
+        end = start + 1
+        while end < len(ordered) and lead - score(ordered[end]) <= _NEAR_TIE:
+            end += 1
+        result.extend(sorted(ordered[start:end], key=weight, reverse=True))
+        start = end
+    return result
+
+
+def _by_strength[T](items: list[T], weight: Callable[[T], float]) -> list[T]:
+    """items strongest evidence first; equal weights keep their order."""
+    return sorted(items, key=weight, reverse=True)
+
+
 def _candidate_projects(
     db: Session,
     account_id: int,
@@ -264,6 +301,7 @@ def _candidate_projects(
     )
 
     best_score: dict[int, float] = {}
+    best_weight: dict[int, float] = {}
     order: list[int] = []
     for hit in hits:
         repo_id = hit.payload.get("repo_id")
@@ -272,6 +310,7 @@ def _candidate_projects(
         if repo_id not in best_score:
             order.append(repo_id)
         best_score[repo_id] = max(best_score.get(repo_id, hit.score), hit.score)
+        best_weight[repo_id] = max(best_weight.get(repo_id, 0.0), _hit_weight(hit))
     # The profile README's evidence is indexed like any repo's (it is a
     # skill source), but it is never a project to put on a resume; neither
     # is a project its owner marked exclude_from_resume.
@@ -284,7 +323,7 @@ def _candidate_projects(
         ).scalars()
     )
     order = [rid for rid in order if rid not in skipped_ids]
-    order.sort(key=lambda rid: best_score[rid], reverse=True)
+    order = _break_near_ties(order, best_score.__getitem__, best_weight.__getitem__)
     top_repo_ids = order[:_MAX_CANDIDATE_PROJECTS]
 
     if selected_project_ids:
@@ -343,7 +382,11 @@ def _candidate_skills(
 ) -> list[str]:
     from app.retrieval.search import search_skill_evidence
 
-    hits = _live_hits(db, search_skill_evidence(job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS))
+    hits = _break_near_ties(
+        _live_hits(db, search_skill_evidence(job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS)),
+        lambda hit: float(hit.score),
+        _hit_weight,
+    )
     excluded_repos, excluded_roles = excluded_sources(db, account_id)
     archived_skills = archived_skill_keys(db, account_id)
     seen: dict[str, str] = {}
@@ -612,6 +655,32 @@ def _technology_names(db: Session, account_id: int) -> list[str]:
     return sorted({*repo_skills, *role_skills})
 
 
+def _evidence_strength(
+    db: Session, account_id: int
+) -> tuple[dict[str, float], dict[int, float]]:
+    """The strongest evidence weight (app/profile/weighting.py) behind each
+    of this account's skills, keyed by casefolded name, and behind each of
+    its repositories."""
+    skills: dict[str, float] = {}
+    repos: dict[int, float] = {}
+    for skill, repo_id, weight in db.execute(
+        select(SkillEvidence.skill, SkillEvidence.repo_id, SkillEvidence.weight)
+        .join(Repository, Repository.id == SkillEvidence.repo_id)
+        .where(Repository.account_id == account_id)
+    ).all():
+        key = skill.strip().casefold()
+        skills[key] = max(skills.get(key, 0.0), weight or 0.0)
+        repos[repo_id] = max(repos.get(repo_id, 0.0), weight or 0.0)
+    for skill, weight in db.execute(
+        select(ExperienceSkillEvidence.skill, ExperienceSkillEvidence.weight)
+        .join(Experience, Experience.id == ExperienceSkillEvidence.experience_id)
+        .where(Experience.account_id == account_id)
+    ).all():
+        key = skill.strip().casefold()
+        skills[key] = max(skills.get(key, 0.0), weight or 0.0)
+    return skills, repos
+
+
 def _account_years(db: Session, account_id: int) -> float | None:
     spans = db.execute(
         select(Experience.start_date, Experience.end_date).where(
@@ -733,6 +802,9 @@ def _build_reserve(
             reserve_projects.append(entry)
         if len(reserve_projects) >= _MAX_RESERVE_PROJECTS:
             break
+    reserve_projects = _by_strength(
+        reserve_projects, lambda p: ctx.repo_strength.get(p["repo_id"], 0.0)
+    )
 
     # Keyed by role id, as a string so a checkpoint saved as JSON reads
     # back the same: two roles at one company each keep their own points.
@@ -744,9 +816,12 @@ def _build_reserve(
             held_points[str(role["id"])] = dropped
 
     shown_skills = {s.casefold() for s in skills}
-    reserve_skills = [
-        s for s in ctx.candidate_skill_names if s.casefold() not in shown_skills
-    ][:_MAX_RESERVE_SKILLS]
+    reserve_skills = _by_strength(
+        [s for s in ctx.candidate_skill_names if s.casefold() not in shown_skills][
+            :_MAX_RESERVE_SKILLS
+        ],
+        ctx.skill_weight,
+    )
 
     return {
         "projects": reserve_projects,
@@ -783,6 +858,14 @@ class _DeterministicContext:
     # experience: what grounding.py checks written text against.
     technologies: list[str] = field(default_factory=list)
     years: float | None = None
+    # Strongest evidence weight per skill (casefolded) and per repository,
+    # from _evidence_strength. Orders the skills list and the reserve once
+    # relevance has decided what is in them.
+    skill_strength: dict[str, float] = field(default_factory=dict)
+    repo_strength: dict[int, float] = field(default_factory=dict)
+
+    def skill_weight(self, skill: str) -> float:
+        return self.skill_strength.get(skill.strip().casefold(), 0.0)
 
 
 def _build_deterministic_context(
@@ -814,6 +897,7 @@ def _build_deterministic_context(
     candidate_skill_names = _candidate_skills(
         db, account_id, job_text, selected_skills=selected_skills
     )
+    skill_strength, repo_strength = _evidence_strength(db, account_id)
     return _DeterministicContext(
         header,
         experience,
@@ -824,6 +908,8 @@ def _build_deterministic_context(
         all_points,
         technologies=_technology_names(db, account_id),
         years=_account_years(db, account_id),
+        skill_strength=skill_strength,
+        repo_strength=repo_strength,
     )
 
 
@@ -901,6 +987,7 @@ def _build_resume_data_for_text(
             s_clean = sk.strip()
             if s_clean and s_clean not in skills and len(skills) < _MAX_SELECTED_SKILLS:
                 skills.append(s_clean)
+    skills = _by_strength(skills, ctx.skill_weight)
 
     summary, dropped_sentences = _ground_summary(
         str(response.parsed.get("summary", "")),
@@ -1135,7 +1222,10 @@ def edit_resume_content(
             candidates_by_id,
             TechVocabulary(ctx.technologies),
         )
-        skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
+        skills = _by_strength(
+            _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names),
+            ctx.skill_weight,
+        )
         summary, dropped_sentences = _ground_summary(
             str(response.parsed.get("summary", "")),
             ctx,

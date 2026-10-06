@@ -67,7 +67,7 @@ The cheap check lists models rather than generating, so it proves a credential i
 
 - `manifest_skills.py`: turns manifest dependencies into skill claims deterministically, with confidence 1.0.
 - `extract.py`: one bulk-tier LLM call per repository extracts both skills and project links from the README, or from the description when there is no README. If neither exists, it raises `NoSourceTextError` and the repository is marked `no_signal`. The README is cleaned before it is sent (badges, raw HTML, fenced code blocks, and boilerplate tail sections such as License and Contributing are dropped) and then cut to a character limit, so the budget is spent on prose rather than on markup that carries no skill signal. `prefetch_repo_facts()` covers several repositories per call; `build.py` runs it ahead of its per-repository loop, and anything it misses falls back to a single call, so nothing depends on the batched pass succeeding.
-- `weighting.py`: computes evidence weight from evidence type, fork status, commit recency, and commit volume.
+- `weighting.py`: computes evidence weight from evidence type, fork status, commit recency, and commit volume. Resume building uses it after relevance is decided: it orders the selected skills and the page-fit reserve, and breaks near-ties (within 0.02 similarity) between candidate projects and skills.
 - `build.py`: `build_profile`, `build_profile_progress`, and `reprocess_repo`. Behavior:
   - Each repository commits independently.
   - A failure marks only that repository.
@@ -92,13 +92,14 @@ The cheap check lists models rather than generating, so it proves a credential i
 
 - `context.py`: deterministic header, experience, and education data taken straight from the database.
 - `orchestrator.py`: `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`. Steps:
-  1. Candidate projects and skills come from semantic search over the posting text.
+  1. Candidate projects and skills come from semantic search over the posting text. Similarity decides the order; evidence weight only breaks near-ties.
   2. Experience points are selected per role (up to 5 per role, falling back to all of the role's points if the search returns nothing).
   3. One quality-tier call returns JSON with the summary, projects, and skills, guided by length rules for the chosen template. Those rules aim slightly over the target, since the page-fit loop trims more cheaply than it fills.
-  4. Any repository id or skill that wasn't a candidate is dropped.
+  4. Any repository id or skill that wasn't a candidate is dropped. Project bullets and the summary go through `grounding.py`: a bullet with a number its project's evidence does not state, or a technology the project does not have, is dropped (a project left with none falls back to its description), and a summary sentence with an unsupported number is removed. The selected skills are then ordered by evidence weight.
   5. Everything left over goes into a `reserve` on the returned dict for `pagefit.py` to draw on. It never reaches a prompt or the rendered `.tex`, and the page-fit loop strips it before the content is saved.
 
   Job text is always a separate user message. Experience, education, and the header are rebuilt from the database and never sent to an edit call.
+- `grounding.py`: the number and technology checks on project bullets and the summary. Any skill name the account has counts as a technology, matched case-insensitively on word boundaries with a small alias map. `pagefit.py` uses it too, so a shorter wording cannot name a technology its original did not.
 - `latex.py`: a Jinja2 environment with LaTeX-safe delimiters (`\BLOCK{}`, `\VAR{}`, `\#{}`), plus `escape_latex()` and `escape_latex_url()`.
 - `compile.py`: runs Tectonic as a subprocess. It raises `TectonicNotInstalledError` when the binary is missing and `CompileError` when compilation fails.
 - `layout.py`: the geometry the templates read (margins, section and bullet spacing, type size, leading) as parameters rather than hardcoded lengths, plus `DENSITY_LADDER`, 13 rungs from tight (9pt on `extarticle`, 0.72 cm margins) to airy (12pt, 1.5 cm). Density 1.0 reproduces each template's original geometry exactly.
@@ -112,6 +113,7 @@ The cheap check lists models rather than generating, so it proves a credential i
 - `golden.py`: golden-set pairs stored in YAML.
 - `bm25.py`: the keyword baseline, using `rank_bm25`.
 - `metrics.py`: precision@k and recall@k.
+- `candidates.py`: scores what the resume builder hands the model (`_candidate_skills` by name, `_candidate_projects` by repository) against the same golden pairs, so a change to candidate ranking shows up even though the dense numbers cannot see it. The CI gate checks these against `evals/ci_baseline.json` alongside the dense numbers.
 - `groundedness.py`: an LLM judge that checks generated bullets against project evidence, bounded by `max_checks`.
 - `run.py`: `run_eval(account_id) -> MetricsReport` and `write_report()`. The BM25 corpus is built from SQLite using the same text builders as the dense index.
 
@@ -163,7 +165,6 @@ Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and A
 | `skills`, `skill_stars`, `skill_archives` | Skills with no linked evidence, starred skill names, and archived skill names. |
 | `social_links` | Contact links with a free-form platform. |
 | `resumes` | Uploaded and generated resumes: extracted fields, `content_json`, compiled PDF path. |
-| `profiles` | Aggregated skill snapshots (`skills_json`). |
 | `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is unique per account: a hash of the pasted text, or of the text and screenshot bytes when there are screenshots. |
 | `role_families` | Canonical job-title clusters. |
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |

@@ -562,24 +562,6 @@ class Resume(Base):
     )
 
 
-class Profile(Base):
-    __tablename__ = "profiles"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
-    created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    skills_json: Mapped[dict] = mapped_column(JSON, default=dict)
-
-    @property
-    def skills(self) -> list[dict]:
-        """Aggregated per-skill dicts computed into `skills_json` by
-        `app.profile.build`. SkillEvidence rows key off `repo_id`, not
-        `profile_id` (no such FK in this schema), so this is not a list of
-        raw ORM rows.
-        """
-        return [{"skill": name, **data} for name, data in (self.skills_json or {}).items()]
-
-
 class RoleFamily(Base):
     """A canonical job-title cluster: "ML Engineer" and "Machine Learning
     Engineer" resolve to one row, so analytics group by role rather than

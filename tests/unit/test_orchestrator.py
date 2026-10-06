@@ -1082,3 +1082,58 @@ def test_edit_path_grounds_project_bullets_and_summary(tmp_path, monkeypatch):
     assert data["projects"][0]["points"] == ["Served 40 requests per second"]
     assert data["summary"] is None
 
+
+
+def test_near_ties_go_to_the_stronger_evidence_and_nothing_else_moves():
+    from app.resume_build.orchestrator import _break_near_ties
+
+    items = [("a", 0.90, 0.1), ("b", 0.89, 0.9), ("c", 0.80, 1.0), ("d", 0.79, 0.2)]
+
+    ordered = _break_near_ties(items, lambda i: i[1], lambda i: i[2])
+
+    assert [i[0] for i in ordered] == ["b", "a", "c", "d"]
+
+
+def test_selected_skills_and_reserve_are_ordered_by_evidence_strength(tmp_path, monkeypatch):
+    """The model picks which skills (relevance); evidence weight orders
+    them, and orders what the reserve adds back first."""
+    from app.resume_build.orchestrator import build_resume_data
+
+    account_id, posting_id, api_id, bare_id = _seed_grounding(tmp_path)
+    db = get_db()
+    for evidence in db.query(SkillEvidence).filter_by(repo_id=api_id):
+        evidence.weight = 0.9 if evidence.skill == "FastAPI" else 0.2
+    db.add(
+        SkillEvidence(
+            skill="Rust", repo_id=bare_id, evidence_type="declared_dependency",
+            weight=0.99, confidence=1.0,
+        )
+    )
+    cool_id = db.query(Repository).filter_by(name="cool-project").one().id
+    db.query(SkillEvidence).filter_by(repo_id=cool_id).one().weight = 0.95
+    db.commit()
+    db.close()
+
+    from app.retrieval.search import Hit
+
+    hits = [
+        Hit(id=i, score=0.9 - i / 10, payload={"repo_id": repo_id, "skill": skill})
+        for i, (repo_id, skill) in enumerate(
+            [(api_id, "PostgreSQL"), (api_id, "FastAPI"), (cool_id, "Python"), (bare_id, "Rust")]
+        )
+    ]
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", lambda *a, **k: hits)
+    monkeypatch.setattr("app.retrieval.search.search_experience_points", lambda *a, **k: [])
+    monkeypatch.setattr("app.resume_build.orchestrator._live_hits", lambda db, h: list(h))
+    _stub_llm(
+        monkeypatch,
+        {"summary": "", "projects": [], "skills": ["PostgreSQL", "Python", "FastAPI"]},
+    )
+
+    data = build_resume_data(account_id, posting_id)
+
+    assert data["skills"] == ["Python", "FastAPI", "PostgreSQL"]
+    assert data["reserve"]["skills"] == ["Rust"]
+    # Relevance order is api-server, then cool-project; cool-project's
+    # evidence (0.95) is stronger than api-server's best (0.9).
+    assert [p["name"] for p in data["reserve"]["projects"]] == ["cool-project", "api-server"]

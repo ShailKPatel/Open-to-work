@@ -368,7 +368,7 @@ def test_drop_retired_tables_removes_them_and_is_idempotent(tmp_path):
 
     engine = create_engine(f"sqlite:///{tmp_path / 'app.db'}")
     with engine.connect() as conn:
-        for table in ("auth_sources", "detections", "match_results", "accounts"):
+        for table in ("auth_sources", "detections", "match_results", "profiles", "accounts"):
             conn.execute(text(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)"))
         conn.commit()
 

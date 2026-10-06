@@ -356,7 +356,7 @@ def test_multiple_accounts_coexist_independently(tmp_path):
 
 
 def test_delete_account_removes_it_and_its_repos_and_evidence(tmp_path):
-    from app.core.db import Profile, Repository, SkillEvidence, get_db
+    from app.core.db import Repository, SkillEvidence, get_db
 
     _reset_db(tmp_path)
     client = _client()
@@ -383,7 +383,6 @@ def test_delete_account_removes_it_and_its_repos_and_evidence(tmp_path):
             weight=0.5, confidence=1.0,
         )
     )
-    db.add(Profile(account_id=account["id"], skills_json={"Rust": {"weight": 0.5}}))
     db.commit()
     repo_id = repo.id
     db.close()
@@ -397,7 +396,6 @@ def test_delete_account_removes_it_and_its_repos_and_evidence(tmp_path):
     db = get_db()
     assert db.get(Repository, repo_id) is None
     assert db.query(SkillEvidence).filter_by(repo_id=repo_id).count() == 0
-    assert db.query(Profile).filter_by(account_id=account["id"]).count() == 0
     db.close()
 
 
