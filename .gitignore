@@ -14,3 +14,4 @@ htmlcov/
 .idea/
 .vscode/
 .eval-fixture/
+app/web/static/

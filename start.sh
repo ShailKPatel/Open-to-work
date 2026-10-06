@@ -85,7 +85,7 @@ fi
 DOCKER=(docker)
 if ! docker info >/dev/null 2>&1; then
   if sudo docker info >/dev/null 2>&1; then
-    DOCKER=(sudo --preserve-env=APP_PORT,QDRANT_PORT docker)
+    DOCKER=(sudo --preserve-env=APP_PORT docker)
     err "Using 'sudo docker' for this run. Log out/in once to use docker without sudo from now on."
   else
     err "Docker installed but daemon not reachable. Start it and re-run this script."
@@ -116,8 +116,8 @@ if [ ! -f .env ]; then
   ok "Created .env (optional: add a GITHUB_TOKEN there for higher GitHub limits)"
 fi
 
-# 3. Ports: 8000 for the app and 6333 for Qdrant, or the next free port
-# when something else already holds one. A port this app's own running
+# 3. Port: 8000 for the app, or the next free port when something else
+# already holds it. A port this app's own running
 # containers publish is kept, so a re-run doesn't move the app.
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") >/dev/null 2>&1; }
 free_port() {
@@ -131,11 +131,8 @@ published_port() {
 
 APP_PORT="$(published_port app 8000)"
 APP_PORT="${APP_PORT:-$(free_port 8000)}"
-QDRANT_PORT="$(published_port qdrant 6333)"
-QDRANT_PORT="${QDRANT_PORT:-$(free_port 6333)}"
-export APP_PORT QDRANT_PORT
+export APP_PORT
 [ "$APP_PORT" = 8000 ] && ok "App port 8000" || ok "Port 8000 is busy, using $APP_PORT for the app"
-[ "$QDRANT_PORT" = 6333 ] && ok "Qdrant port 6333" || ok "Port 6333 is busy, using $QDRANT_PORT for Qdrant"
 
 URL="http://localhost:$APP_PORT"
 HEALTH="$URL/health"

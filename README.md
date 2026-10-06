@@ -1,74 +1,42 @@
-<div align="center">
-
 # Open to Work
 
-**A self-hosted job search workspace that turns your GitHub into evidence-backed, tailored resumes.**
-
 [![CI](https://github.com/ShailKPatel/Open-to-work/actions/workflows/ci.yml/badge.svg)](https://github.com/ShailKPatel/Open-to-work/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
-![Coverage gate](https://img.shields.io/badge/coverage%20gate-90%25-brightgreen)
-![Local-first](https://img.shields.io/badge/runs-local--first-5a67d8?logo=docker&logoColor=white)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-<a href="#tech-stack"><img src="https://skillicons.dev/icons?i=py,fastapi,sqlite,docker,tailwind,latex,pytest,githubactions" alt="Tech stack icons" /></a>
-
-[Features](#what-it-does) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Tech stack](#tech-stack) · [Development](#development) · [Limitations](#limitations)
-
-</div>
-
----
+Open to Work turns your GitHub into resumes built for each job. Every skill on the page is backed by real work: a dependency file, a README, a role you held. It runs on your own machine.
 
 ## Why
 
-Most resume tools let a language model write whatever sounds good. Open to Work does the opposite: every skill in your profile points back to **real evidence** (a dependency manifest, a README, a role you held), and the resume generator is only allowed to pick from that evidence. If the model returns a project or skill that was not a candidate, it is thrown away.
+A resume should prove what it claims. Here the model picks from your evidence and writes around it. It cannot add a project or skill you do not have. Anything it returns outside the candidate list is thrown out.
 
 ## What it does
 
-<table>
-<tr>
-<td width="33%" valign="top">
+**Profile**
 
-### Profile
-- Sync any GitHub user or repo
-- Skills from manifests (Python, JS, Go, Rust, Ruby, JVM) with **no LLM**
-- Evidence weighted by recency, volume, and fork status; weight orders skills and breaks near-ties in resume candidates
-- Interactive **skill map** built from embeddings
-- Import existing PDF or image resumes
+- Syncs any GitHub user or repository.
+- Reads skills straight from dependency manifests (Python, JavaScript, Go, Rust, Ruby, JVM). No LLM.
+- Weights evidence by recency, volume, and fork status.
+- Draws a skill map from embeddings.
+- Imports your existing resume from a PDF or image.
 
-</td>
-<td width="33%" valign="top">
+**Jobs**
 
-### Jobs
-- Add postings by **pasted text or screenshots**
-- Extracts salary, seniority, and required skills
-- Groups similar titles into role families
-- Skill gap per posting
-- Demand analytics across all postings
+- Add a posting by pasting text or dropping in screenshots.
+- Pulls out salary, seniority, and required skills.
+- Groups similar titles into role families.
+- Shows your skill gap for each posting and skill demand across all of them.
 
-</td>
-<td width="33%" valign="top">
+**Resumes**
 
-### Resumes
-- Tailored to one posting via semantic search
-- LaTeX output, one or two pages
-- **Auto page fit**: trims one item at a time until it fits
-- Revise with a plain-language instruction
-- Every version saved to a library
-
-</td>
-</tr>
-</table>
+- Tailors to one posting with semantic search.
+- Builds LaTeX, one page or two.
+- Fits the page: tightens the layout first, then cuts one item at a time.
+- Revises from a plain instruction.
+- Keeps every version in a library.
 
 ## Quick start
 
-> [!TIP]
-> The only requirement is Docker with Compose v2.1 or newer. Nothing needs to be configured before the first run.
-
-| OS | Before the first run |
-|---|---|
-| Linux | Nothing. `make start` installs Docker if missing (Ubuntu, Debian, Fedora, CentOS, RHEL). On other distros, install Docker yourself first. |
-| macOS | Install and open [Docker Desktop](https://www.docker.com/products/docker-desktop/). |
-| Windows | Install [Docker Desktop](https://www.docker.com/products/docker-desktop/), then double-click `start.cmd` in the cloned folder (it uses ports 8000 and 6333). Or run the commands below from a WSL terminal, which also picks free ports. |
+You need Docker with Compose v2.1 or newer. Nothing else.
 
 ```bash
 git clone https://github.com/ShailKPatel/Open-to-work.git open-to-work
@@ -76,27 +44,15 @@ cd open-to-work
 make start
 ```
 
-Then:
+Then create a profile, paste an LLM API key (free Gemini keys at [Google AI Studio](https://aistudio.google.com/apikey)), sync a GitHub account, and pick a posting.
 
-1. Create a profile.
-2. Paste an LLM API key when prompted (free Gemini keys: [Google AI Studio](https://aistudio.google.com/apikey)).
-3. Sync a GitHub account and pick a job posting to build a resume for.
+- **Linux:** `make start` installs Docker if it is missing on Ubuntu, Debian, Fedora, CentOS, and RHEL. On other distros, install Docker first.
+- **macOS:** install and open [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+- **Windows:** install [Docker Desktop](https://www.docker.com/products/docker-desktop/), then double-click `start.cmd`. It uses port 8000. From a WSL terminal, the commands above work and pick a free port.
 
-No `make` on your system? Run `./start.sh` instead; it does the same thing. If Docker is missing on macOS or Windows, the script opens the Docker Desktop install page for your OS. The first build downloads a few GB and takes several minutes.
+No `make`? Run `./start.sh`. If Docker is missing on macOS or Windows, the script opens the install page.
 
-<details>
-<summary><b>What <code>make start</code> does</b></summary>
-
-<br>
-
-- Installs Docker on Linux if it is missing
-- Builds and starts the app and Qdrant containers
-- Waits for the health check, then opens your browser
-- Uses port `8000` (app) and `6333` (Qdrant), or the next free port if either is taken
-
-`docker compose up --build` also works, but only on the default ports.
-
-</details>
+`make start` builds the app and Qdrant containers, waits for the health check, and opens your browser. The app takes port 8000, or the next free port. Qdrant is reachable only from the app container.
 
 ## How it works
 
@@ -117,102 +73,80 @@ flowchart LR
     LLM -.-> RB
 ```
 
-<details>
-<summary><b>Skill extraction</b></summary>
+### Skill extraction
 
-<br>
+- Dependencies come straight from manifests. No model.
+- One LLM call reads each README, or the repo description when there is no README. Repos with neither are skipped.
+- Evidence is weighted by source, fork status, commit recency, and commit volume. Relevance to the job picks the skills and projects. Weight sets their order and breaks near-ties.
+- A sync refetches only repos pushed since the last one. A rate limit midway keeps everything fetched so far.
 
-- Dependencies are parsed straight from manifests, with no model involved.
-- One LLM call reads the README (or the repo description if there is none). Repos with neither cost nothing.
-- Each piece of evidence is weighted by source type, fork status, commit recency, and commit volume. Weight never decides which projects or skills match a job; it orders the chosen skills, orders what page-fit adds back, and breaks near-ties between candidates.
-- Only repos pushed since the last sync are refetched. A rate limit mid-sync keeps everything already fetched.
+### Resume generation
 
-</details>
-
-<details>
-<summary><b>Resume generation</b></summary>
-
-<br>
-
-1. Semantic search retrieves candidate projects, skills, and experience bullets for the posting.
+1. Semantic search finds candidate projects, skills, and experience bullets for the posting.
 2. One LLM call picks from those candidates and writes the summary and project bullets.
-3. Anything returned that was not a candidate is discarded. Work history and education are never edited by the model.
-4. The result is rendered from a Jinja2 LaTeX template and compiled with Tectonic.
-5. If it overflows, a multimodal pass reads the PDF and removes one item at a time (a skill, then a project bullet, then an experience bullet) until it fits.
+3. Anything not on the candidate list is dropped. Work history and education come straight from your profile.
+4. A Jinja2 LaTeX template renders the result and Tectonic compiles it.
+5. If the PDF runs long, a multimodal model reads it and cuts one item at a time (a skill, then a project bullet, then an experience bullet) until it fits.
 
-</details>
+### LLM gateway
 
-<details>
-<summary><b>LLM gateway</b></summary>
-
-<br>
-
-Every model call goes through a single client that:
-
-- Caches responses by content hash
-- Checks the monthly budget **before** sending a request
-- Records cost, tokens, latency, and which feature made the call
-- Fails over between keys for the same provider mid-job, so long jobs continue instead of restarting
-
-</details>
+Every model call goes through one client. It caches responses by content hash, checks the monthly budget before sending, and records cost, tokens, latency, and the feature that made the call. When a key runs out, the next key for the same provider takes over and the job keeps going.
 
 ## Tech stack
 
 | Layer | Tools |
 | --- | --- |
-| **Backend** | ![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white) ![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white) ![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-D71F00?logo=sqlalchemy&logoColor=white) ![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white) |
-| **Retrieval** | ![Qdrant](https://img.shields.io/badge/Qdrant-DC244C?logo=qdrant&logoColor=white) ![Hugging Face](https://img.shields.io/badge/bge--base--en--v1.5-FFD21E?logo=huggingface&logoColor=black) ![BM25](https://img.shields.io/badge/rank--bm25-555555) |
-| **LLM** | ![LiteLLM](https://img.shields.io/badge/LiteLLM-1f2937) ![Gemini](https://img.shields.io/badge/Gemini-8E75B2?logo=googlegemini&logoColor=white) ![OpenAI](https://img.shields.io/badge/OpenAI-412991) ![Anthropic](https://img.shields.io/badge/Anthropic-191919?logo=anthropic&logoColor=white) ![Mistral](https://img.shields.io/badge/Mistral-FA520F?logo=mistralai&logoColor=white) ![Ollama](https://img.shields.io/badge/Ollama-000000?logo=ollama&logoColor=white) |
-| **Frontend** | ![Jinja](https://img.shields.io/badge/Jinja2-B41717?logo=jinja&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind-06B6D4?logo=tailwindcss&logoColor=white) ![Alpine.js](https://img.shields.io/badge/Alpine.js-8BC0D0?logo=alpinedotjs&logoColor=black) |
-| **Documents** | ![LaTeX](https://img.shields.io/badge/Tectonic-008080?logo=latex&logoColor=white) ![pypdf](https://img.shields.io/badge/pypdf-555555) |
-| **Quality** | ![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white) ![Ruff](https://img.shields.io/badge/Ruff-D7FF64?logo=ruff&logoColor=black) ![mypy](https://img.shields.io/badge/mypy-2A6DB2) ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white) |
-| **Runtime** | ![Docker](https://img.shields.io/badge/Docker%20Compose-2496ED?logo=docker&logoColor=white) |
-
-Embeddings run locally. Also supports Azure OpenAI and AWS Bedrock through LiteLLM.
+| Backend | Python 3.12, FastAPI, SQLAlchemy, SQLite |
+| Retrieval | Qdrant, bge-base-en-v1.5 (local embeddings), rank-bm25 |
+| LLM | LiteLLM with Gemini, OpenAI, Anthropic, Mistral, Ollama, Azure OpenAI, AWS Bedrock |
+| Frontend | Jinja2, Tailwind CSS, Alpine.js |
+| Documents | Tectonic (LaTeX), pypdf |
+| Quality | pytest, Ruff, mypy, GitHub Actions |
+| Runtime | Docker Compose |
 
 ## Configuration
 
-Settings live in the app, not in files. Open **Manage APIs** (`/apis`):
+Settings live in the app. Open **Manage APIs** (`/apis`).
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| Provider keys | none | Encrypted at rest. Multiple keys per provider act as failover. |
+| Provider keys | none | Encrypted at rest. Extra keys for a provider act as failover. |
 | Bulk model | `gemini/gemini-flash-lite-latest` | Per-repo extraction, role families, groundedness checks |
 | Quality model | `gemini/gemini-flash-latest` | Resume generation, page fitting, job and resume extraction |
 | Monthly budget | `$20` | Hard cap across all LLM calls |
 
 Any [LiteLLM model name](https://docs.litellm.ai/docs/providers) works, for example `ollama/llama3.1`.
 
-> [!NOTE]
-> The only file-based setting is optional: `GITHUB_TOKEN` in `.env` raises the GitHub API limit from 60 to 5,000 requests per hour.
+One setting lives in a file, and it is optional: `GITHUB_TOKEN` in `.env` raises the GitHub API limit from 60 to 5,000 requests per hour.
 
-All data (SQLite database, uploads, backups, and the encryption key) lives in `./data`. The database is snapshotted on every startup and the last 10 snapshots are kept.
+All data lives in `./data`: the SQLite database, uploads, backups, and the encryption key. Each startup snapshots the database and keeps the last 10.
+
+## Privacy
+
+Your data and embeddings stay on your machine. Your LLM provider sees only README and description text, job posting text and screenshots, uploaded resumes, and the profile content used to build a resume. The pages load nothing from a CDN except Google Fonts. Tailwind is compiled and the JS libraries are pinned, checksum-verified and served by the app.
 
 ## Development
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-docker compose up -d qdrant
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d qdrant
 ```
 
 | Command | What it does |
 | --- | --- |
 | `make test` | Unit tests. No network or API key needed. |
-| `make coverage` | Unit tests with line and branch coverage (fails under 90%) |
-| `make lint` | ruff and mypy |
-| `make test-live` | Opt-in checks against real services |
+| `make coverage` | Unit tests with line and branch coverage. Fails under 90%. |
+| `make lint` | Ruff and mypy |
+| `make test-live` | Checks against real services |
 | `make ingest ACCOUNT=<user>` | GitHub sync from the command line |
 | `make eval ACCOUNT=<id>` | Retrieval and groundedness evaluation |
 
-<details>
-<summary><b>Testing</b></summary>
+### Testing
 
-<br>
+`tests/unit/` tests each layer on its own, with temporary SQLite databases, in-memory Qdrant, and fakes for GitHub, the LLM, embeddings, and Tectonic.
 
-**`tests/unit/`** covers every layer in isolation, with temporary SQLite databases, in-memory Qdrant, and fakes for GitHub, the LLM, embeddings, and Tectonic. Every API router is exercised, and a route sweep renders every page.
-
-**`tests/live/`** talks to real services and only runs suites whose variable is set:
+`tests/live/` hits real services. Each suite runs only when its variable is set:
 
 | Variable | Checks |
 | --- | --- |
@@ -220,27 +154,17 @@ docker compose up -d qdrant
 | `LIVE_GITHUB=1` | API reachability, auth, 404 handling, single-repo sync |
 | `LIVE_APP_URL` | Health, every page, and JSON endpoints on a running instance |
 
-</details>
-
-<details>
-<summary><b>Evaluation</b></summary>
-
-<br>
+### Evaluation
 
 `make eval` scores retrieval against a hand-labeled golden set:
 
-- Dense retrieval vs. a BM25 baseline (precision@5, recall@10)
+- Dense retrieval against a BM25 baseline (precision@5, recall@10)
 - Precision over the top 10 (precision@10)
 - LLM-judged groundedness of generated bullets
 
 Label your own set with `python -m scripts.label_golden_set --account <id>`. CI runs the same eval on a synthetic fixture and fails if retrieval drops below the committed baseline.
 
-</details>
-
-<details>
-<summary><b>Project layout</b></summary>
-
-<br>
+### Project layout
 
 ```
 app/
@@ -256,23 +180,7 @@ scripts/          golden-set labeling, eval gate, embedding benchmark, maintenan
 tests/            unit and live suites
 ```
 
-More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-
-</details>
-
-## Privacy
-
-> [!IMPORTANT]
-> Everything is stored and embedded locally. The web UI loads Tailwind and Alpine.js from a CDN, so the pages need an internet connection. Only this text is sent to your chosen LLM provider: README and description text, job posting text and screenshots, uploaded resumes, and the profile content used to build a resume. Job posting text is always sent as a separate user message, never inside a system prompt.
-
-## Limitations
-
-- Source files are not scanned for imports; evidence comes from manifests, READMEs, commits, and manual entries.
-- Job postings are added one at a time from pasted text or screenshots. Links are stored, not fetched, and there is no job-board crawler.
-- The golden set is empty on a fresh checkout, so eval numbers only mean something after you label your own data.
-- Editing a skill or job title does not re-index it until its parent is reprocessed.
-- Resume import supports PDF and images only.
-- Icon glyphs in compiled PDFs do not copy as readable text.
+Full design in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## License
 

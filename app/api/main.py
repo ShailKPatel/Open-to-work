@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.requests import Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.api.accounts import router as accounts_router
@@ -92,7 +93,11 @@ app.include_router(resume_router)
 app.include_router(resume_build_router)
 app.include_router(skills_router)
 app.include_router(sources_router)
-templates = Jinja2Templates(directory=str(Path(__file__).parent.parent / "web" / "templates"))
+_WEB_DIR = Path(__file__).parent.parent / "web"
+templates = Jinja2Templates(directory=str(_WEB_DIR / "templates"))
+# Compiled Tailwind CSS and the pinned JS libraries, built by the assets
+# stage in the Dockerfile. Absent in a plain checkout, so not checked here.
+app.mount("/static", StaticFiles(directory=_WEB_DIR / "static", check_dir=False), name="static")
 
 
 @app.get("/health")

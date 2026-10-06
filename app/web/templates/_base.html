@@ -11,8 +11,7 @@
     href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap"
     rel="stylesheet"
   />
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
+  <script defer src="/static/vendor/alpine.min.js"></script>
   <style>
     :root {
       color-scheme: dark;
@@ -640,6 +639,8 @@
     [x-cloak] { display: none !important; }
   </style>
   {% block head %}{% endblock %}
+  {# Last in head so utilities and preflight win over the rules above. #}
+  <link rel="stylesheet" href="/static/app.css" />
 </head>
 <body class="min-h-screen antialiased">
   <div class="otw-bg" aria-hidden="true">

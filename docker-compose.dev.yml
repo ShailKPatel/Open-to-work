@@ -1,0 +1,7 @@
+# Publishes Qdrant on the host, for running tests, evals or the CLI from a
+# host venv against it. Not used by `make start`.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d qdrant
+services:
+  qdrant:
+    ports:
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"

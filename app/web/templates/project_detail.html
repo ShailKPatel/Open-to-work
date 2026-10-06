@@ -2,8 +2,8 @@
 {% import "_ui.html" as ui %}
 {% block title %}Project · Open to Work{% endblock %}
 {% block head %}
-<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
 {% endblock %}
 {% block content %}
 <div x-data="projectDetailApp()" x-init="init()" class="min-h-screen flex flex-col">
