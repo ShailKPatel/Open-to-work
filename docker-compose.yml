@@ -1,8 +1,8 @@
 services:
   app:
     build: .
-    # Host ports default to 8000 and 6333. `make start` picks the next free
-    # port when one is busy and passes it in as APP_PORT / QDRANT_PORT.
+    # Host port defaults to 8000. `make start` picks the next free port when
+    # it is busy and passes it in as APP_PORT.
     # Bound to 127.0.0.1: this app is meant for the machine it runs on.
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
@@ -22,10 +22,12 @@ services:
       timeout: 5s
       retries: 5
 
+  # No published port: only the app reaches Qdrant, over the compose
+  # network. Qdrant has no login and no Host check, so a port on the host
+  # would let any local process or a DNS-rebinding web page read or wipe
+  # it. docker-compose.dev.yml publishes it for host-side development.
   qdrant:
-    image: qdrant/qdrant:latest
-    ports:
-      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+    image: qdrant/qdrant:v1.19.0
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:

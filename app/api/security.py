@@ -18,9 +18,10 @@ web page elsewhere act through that person's browser:
 
 Every response also gets headers against content sniffing, framing by
 other sites, and leaking URLs in Referer. No script-src policy: the
-pages load Tailwind and Alpine.js from a CDN and use inline scripts,
-which would need 'unsafe-inline' and 'unsafe-eval', so it would not
-stop much. See docs/ARCHITECTURE.md, "Security model".
+pages use inline scripts and Alpine.js evaluates its attribute
+expressions, which would need 'unsafe-inline' and 'unsafe-eval', so it
+would not stop much. Scripts and styles are served by the app itself
+(see the assets stage in the Dockerfile), not a CDN. See docs/ARCHITECTURE.md, "Security model".
 
 Plain ASGI rather than BaseHTTPMiddleware, so streamed responses (the
 sync and extraction progress streams) pass through untouched.

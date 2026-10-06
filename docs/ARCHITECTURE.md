@@ -1,125 +1,128 @@
 # Architecture
 
-One FastAPI process serves both the JSON API and server-rendered pages. SQLite holds all application data, Qdrant holds vectors, sentence-transformers computes embeddings locally, and LiteLLM handles text and multimodal completions. Long-running work (GitHub sync, skill extraction) runs in background threads and streams progress to the browser over Server-Sent Events.
+One FastAPI process serves the JSON API and the server-rendered pages. SQLite holds the application data. Qdrant holds the vectors. sentence-transformers computes embeddings locally. LiteLLM handles text and multimodal completions. Long work (GitHub sync, skill extraction) runs in background threads and streams progress to the browser over Server-Sent Events.
 
 ## Modules
 
 ### `app/core`
 
-| File | Responsibility |
+| File | Job |
 | --- | --- |
-| `settings.py` | Fixed local paths and URLs. Only `GITHUB_TOKEN` is read from `.env`; tests and Docker Compose override the rest through the process environment. |
-| `app_settings.py` | Settings picked in the app, stored in `app_settings`: the bulk and quality models (Gemini by default) and the global monthly budget. |
-| `db/` | SQLAlchemy models (`models.py`), engine and `get_db()` (`engine.py`), `init_db()` and in-place migrations (`migrations.py`). |
-| `llm.py` | The only module that calls an LLM provider. |
-| `llm_providers.py` | Provider registry: credential fields, which fields are secret, a cheap validation request, and the extra LiteLLM arguments. |
-| `api_keys_store.py` | Encrypted provider credentials, dispatch key resolution, and the recheck pass for keys that ran out of quota. |
-| `key_cooldown.py` | How long an exhausted key waits before a recheck is worth making, read from the provider's own refusal (Gemini in detail, a default interval elsewhere). |
-| `key_refresh.py` | Background thread that runs the due-key recheck at startup and on an interval. |
-| `crypto.py` | Fernet encryption. The key comes from `APP_SECRET_KEY`, or from `data/.secret_key` (created with 0600 permissions). |
-| `embeddings.py` | Local sentence-transformers embeddings (`EMBEDDING_MODEL`, fixed in code), cached by content hash and model in `embedding_cache`. `embed(model_name=)` overrides the model for callers whose vectors never meet the retrieval ones; only the skill map does. |
-| `jobs.py` | In-process registry of background jobs (daemon threads with pollable state). |
-| `rate_limits.py` | Append-only log of rate-limit, budget, key-failover, and run-stopped events. Writes are best-effort. |
-| `pipeline.py` | Names the step a multi-step run stopped at, and the steps that had already finished, without changing the error's type. |
+| `settings.py` | Fixed local paths and URLs. Only `GITHUB_TOKEN` comes from `.env`. Tests and Docker Compose set the rest through the environment. |
+| `app_settings.py` | Settings chosen in the app and stored in `app_settings`: bulk model, quality model (Gemini by default), and the monthly budget. |
+| `db/` | SQLAlchemy models (`models.py`), engine and `get_db()` (`engine.py`), `init_db()` and migrations (`migrations.py`). |
+| `llm.py` | The one module that calls an LLM provider. |
+| `llm_providers.py` | Provider registry: credential fields, which are secret, a cheap validation request, and extra LiteLLM arguments. |
+| `api_keys_store.py` | Encrypted provider credentials, key selection for each call, and the recheck for keys that ran out of quota. |
+| `key_cooldown.py` | How long an exhausted key waits before a recheck, read from the provider's error (Gemini in detail, a default elsewhere). |
+| `key_refresh.py` | Background thread that rechecks due keys at startup and on an interval. |
+| `crypto.py` | Fernet encryption. The key comes from `APP_SECRET_KEY` or from `data/.secret_key` (created with 0600 permissions). |
+| `embeddings.py` | Local embeddings with `EMBEDDING_MODEL`, cached by content hash and model in `embedding_cache`. `embed(model_name=)` picks another model; only the skill map uses it. |
+| `jobs.py` | In-process registry of background jobs: daemon threads with state you can poll. |
+| `rate_limits.py` | Append-only log of rate limits, budget stops, key failovers, and stopped runs. |
+| `pipeline.py` | Names the step where a multi-step run stopped and the steps already done, keeping the error's type. |
 
 **Database setup.** SQLite runs in WAL mode with a 30-second busy timeout. `init_db()` does three things in order:
 
-1. Snapshots the database file to `data/backups/` with SQLite's backup API (the 10 most recent snapshots are kept).
-2. Creates any missing tables.
-3. Runs idempotent column migrations: it checks `PRAGMA table_info`, then runs `ALTER TABLE ADD COLUMN` for anything missing.
+1. Snapshots the database to `data/backups/` with SQLite's backup API and keeps the 10 newest.
+2. Creates missing tables.
+3. Adds missing columns: it reads `PRAGMA table_info` and runs `ALTER TABLE ADD COLUMN` for each gap.
 
-To restore a snapshot, run `cp data/backups/<snapshot>.db data/open_to_work.db`.
+To restore a snapshot: `cp data/backups/<snapshot>.db data/open_to_work.db`.
 
-**LLM client.** `complete(tier, messages, schema=None, account_id=None, purpose=None) -> LLMResponse` handles each call in this order:
+**LLM client.** `complete(tier, messages, schema=None, account_id=None, purpose=None) -> LLMResponse` runs each call in this order:
 
-1. Look up the cache by a hash of the model (the one picked for that tier in `app_settings`), the messages, and the schema. The tier is not part of the key, so the same model set for both tiers is one prompt, not two. Message text is normalized first (line endings, trailing spaces, blank lines), so the same README or job posting read twice is one prompt even when the whitespace moved.
-2. Check the global monthly budget from `app_settings`.
-3. Resolve every key for the tier's provider that may serve the account, in the order to try them.
-4. For each key in turn: check that key's own budget, if it has one, then dispatch with it. A key that the provider blames (quota used up, credential rejected, model not permitted) is set aside and the next key takes over the same request. Only when every key is spent does the call fail, with one line per key saying what happened to it.
-5. Mark the system message for provider-side prompt caching where the provider needs that said explicitly (Anthropic, Bedrock; Gemini and OpenAI match a repeated prefix themselves). The marking is applied to the dispatched copy only, after the cache key is computed.
-6. Dispatch through LiteLLM.
-7. Record an `LLMCall` row with cost, tokens, latency, `account_id`, `key_id`, and `purpose`.
+1. Check the cache. The key is a hash of the model, the messages, and the schema. The tier is left out, so one model set for both tiers shares one cache entry. Whitespace in message text is normalized first, so the same README read twice hits the cache.
+2. Check the monthly budget.
+3. Find every key for the provider that may serve this account, in the order to try them.
+4. Try each key in turn. Check its own budget, if it has one, then send. If the provider rejects the key (quota spent, bad credential, model not allowed), move to the next key with the same request. The call fails only when every key is spent, with one line per key saying why.
+5. Mark the system message for provider-side prompt caching on providers that need it (Anthropic, Bedrock). Gemini and OpenAI cache a repeated prefix on their own. The mark goes on the sent copy only, after the cache key is computed.
+6. Send through LiteLLM.
+7. Write an `LLMCall` row with cost, tokens, latency, `account_id`, `key_id`, and `purpose`.
 
-`purpose` is a short label for the feature that spent the call (`repo_facts`, `resume_build`, `pagefit_trim`, ...). `/monitor`'s usage breakdown groups by it, which is what answers "what is costing money", as opposed to "which model or key was it billed through".
+`purpose` names the feature that made the call (`repo_facts`, `resume_build`, `pagefit_trim`, ...). The `/monitor` usage view groups by it to show what costs money, separate from which model or key paid.
 
-It raises `BudgetExceededError` before dispatch, `ApiKeyMissingError` when no usable key exists, and `LLMRateLimitedError`, which wraps LiteLLM's `RateLimitError` so callers don't need to import LiteLLM. Messages are built with `user_message(text, images=, files=)` and `system_message(text)`.
+Errors: `BudgetExceededError` before sending, `ApiKeyMissingError` when no key can be used, and `LLMRateLimitedError`, which wraps LiteLLM's `RateLimitError` so callers do not import LiteLLM. Build messages with `user_message(text, images=, files=)` and `system_message(text)`.
 
-**Key failover.** A provider blaming the key is not the end of a request: `complete()` tries each stored key for that provider in turn. Errors that every key would hit the same way (the provider overloaded, a prompt too long, refused content) skip failover, so a doomed request fails once instead of once per key. `is_out_of_keys(error)` is the signal for a caller working through a batch: true means every remaining item is about to fail identically, so stop rather than spend a doomed call per item. Items never attempted keep their pending status, which is what lets the next run continue from where the last one stopped.
+**Key failover.** `complete()` tries each stored key for the provider in turn. Errors that every key would hit (provider overloaded, prompt too long, content refused) skip failover and fail once. In a batch, `is_out_of_keys(error)` tells the caller to stop: every remaining item would fail the same way. Items not yet tried stay pending, and the next run picks up from there.
 
-This matters most inside a multi-step run. A run is many separate `complete()` calls, each committing its own work, so a key dying at step three leaves steps one and two done: switching keys lets step three finish rather than stranding the run there. `app/core/pipeline.py` adds the reporting half, naming the step that stopped and the steps that had already finished, without changing the exception type the API routes map to a status.
+A multi-step run is many `complete()` calls, each committing its own work. If a key dies at step three, steps one and two are already saved and the next key finishes step three. `app/core/pipeline.py` reports which step stopped and which steps finished.
 
-**Keys.** Each provider can have several keys. At most one key per provider is active. A key can be disabled or restricted to a list of account ids. `resolve_dispatch_keys()` returns every enabled key that covers the account, ordered by how likely it is to answer: a key nobody has complained about, then an exhausted key whose cooldown has elapsed, then one still inside its cooldown, then one the provider rejected or blocked. Nothing is dropped, since a device with one unhappy key must still get to try it. An authentication, forbidden, or rate-limit error during dispatch updates the key's stored status, and every swap is logged to `rate_limit_events` (`key_failover`, `keys_exhausted`) so a request that survived a dying key still leaves a trail on `/monitor`.
+**Keys.** A provider can have several keys, with one active at a time. A key can be disabled or limited to certain accounts. `resolve_dispatch_keys()` returns every enabled key for the account, best first: healthy keys, then exhausted keys past their cooldown, then keys still cooling down, then rejected or blocked keys. Every key stays in the list, so an account with one bad key still gets to try it. An auth, forbidden, or rate-limit error updates the key's status. Each swap is logged to `rate_limit_events` (`key_failover`, `keys_exhausted`) and shows on `/monitor`.
 
-**Exhausted keys come back on their own.** `status` splits into two groups that are handled differently. `rate_limited` is temporary: the key filled a quota window that rolls over, so the row also records `exhausted_at`, the `exhaustion_kind` (`per_minute`, `per_day`, `quota`, `unknown`) and a `retry_at` planned by `key_cooldown.py` from the provider's own refusal. Gemini's 429 body names the quota it hit and often a retry delay, so a per-minute burst waits a minute and a used-up daily allowance waits for midnight Pacific; every other provider gets a one-hour default rather than a guess at its limits. `key_refresh.py` rechecks the keys whose `retry_at` has passed, five seconds after startup and every 30 minutes after that, and `/apis` exposes the same pass (`POST /api/api-keys/recheck`, scope `due` or `exhausted`). A key that answers again loses its cooldown and goes straight back into normal rotation. `invalid` (credential rejected) and `blocked` (suspended, revoked, or the provider's API not enabled, told apart from a per-model permission error by `is_blocked_detail()`) are never rechecked automatically: waiting does not fix either, so they sit in their own section on `/apis` until someone rechecks them explicitly (scope `blocked`, or the per-key button).
+**Key recovery.** Key status falls into two groups.
 
-The cheap check lists models rather than generating, so it proves a credential is live and cannot see how much quota is left. A recheck after the cooldown therefore means "stop treating this key as dead", and the next real call is what settles the quota; `record_dispatch_outcome()` is the only thing that learns about quota for real.
+- `rate_limited` is temporary. The row records `exhausted_at`, the `exhaustion_kind` (`per_minute`, `per_day`, `quota`, `unknown`), and a `retry_at` set by `key_cooldown.py` from the provider's error. Gemini's 429 names the quota it hit and often a retry delay, so a per-minute limit waits a minute and a daily limit waits for midnight Pacific. Other providers wait one hour. `key_refresh.py` rechecks keys past their `retry_at` five seconds after startup and every 30 minutes after. `/apis` runs the same check on demand (`POST /api/api-keys/recheck`, scope `due` or `exhausted`). A key that answers goes straight back into rotation.
+- `invalid` (credential rejected) and `blocked` (suspended, revoked, or API not enabled; `is_blocked_detail()` tells this apart from a per-model permission error) are not rechecked on a timer. They wait in their own section on `/apis` for a manual recheck (scope `blocked`, or the button on the key).
+
+The recheck lists models instead of generating text. It proves the credential works but cannot see remaining quota. `record_dispatch_outcome()` learns the real quota state on the next real call.
 
 ### `app/ingest/github`
 
-- `client.py`: a PyGithub wrapper. `_call()` retries only 403/429 and 5xx responses; 404, 401, and 422 fail immediately. PyGithub's built-in retry is disabled (`retry=None`), so tenacity is the only retry layer. If a rate-limit reset is more than 10 seconds away, the client doesn't sleep through it, so a request never hangs waiting for the reset.
-- `sync.py`: `sync_account`, `sync_single_repo`, and their progress generators for SSE. Repositories are upserted by `github_id`. The README, manifests, and commit stats are refetched only when `pushed_at` changes. Extraction status goes back to `pending` only when the README changed (its git blob SHA from the root listing differs from `readme_sha`, so an unchanged README isn't even downloaded) or, for a repo without one, the description changed. Any other push rewrites the manifest evidence and reweights the rest in code (`build.py`'s `refresh_repo_evidence`), with no LLM call. If GitHub rate limits a batch partway through, the generator yields `rate_limited` with the completed count instead of `done`, and the repositories already processed stay committed.
-- `auto_sync.py`: a daemon thread that checks hourly for sources last synced more than 7 days ago and syncs them through `background.start_all`, then starts skill extraction. Sources that never finished a sync, are waiting on a rate-limit reset, or were attempted within the last 7 days are skipped.
-- `cancellation.py`: an in-process set of cancelled run ids, checked before each repository. A run id must be unique for each sync attempt; the UI generates a UUID per click, so a leftover flag can't cancel a later sync.
-- `source_parser.py`: parses a username, profile URL, or repository URL into a `ParsedSource`.
-- `manifests.py`: extracts dependency names from `requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `Cargo.toml`, `Gemfile`, `pom.xml`, and `build.gradle(.kts)`.
+- `client.py`: PyGithub wrapper. `_call()` retries 403, 429, and 5xx. 404, 401, and 422 fail at once. PyGithub's own retry is off (`retry=None`), so tenacity is the only retry layer. If a rate-limit reset is more than 10 seconds away, the client stops instead of sleeping.
+- `sync.py`: `sync_account`, `sync_single_repo`, and their SSE progress generators. Repos are upserted by `github_id`. README, manifests, and commit stats are refetched only when `pushed_at` changes. Extraction goes back to `pending` only when the README changed (its blob SHA from the root listing differs from `readme_sha`, so an unchanged README is not downloaded) or, for a repo without one, the description changed. Any other push rewrites manifest evidence and reweights in code (`build.py`, `refresh_repo_evidence`) with no LLM call. A rate limit partway through yields `rate_limited` with the count done, and the finished repos stay committed.
+- `auto_sync.py`: daemon thread. Every hour it syncs sources last synced more than 7 days ago through `background.start_all`, then starts skill extraction. It skips sources that never finished a sync, are waiting on a rate-limit reset, or were tried in the last 7 days.
+- `cancellation.py`: in-process set of cancelled run ids, checked before each repo. The UI makes a new UUID per click, so an old flag cannot cancel a new sync.
+- `source_parser.py`: parses a username, profile URL, or repo URL into a `ParsedSource`.
+- `manifests.py`: reads dependency names from `requirements.txt`, `pyproject.toml`, `package.json`, `go.mod`, `Cargo.toml`, `Gemfile`, `pom.xml`, and `build.gradle(.kts)`.
 
 ### `app/profile`
 
-- `manifest_skills.py`: turns manifest dependencies into skill claims deterministically, with confidence 1.0.
-- `extract.py`: one bulk-tier LLM call per repository extracts both skills and project links from the README, or from the description when there is no README. If neither exists, it raises `NoSourceTextError` and the repository is marked `no_signal`. The README is cleaned before it is sent (badges, raw HTML, fenced code blocks, and boilerplate tail sections such as License and Contributing are dropped) and then cut to a character limit, so the budget is spent on prose rather than on markup that carries no skill signal. `prefetch_repo_facts()` covers several repositories per call; `build.py` runs it ahead of its per-repository loop, and anything it misses falls back to a single call, so nothing depends on the batched pass succeeding.
-- `weighting.py`: computes evidence weight from evidence type, fork status, commit recency, and commit volume. Resume building uses it after relevance is decided: it orders the selected skills and the page-fit reserve, and breaks near-ties (within 0.02 similarity) between candidate projects and skills.
-- `build.py`: `build_profile`, `build_profile_progress`, and `reprocess_repo`. Behavior:
-  - Each repository commits independently.
-  - A failure marks only that repository.
-  - A rate limit, a budget error, or running out of usable keys stops the batch.
-  - The repository's writes are committed before the LLM call, because `complete()` writes through its own session and would otherwise block on SQLite's write lock.
-  - Manual evidence and manually entered links survive reprocessing.
+- `manifest_skills.py`: turns manifest dependencies into skill claims with confidence 1.0. No model.
+- `extract.py`: one bulk-tier LLM call per repo pulls skills and project links from the README, or from the description when there is no README. With neither, it raises `NoSourceTextError` and marks the repo `no_signal`. The README is cleaned first (badges, raw HTML, code blocks, and tail sections like License and Contributing are dropped) and cut to a character limit, so the budget goes to prose. `prefetch_repo_facts()` handles several repos per call. `build.py` runs it before the per-repo loop, and any repo it misses gets a single call.
+- `weighting.py`: evidence weight from evidence type, fork status, commit recency, and commit volume. Resume building uses it after relevance is settled: it orders the selected skills and the page-fit reserve, and breaks near-ties (within 0.02 similarity) between candidates.
+- `build.py`: `build_profile`, `build_profile_progress`, and `reprocess_repo`.
+  - Each repo commits on its own.
+  - A failure marks only that repo.
+  - A rate limit, a budget stop, or running out of keys stops the batch.
+  - The repo's writes are committed before the LLM call, because `complete()` writes through its own session and would wait on SQLite's write lock.
+  - Manual evidence and manual links survive reprocessing.
   - Evidence is re-indexed into Qdrant on a best-effort basis.
-- `jobs.py`: a background extraction worker per account. It rechecks for pending repositories after each pass, so it can run while a sync is still adding them.
+- `jobs.py`: one background extraction worker per account. It checks for pending repos after each pass, so it can run while a sync is still adding them.
 - `evidence.py`: skill-evidence CRUD shared by projects and experience.
-- `resume_extract.py`, `resume_ingest.py`, `resume_profile_merge.py`: take a resume upload through multimodal extraction (PDF and images) into `Skill` and `Experience` rows. The read runs in a worker thread, so an upload answers at once; an upload left "pending" by a restart is marked failed at startup. Skills are deduplicated by casefolded name. Roles are matched on company and title, and dates are filled in only where they are empty. A resume this app generated is refused on upload, so the LLM's job-tailored wording never flows back into the profile: every generated PDF carries `Creator: Open to Work`, and older builds are caught by comparing bytes with the library's compiled PDFs.
-- `job_extract.py`, `job_screenshot_extract.py`: extract structured fields from postings. `skills_required` is stored as a list of `{skill, level}`; `parse_skills_required()` also reads the older plain list-of-strings format.
-- `skill_map.py`: builds the 2D skill map. Each skill is embedded together with its evidence context (the languages of the repositories it came from and the skills it appears beside), because bare names embed by spelling: without context, `ElasticNet` and `EfficientNet` land on top of each other. It embeds with `bge-small`, not the `EMBEDDING_MODEL` retrieval uses: the map never writes to Qdrant, and `embedding_cache` is keyed by model, so the two coexist without a reindex. Vectors are projected with t-SNE, not PCA: on the committed benchmark PCA kept 0.294 of each skill's true nearest neighbours against 0.530 for t-SNE (`evals/results/embeddings-20260921T111424Z.md`), then clustered on the projected coordinates so the drawn groups match what is on screen. The finished layout is stored whole in `skill_map_cache` against a fingerprint of the exact texts that produced it, so `GET /api/skills/map` normally embeds nothing. `scripts/benchmark_embeddings.py` is what these choices are measured with.
-- `role_family.py`: searches the `role_families` collection (cosine similarity of at least 0.86) before creating a new family with a bulk-tier LLM call. `canonical_name` is unique; if a concurrent insert wins, the existing row is reused.
+- `resume_extract.py`, `resume_ingest.py`, `resume_profile_merge.py`: read a resume upload (PDF or image) with a multimodal model into `Skill` and `Experience` rows. The read runs in a worker thread, so the upload returns at once. An upload left pending by a restart is marked failed at startup. Skills are deduplicated by casefolded name. Roles match on company and title, and dates fill only empty fields. Resumes made by this app are refused, so tailored wording does not flow back into the profile. Each generated PDF carries `Creator: Open to Work`, and PDFs without it are caught by comparing bytes with the library.
+- `job_extract.py`, `job_screenshot_extract.py`: pull structured fields from postings. `skills_required` is a list of `{skill, level}`. `parse_skills_required()` also reads a plain list of strings.
+- `skill_map.py`: builds the 2D skill map. Each skill is embedded with its context (the languages of its repos and the skills next to it). Bare names embed by spelling, so `ElasticNet` and `EfficientNet` would land on top of each other. The map uses `bge-small`, not the retrieval `EMBEDDING_MODEL`. It never writes to Qdrant, and `embedding_cache` is keyed by model, so the two live side by side. Vectors are projected with t-SNE: on the committed benchmark it kept 0.530 of each skill's nearest neighbours against 0.294 for PCA (`evals/results/embeddings-20260921T111424Z.md`). Clustering runs on the projected points, so the groups match the screen. The finished layout is stored in `skill_map_cache` with a fingerprint of its input, so `GET /api/skills/map` usually embeds nothing. `scripts/benchmark_embeddings.py` runs the benchmark.
+- `role_family.py`: searches the `role_families` collection (cosine similarity 0.86 or more) before creating a family with a bulk-tier LLM call. `canonical_name` is unique. If a concurrent insert wins, the existing row is used.
 
 ### `app/retrieval`
 
-- `vectorstore.py`: the Qdrant client and `ensure_collection()`. Setting `QDRANT_URL=":memory:"` runs Qdrant in memory for tests.
-- `index.py`: writers for the `skill_evidence`, `experience_points`, `resumes`, `role_families`, and `job_postings` collections. It embeds reduced claims (a skill with its source, or a posting's extracted fields) rather than raw documents. Experience-linked skill evidence uses point id `id + 1_000_000_000` (`experience_evidence_point_id()`) so it can't collide with repository evidence in the shared collection; deletes must apply the same offset.
-- `search.py`: searches each collection, filtered by account. Role families are the only global search.
+- `vectorstore.py`: Qdrant client and `ensure_collection()`. `QDRANT_URL=":memory:"` runs Qdrant in memory for tests.
+- `index.py`: writers for the `skill_evidence`, `experience_points`, `resumes`, `role_families`, and `job_postings` collections. It embeds short claims (a skill with its source, a posting's extracted fields), not raw documents. Skill evidence from experience uses point id `id + 1_000_000_000` (`experience_evidence_point_id()`) so it cannot collide with repo evidence in the same collection. Deletes must use the same offset.
+- `search.py`: searches each collection, filtered by account. Role families are the one global search.
 
 ### `app/resume_build`
 
-- `context.py`: deterministic header, experience, and education data taken straight from the database.
-- `orchestrator.py`: `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`. Steps:
-  1. Candidate projects and skills come from semantic search over the posting text. Similarity decides the order; evidence weight only breaks near-ties.
-  2. Experience points are selected per role (up to 5 per role, falling back to all of the role's points if the search returns nothing).
-  3. One quality-tier call returns JSON with the summary, projects, and skills, guided by length rules for the chosen template. Those rules aim slightly over the target, since the page-fit loop trims more cheaply than it fills.
-  4. Any repository id or skill that wasn't a candidate is dropped. Project bullets and the summary go through `grounding.py`: a bullet with a number its project's evidence does not state, or a technology the project does not have, is dropped (a project left with none falls back to its description), and a summary sentence with an unsupported number is removed. The selected skills are then ordered by evidence weight.
-  5. Everything left over goes into a `reserve` on the returned dict for `pagefit.py` to draw on. It never reaches a prompt or the rendered `.tex`, and the page-fit loop strips it before the content is saved.
+- `context.py`: header, experience, and education data taken straight from the database.
+- `orchestrator.py`: `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`.
+  1. Semantic search over the posting text finds candidate projects and skills. Similarity sets the order. Evidence weight breaks near-ties.
+  2. Experience points are picked per role, up to 5 each. If search returns nothing for a role, all its points are used.
+  3. One quality-tier call returns JSON with the summary, projects, and skills, following length rules for the chosen template. The rules aim a little long, because page fit trims cheaper than it fills.
+  4. Any repo id or skill that was not a candidate is dropped. Project bullets and the summary go through `grounding.py`: a bullet with a number its project's evidence does not state, or a technology the project does not have, is dropped. A project left with no bullets falls back to its description. A summary sentence with an unsupported number is removed. The selected skills are then ordered by evidence weight.
+  5. Everything left over goes into a `reserve` for `pagefit.py`. The reserve never reaches a prompt or the `.tex`, and page fit strips it before saving.
 
-  Job text is always a separate user message. Experience, education, and the header are rebuilt from the database and never sent to an edit call.
-- `grounding.py`: the number and technology checks on project bullets and the summary. Any skill name the account has counts as a technology, matched case-insensitively on word boundaries with a small alias map. `pagefit.py` uses it too, so a shorter wording cannot name a technology its original did not.
-- `latex.py`: a Jinja2 environment with LaTeX-safe delimiters (`\BLOCK{}`, `\VAR{}`, `\#{}`), plus `escape_latex()` and `escape_latex_url()`.
-- `compile.py`: runs Tectonic as a subprocess. It raises `TectonicNotInstalledError` when the binary is missing and `CompileError` when compilation fails.
-- `layout.py`: the geometry the templates read (margins, section and bullet spacing, type size, leading) as parameters rather than hardcoded lengths, plus `DENSITY_LADDER`, 13 rungs from tight (9pt on `extarticle`, 0.72 cm margins) to airy (12pt, 1.5 cm). Density 1.0 reproduces each template's original geometry exactly.
-- `pagefit.py`: renders at exactly the requested page count, one page or two, in both directions. It walks the density ladder for the loosest layout that still fits, which is what stops a resume from trailing off half way down its last page. Over the target after the tightest rung, it asks a multimodal model for an ordered plan of cuts (a skill, then a project bullet, then an experience bullet, never a role) and applies them one at a time, recompiling between each and only going back for a new plan once the plan runs out. One look at the PDF covers several cuts, and the PDF is the expensive part of that prompt. Under the target at the loosest rung, it adds back the account's own held-back content from the `reserve` the orchestrator hands over: candidate projects the model passed over, experience points retrieval narrowed away, unselected candidate skills. Nothing is invented, so growth costs no LLM call. `PageFitNotAchievedError` (overflow only) carries the best PDF reached; coming up short returns a `FitResult` with `fit_exact` false, since an account can legitimately not have two pages of real material.
-- `background.py`: resume builds started with `POST /api/resume-build/start` run in a worker thread (`app/core/jobs.py`), so closing the tab or changing page does not stop one. Each build records its stage, its result (page fit, library resume id, finished PDF) and how much of the posting's required skills the resume lists (`match_pct`, scored like `GET /api/resume/search`). The build page polls it and picks it up again when reopened; the header reminder shows a card on every other page and a desktop notification when it ends. In memory only, like `jobs.py`: a restart loses a build in flight, and the page says so. `POST /generate` runs the same build inside the request.
-- `checkpoint.py`: a background build that stops partway (model too busy, Tectonic timeout) is saved to the library as an incomplete resume. `Resume.build_state_json` keeps the original request, the tailored content with its reserve once that step has finished, and how far the page fit got (`reworded`, `cuts_made`, reported by `fit_to_page_limit`'s `on_progress`). `POST /api/resume-build/retry/{id}` carries on from there, skipping model calls that already finished, and fills in the same row on success. `checkpoint.py` turns the saved state into the done/left checklist the library shows. `content_json` stays null until the build finishes, so search and evals never see half-built content.
-- `templates/`: `onepage.tex.j2` and `twopage.tex.j2`. The preamble is adapted from RenderCV (MIT). Both read their geometry from `layout.py` through a `layout` dict, so `render_resume()` can produce the same content tighter or looser.
+  Job text goes in its own user message. Experience, education, and the header are rebuilt from the database and are not sent to an edit call.
+- `grounding.py`: the number and technology checks for bullets and the summary. Any skill the account has counts as a technology, matched case-insensitively on word boundaries with a small alias map. `pagefit.py` uses it too, so a shorter rewrite cannot name a technology the original did not.
+- `latex.py`: Jinja2 environment with LaTeX-safe delimiters (`\BLOCK{}`, `\VAR{}`, `\#{}`), plus `escape_latex()` and `escape_latex_url()`.
+- `compile.py`: runs Tectonic as a subprocess. Raises `TectonicNotInstalledError` when the binary is missing and `CompileError` when compilation fails.
+- `layout.py`: the geometry the templates read (margins, section and bullet spacing, type size, leading) as parameters. `DENSITY_LADDER` has 13 rungs, from tight (9pt on `extarticle`, 0.72 cm margins) to loose (12pt, 1.5 cm). Density 1.0 matches each template's base geometry.
+- `pagefit.py`: renders at exactly the requested page count, one or two. It walks the density ladder for the loosest layout that fits, so the last page does not end half empty. Still over at the tightest rung, it asks a multimodal model for an ordered list of cuts (a skill, then a project bullet, then an experience bullet, never a whole role). It applies them one at a time, recompiling after each, and asks for a new list only when the old one runs out. One look at the PDF covers several cuts. Still short at the loosest rung, it adds back content from the `reserve`: projects the model passed over, experience points search left out, unselected candidate skills. All of it is the account's own material, and adding it costs no LLM call. `PageFitNotAchievedError` (overflow only) carries the best PDF reached. Coming up short returns a `FitResult` with `fit_exact` false.
+- `background.py`: builds started with `POST /api/resume-build/start` run in a worker thread (`app/core/jobs.py`), so closing the tab does not stop them. Each build records its stage, its result (page fit, library resume id, PDF), and `match_pct`, the share of the posting's required skills the resume lists (scored like `GET /api/resume/search`). The build page polls it and picks it up again when reopened. Other pages show a header card, and the browser shows a desktop notification when the build ends. State is held in memory, like `jobs.py`. `POST /generate` runs the same build inside the request.
+- `checkpoint.py`: a background build that stops partway (model busy, Tectonic timeout) is saved to the library as incomplete. `Resume.build_state_json` keeps the request, the tailored content with its reserve once that step is done, and page-fit progress (`reworded`, `cuts_made`, from `fit_to_page_limit`'s `on_progress`). `POST /api/resume-build/retry/{id}` resumes from there, skips model calls already done, and fills the same row on success. The library shows a done/left checklist built from the saved state. `content_json` stays null until the build finishes, so search and evals see only finished content.
+- `templates/`: `onepage.tex.j2` and `twopage.tex.j2`. The preamble is adapted from RenderCV (MIT). Both read their geometry from `layout.py` through a `layout` dict, so `render_resume()` can set the same content tighter or looser.
 
 ### `app/evals`
 
 - `golden.py`: golden-set pairs stored in YAML.
 - `bm25.py`: the keyword baseline, using `rank_bm25`.
 - `metrics.py`: precision@k and recall@k.
-- `candidates.py`: scores what the resume builder hands the model (`_candidate_skills` by name, `_candidate_projects` by repository) against the same golden pairs, so a change to candidate ranking shows up even though the dense numbers cannot see it. The CI gate checks these against `evals/ci_baseline.json` alongside the dense numbers.
-- `groundedness.py`: an LLM judge that checks generated bullets against project evidence, bounded by `max_checks`.
-- `run.py`: `run_eval(account_id) -> MetricsReport` and `write_report()`. The BM25 corpus is built from SQLite using the same text builders as the dense index.
+- `candidates.py`: scores what the resume builder hands the model (`_candidate_skills` by name, `_candidate_projects` by repo) against the golden pairs, so a change in candidate ranking shows up in the numbers. The CI gate checks these against `evals/ci_baseline.json` with the dense numbers.
+- `groundedness.py`: an LLM judge that checks generated bullets against project evidence, capped by `max_checks`.
+- `run.py`: `run_eval(account_id) -> MetricsReport` and `write_report()`. The BM25 corpus is built from SQLite with the same text builders as the dense index.
 
 ### `app/api` and `app/web`
 
-Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts` and `/health`. Page routes return a template, and an Alpine.js component on the page loads its data from the API.
+Routers are thin. JSON endpoints live under `/api/*`, except `/accounts` and `/health`. Page routes return a template, and an Alpine.js component on the page loads its data from the API.
 
 | Pages | |
 | --- | --- |
@@ -127,9 +130,9 @@ Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts` and
 | `/home` | Dashboard |
 | `/portfolio`, `/portfolio/{projects,skills,experience,education,contact-links,resume}` | Portfolio sections and detail pages |
 | `/portfolio/resume/build` | Resume generation for a posting |
-| `/jobs`, `/jobs/analytics` | Job postings (one composer for pasted text and screenshots; links are kept as the apply link, never opened) and the insights dashboard |
-| `/monitor`, `/monitor/sync` | Rate limits and LLM usage; GitHub sources, their syncs and skill extraction |
-| `/settings`, `/apis` | Settings, API keys with models and budget |
+| `/jobs`, `/jobs/analytics` | Job postings (one form for text and screenshots; links are saved as the apply link) and the insights dashboard |
+| `/monitor`, `/monitor/sync` | Rate limits and LLM usage; GitHub sources, syncs, and skill extraction |
+| `/settings`, `/apis` | Settings; API keys, models, and budget |
 
 | API prefix | Router |
 | --- | --- |
@@ -148,59 +151,46 @@ Routers are thin. JSON endpoints live under `/api/*`, apart from `/accounts` and
 | `/api/app-settings` | `app_settings.py` |
 | `/api/monitor` | `monitor.py` |
 
-Templates extend `_base.html`, which holds the theme, Tailwind (Play CDN), and Alpine.js. The shared partials are `_header.html` (top navigation) and `_portfolio_subnav.html`. The selected account id is stored in `localStorage`.
+Templates extend `_base.html`, which holds the theme and loads `/static/app.css` and Alpine.js. Both are built into the image by the Dockerfile's `assets` stage: Tailwind's standalone CLI compiles only the classes the templates use, and the JS libraries are pinned and checksum-verified. Nothing loads from a CDN except Google Fonts. Shared partials: `_header.html` (top navigation) and `_portfolio_subnav.html`. The selected account id is kept in `localStorage`.
 
 ## Data model
 
-| Table | Notes |
+| Table | Contents |
 | --- | --- |
 | `accounts` | Local profile: name, GitHub username, contact fields. Not a login. |
-| `sync_sources` | GitHub users or repositories to fetch for an account. |
-| `repositories` | Synced or manually added projects, with README, manifests, commit stats, extraction status, a starred flag (up to 3 per account), and an archived flag (`exclude_from_resume`). |
-| `project_links` | Links per project, either `manual` or `readme_extracted`. |
-| `skill_evidence` | Skill claims per repository, with evidence type, weight, and confidence. |
-| `experiences`, `experience_points` | Roles and their individual bullet points. Roles can be archived. |
+| `sync_sources` | GitHub users or repos to fetch for an account. |
+| `repositories` | Synced or manually added projects: README, manifests, commit stats, extraction status, a starred flag (up to 3 per account), and an archived flag (`exclude_from_resume`). |
+| `project_links` | Links per project, `manual` or `readme_extracted`. |
+| `skill_evidence` | Skill claims per repo, with evidence type, weight, and confidence. |
+| `experiences`, `experience_points` | Roles and their bullet points. Roles can be archived. |
 | `experience_skill_evidence` | Skill claims per role. |
 | `education` | Degrees. Entries can be archived. |
 | `skills`, `skill_stars`, `skill_archives` | Skills with no linked evidence, starred skill names, and archived skill names. |
 | `social_links` | Contact links with a free-form platform. |
 | `resumes` | Uploaded and generated resumes: extracted fields, `content_json`, compiled PDF path. |
-| `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is unique per account: a hash of the pasted text, or of the text and screenshot bytes when there are screenshots. |
+| `job_postings` | Raw text (`raw_text_quarantined`), extracted fields, role family, application tracking. `content_hash` is unique per account: a hash of the pasted text, or of the text and screenshot bytes. |
 | `role_families` | Canonical job-title clusters. |
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |
-| `app_settings` | One row per setting picked in the app: bulk model, quality model, monthly budget. A missing row means the default. |
-| `llm_calls` | Cached responses plus cost, token, and latency records for every call, each tagged with the feature (`purpose`) that spent it. |
-| `rate_limit_events` | Event log: rate limits, budget caps, keys swapped out or exhausted, runs stopped. |
+| `app_settings` | One row per setting chosen in the app: bulk model, quality model, monthly budget. No row means the default. |
+| `llm_calls` | Cached responses with cost, tokens, and latency for every call, tagged with its `purpose`. |
+| `rate_limit_events` | Event log: rate limits, budget stops, key swaps and exhaustion, stopped runs. |
 | `embedding_cache` | Embedding vectors by content hash and model. |
-| `skill_map_cache` | One stored skill-map layout per account, with the fingerprint of the skills it was built from. |
+| `skill_map_cache` | One stored skill-map layout per account, with the fingerprint of its input. |
 
-Saving a job posting returns at once with `extraction_status` "pending". The LLM read (text extraction, or the screenshot transcription) runs in a worker thread through `app/core/jobs.py`, keyed by posting id, so a resent save or a second Reprocess never starts a second read. The jobs list and the posting page poll until the status changes. Rows still "pending" at startup lost their worker to the restart and are marked failed with a note to reprocess.
+Saving a job posting returns at once with `extraction_status` "pending". The LLM read (text extraction or screenshot transcription) runs in a worker thread through `app/core/jobs.py`, keyed by posting id, so a repeated save or a second Reprocess does not start a second read. The jobs list and the posting page poll until the status changes. Rows still pending at startup are marked failed with a note to reprocess.
 
-Archived projects, roles, education entries and skills stay on their pages under an Archived section but are left out of resume building, the portfolio counts, the skill map and job analytics. A skill whose every project and role is archived counts as archived too.
+Archived projects, roles, education entries, and skills stay on their pages under an Archived section. They are left out of resume building, portfolio counts, the skill map, and job analytics. A skill whose every project and role is archived counts as archived.
 
-## Security model
+## Security
 
-The app has no login. It is built for one person on their own machine, and the Docker ports bind to 127.0.0.1. Whoever can send it requests can do anything the UI can. `app/api/security.py` protects against other web pages reaching it through that person's browser:
+The app has no login. It is built for one person on their own machine, and the app's port binds to 127.0.0.1. Qdrant publishes no port at all: it has no login and no Host check, so only the app reaches it, over the compose network (`docker-compose.dev.yml` publishes it for host-side development). `app/api/security.py` stops other web pages from reaching it through that person's browser:
 
-- **Cross-site requests.** POST, PUT, PATCH and DELETE are refused (403) when `Sec-Fetch-Site` is anything but `same-origin` or `none`, or when `Origin` (or `Referer` when there is no `Origin`) is not the app's own origin. A request with none of these headers is not from a web page and is allowed.
-- **DNS rebinding.** Every request must carry a loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`, any port), else 400.
-- **Response headers.** `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN` and a CSP of `frame-ancestors 'self'; base-uri 'self'; form-action 'self'`. Framing is `'self'` rather than `'none'` because the resume pages show PDFs in an iframe. There is no `script-src`: Tailwind and Alpine.js load from a CDN and the pages use inline scripts and Alpine expressions, so a script policy would need `'unsafe-inline'` and `'unsafe-eval'` and would block very little.
-- **Uploaded files.** Screenshots must be PNG, JPEG, WebP or GIF by their bytes. Resumes are typed by their bytes, and files are served with that type. Only a PDF or an image is shown inline. Anything else downloads as `application/octet-stream`, so an uploaded page never runs on the app's origin. Stored file names are reduced to their base name and prefixed with an id or hash.
-- **LaTeX.** Every value in a resume template goes through `escape_latex` or `escape_latex_url` (`app/resume_build/latex.py`). Tectonic runs with shell escape off and in untrusted mode.
-- **Secrets.** API keys are encrypted at rest and shown only as masked previews. Provider keys travel in request headers, never in URLs.
-- **Fetching.** Links in job postings are stored, never opened. The server only calls GitHub, the configured LLM providers, and the embedding model and Tectonic package downloads. No endpoint fetches a URL a person typed, apart from the `api_base` of an Azure OpenAI or Ollama key, which is the person's own setting.
-
-Out of scope: anyone else with access to the machine or the `data/` directory (the encryption key file sits next to the database), other local processes, which can call the API directly, exposing the port to a network, which this model does not cover, and XSS through a compromised CDN script.
-
-## Conventions
-
-- **LLM calls.** All LLM calls go through `app.core.llm.complete()`. Nothing else imports a provider SDK.
-- **LLM failures.** A request handler never waits on the model for work it can save first: signup, resume upload and job posting saves commit their rows and read in a worker thread (`app/core/jobs.py`), leaving `extraction_status` at "pending". A failed read keeps `extraction_error_kind` (`app.core.llm.error_kind()`: `provider_unavailable`, `no_key`, `provider_rejected` or `budget`), and reprocess retries it from the saved file. Routes that do call the model answer an LLM failure with `{detail, error_kind, model}` (`app/api/llm_errors.py`); pages show it through `otwFetch`/`otwResponseError` and the shared AI provider notice in `_base.html`, and the nav shows "AI degraded" while `GET /api/app-settings/llm/health` says so. `POST /accounts` takes a `request_id` per form, so a resent signup returns the profile it already made.
-- **Untrusted text.** Job posting text is untrusted. It is never inserted into a system prompt or formatted into a prompt template; it is sent as a separate user message that is labeled as reference material. Repository README and description text is handled the same way (`app/profile/extract.py`), since a repository can be anyone's.
-- **Tiers.** Bulk-tier models handle high-volume, per-item work. Quality-tier models handle single-document extraction and resume generation.
-- **Source of truth.** SQLite is authoritative. Qdrant writes are best-effort: a failure is logged and never rolls back a database write.
-- **Route prefixes.** A JSON route that shares a path with a page must use the `/api` prefix. FastAPI matches routes in registration order, so a collision silently hides one of them.
-- **Schema changes.** A new column needs a migration function in `app/core/db/migrations.py` that follows the `PRAGMA table_info` pattern.
-- **Test isolation.** Tests set `QDRANT_URL=":memory:"`, use a temporary SQLite file, and inject fakes through `_completion_fn`, `_encode_fn`, and `_run_fn`.
-- **Alpine `:disabled`.** Wrap dynamic lookups in boolean attribute bindings: `:disabled="Boolean(obj[item.id])"`. Alpine 3 renders the attribute as present for a falsy property lookup.
-- **Filtered inputs.** Live-filtered inputs must write the DOM value directly: `$event.target.value = form.x = sanitize($event.target.value)`. Otherwise, a keystroke that sanitizes to the unchanged model value stays visible.
+- **Cross-site requests.** POST, PUT, PATCH, and DELETE get a 403 when `Sec-Fetch-Site` is anything but `same-origin` or `none`, or when `Origin` (or `Referer` without `Origin`) is not the app's own origin. A request with none of these headers is not from a web page and is allowed.
+- **DNS rebinding.** Every request must carry a loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`, any port), or it gets a 400.
+- **Response headers.** `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN`, and a CSP of `frame-ancestors 'self'; base-uri 'self'; form-action 'self'`. Framing allows `'self'` because the resume pages show PDFs in an iframe.
+- **Uploaded files.** Screenshots must be PNG, JPEG, WebP, or GIF by their bytes. Resumes are typed by their bytes and served with that type. Only PDFs and images display inline. Everything else downloads as `application/octet-stream`, so an uploaded page cannot run on the app's origin. Stored file names are cut to their base name and prefixed with an id or hash.
+- **LaTeX.** Every value in a resume template goes through `escape_latex` or `escape_latex_url` (`app/resume_build/latex.py`). Tectonic runs with shell escape off, in untrusted mode.
+- **Secrets.** API keys are encrypted at rest and shown only as masked previews. Provider keys travel in request headers, not URLs.
+- **Outbound requests.** Links in job postings are stored and not opened. The server calls only GitHub, the configured LLM providers, and the embedding model and Tectonic package downloads. The one user-set URL it calls is the `api_base` of an Azure OpenAI or Ollama key.
+- **Build inputs.** Every file the Dockerfile downloads (Tailwind CLI, Tectonic, Alpine.js, marked, DOMPurify) is pinned to a version and checked against its SHA-256 with `ADD --checksum`. The Qdrant image is pinned to a version.
+- **Untrusted text.** Job posting text and repo README and description text go to the model as separate user messages labeled as reference material. They are not placed in a system prompt or formatted into a prompt template.

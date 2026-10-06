@@ -1,8 +1,8 @@
 # Windows startup without WSL: check Docker Desktop, build and run, wait for
 # health, open the browser. Run it through start.cmd (double-click, or
 # `.\start.cmd` in a terminal), which bypasses PowerShell's script policy.
-# Uses the default ports 8000 and 6333; start.sh (WSL, macOS, Linux) is the
-# one that picks free ports when those are busy.
+# Uses the default port 8000; start.sh (WSL, macOS, Linux) is the one that
+# picks a free port when it is busy.
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
@@ -55,8 +55,8 @@ if (-not (Test-Path .env)) {
 Write-Host "Building image (first run takes a few minutes: downloads Python, torch, models)..."
 docker compose up --build -d --wait
 if ($LASTEXITCODE -ne 0) {
-    Err "docker compose up failed, see log above. If port 8000 or 6333 is in use,"
-    Err "free it or run start.sh from WSL, which picks free ports."
+    Err "docker compose up failed, see log above. If port 8000 is in use,"
+    Err "free it or run start.sh from WSL, which picks a free port."
     exit 1
 }
 

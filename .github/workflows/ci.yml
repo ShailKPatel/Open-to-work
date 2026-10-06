@@ -132,7 +132,7 @@ jobs:
       # baseline's tolerance is not there to absorb. Read a failure here
       # before assuming the code caused it.
       qdrant:
-        image: qdrant/qdrant:latest
+        image: qdrant/qdrant:v1.19.0
         ports:
           - 6333:6333
 
