@@ -8,7 +8,9 @@ Set-Location -Path $PSScriptRoot
 
 $InstallUrl = "https://docs.docker.com/desktop/setup/install/windows-install/"
 $Url = "http://localhost:8000"
-$Health = "$Url/health"
+# Probe IPv4 directly: compose binds 127.0.0.1 only, and Windows PowerShell
+# tries localhost's ::1 first and times out instead of falling back.
+$Health = "http://127.0.0.1:8000/health"
 
 function Ok($msg) { Write-Host "  [ok] $msg" -ForegroundColor Green }
 function Err($msg) { Write-Host "  [x] $msg" -ForegroundColor Red }
@@ -24,8 +26,13 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+# Native stderr under "Stop" is a terminating error in Windows PowerShell 5.1,
+# so relax it while probing; the exit code is what decides.
+$ErrorActionPreference = "Continue"
 docker info *> $null
-if ($LASTEXITCODE -ne 0) {
+$DockerExit = $LASTEXITCODE
+$ErrorActionPreference = "Stop"
+if ($DockerExit -ne 0) {
     Err "Docker is installed but not running. Open Docker Desktop, wait until it"
     Err "says Docker is running, then run this again."
     exit 1
