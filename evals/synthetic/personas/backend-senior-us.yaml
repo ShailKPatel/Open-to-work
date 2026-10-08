@@ -1,0 +1,123 @@
+key: backend-senior-us
+account_id: 9101
+first_name: Marcus
+last_name: Ellery
+github_username: demo-mellery
+headline: Senior Backend Engineer
+location: Austin, TX, USA
+email: marcus.ellery@example.com
+phone: "+1 512 555 0142"
+links:
+  - {platform: github, url: "https://github.com/demo-mellery"}
+  - {platform: linkedin, url: "https://www.linkedin.com/in/demo-mellery"}
+resume_style: classic
+date_style: mon_year
+covers: [senior, united-states, backend, fintech, python, go, current-role]
+
+repos:
+  - key: ledger-sync
+    name: ledger-sync
+    language: Python
+    stars: 214
+    description: Double-entry ledger service with idempotent posting and reconciliation.
+    readme: |
+      # ledger-sync
+      A double-entry ledger service written with FastAPI and PostgreSQL. Every
+      posting is idempotent by request key, and a nightly Celery job reconciles
+      balances against the bank feed. Ships as a Docker image with a
+      docker-compose file for local development.
+    manifests:
+      requirements.txt: [fastapi, sqlalchemy, psycopg2-binary, celery, redis, pydantic, pytest]
+    readme_skills: [Python, Docker]
+  - key: ratelimit-go
+    name: ratelimit-go
+    language: Go
+    stars: 88
+    description: Token bucket rate limiter backed by Redis with a gRPC API.
+    readme: |
+      # ratelimit-go
+      A distributed token bucket rate limiter. Buckets live in Redis and are
+      updated with a Lua script so a check is a single round trip. Exposes a
+      gRPC service and a Gin HTTP adapter. Load tested to 40k checks per second.
+    manifests:
+      go.mod: [github.com/gin-gonic/gin, google.golang.org/grpc, github.com/redis/go-redis/v9]
+    readme_skills: [Go, Redis, Lua]
+  - key: pg-audit-trail
+    name: pg-audit-trail
+    language: SQL
+    stars: 31
+    description: Trigger-based audit history for PostgreSQL tables.
+    readme: |
+      # pg-audit-trail
+      Installs PL/pgSQL triggers that write every row change to an audit
+      schema, partitioned by month. Includes a migration helper and a query
+      cookbook for answering "who changed this and when".
+    manifests: {}
+    readme_skills: [PostgreSQL, SQL, PL/pgSQL]
+  - key: dotfiles
+    name: dotfiles
+    language: Shell
+    stars: 4
+    description: Personal shell and editor configuration.
+    readme: |
+      # dotfiles
+      Zsh, tmux and Neovim configuration. Install with the bootstrap script.
+    manifests: {}
+    readme_skills: [Bash]
+
+roles:
+  - key: fintech
+    company: Brightwater Payments
+    title: Senior Backend Engineer
+    location: Austin, TX
+    start: mar 2021
+    end: null
+    skills: [Python, Go, PostgreSQL, Apache Kafka, AWS, Kubernetes]
+    points:
+      - text: Designed the payout ledger that settles 2.1 million merchant transfers per day with zero double payments since launch.
+        skills: [Python, PostgreSQL]
+      - text: Moved card authorisation events from polling to Apache Kafka, cutting settlement lag from 15 minutes to under 20 seconds.
+        skills: [Apache Kafka]
+      - text: Wrote the Go rate limiting service that protects partner APIs, sustaining 40k requests per second on three pods.
+        skills: [Go, Kubernetes]
+      - text: Led the migration of 14 services from EC2 to EKS, reducing compute cost by 31 percent.
+        skills: [AWS, Kubernetes]
+      - text: Mentored four engineers through on-call onboarding and ran the weekly incident review.
+        skills: []
+  - key: logistics
+    company: Cartwright Freight
+    title: Backend Engineer
+    location: Dallas, TX
+    start: jun 2017
+    end: feb 2021
+    skills: [Python, Django, PostgreSQL, Redis, Celery]
+    points:
+      - text: Built the shipment tracking API in Django serving 300 carrier integrations.
+        skills: [Django, Python]
+      - text: Cut median query time on the quotes table from 900ms to 40ms with partial indexes and query rewrites.
+        skills: [PostgreSQL]
+      - text: Replaced cron scripts with Celery workers and a Redis broker, removing a class of missed nightly jobs.
+        skills: [Celery, Redis]
+      - text: Added contract tests between the quoting and billing services, catching 12 breaking changes before release.
+        skills: [pytest]
+  - key: agency
+    company: Pixel & Pine
+    title: Junior Developer
+    location: Dallas, TX
+    start: jul 2015
+    end: may 2017
+    skills: [PHP, MySQL, JavaScript]
+    points:
+      - text: Maintained PHP and MySQL sites for 20 small business clients.
+        skills: [PHP, MySQL]
+      - text: Rebuilt a restaurant ordering page in plain JavaScript, doubling online orders.
+        skills: [JavaScript]
+
+education:
+  - institution: University of Texas at Dallas
+    degree: B.S. in Computer Science
+    location: Richardson, TX
+    start: aug 2011
+    end: may 2015
+    grade: "GPA 3.6/4.0"
+    details: []

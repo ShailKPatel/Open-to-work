@@ -45,7 +45,14 @@ def evidence_text(evidence: SkillEvidence | ExperienceSkillEvidence) -> str:
     baseline builds its corpus from the exact same text the dense system
     embeds, via this function, so the two are actually comparable rather
     than scored against two different representations of the same row."""
-    return f"Skill: {evidence.skill}. Evidence: {evidence.evidence_type}."
+    return evidence_document(evidence.skill, evidence.evidence_type)
+
+
+def evidence_document(skill: str, evidence_type: str) -> str:
+    """The indexed text of one skill claim. A function of the two payload
+    fields so app/retrieval/search.py can rebuild the exact document from a
+    stored point for keyword matching, without a database read."""
+    return f"Skill: {skill}. Evidence: {evidence_type}."
 
 
 def index_skill_evidence(evidence_rows: list[SkillEvidence], account_id: int | None = None) -> int:

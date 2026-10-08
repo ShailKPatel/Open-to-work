@@ -1,0 +1,649 @@
+# Invented job postings for the synthetic eval set (app/evals/synthetic.py).
+# Every company, person and number here is made up.
+#
+# Each posting serves two evals:
+#   - extraction: `expected` is what app/profile/job_extract.py should read
+#     out of `text`. `skills` is the set of skills the posting asks for,
+#     compared case-insensitively; other fields are compared after trimming.
+#   - retrieval: for every persona in `for`, the posting becomes a golden
+#     query, and its relevant ids are the persona's evidence carrying one of
+#     `skills` (see golden_pairs()). Postings with an empty `for` are
+#     extraction-only, including the off-domain ones a matcher should rank
+#     nobody for.
+#
+# `covers` names what the posting is there to exercise, so a gap in the
+# spread is visible at a glance.
+
+- key: payments-senior-backend
+  for: [backend-senior-us]
+  covers: [usd-annual, hybrid, senior, bullet-list]
+  text: |
+    Senior Backend Engineer - Payments Core
+    Brightline Pay | Austin, TX (Hybrid, 3 days in office)
+
+    About the role
+    You will own the services that move money between merchants and banks.
+
+    What you'll need
+    - 5+ years building backend systems in Python or Go
+    - Deep PostgreSQL experience, including schema design for ledgers
+    - Event streaming with Apache Kafka
+    - Production experience on AWS
+
+    Compensation: $175,000 - $210,000 per year plus equity.
+    Full-time.
+  expected:
+    company: Brightline Pay
+    title: Senior Backend Engineer - Payments Core
+    location: Austin, TX
+    salary_range: "$175,000 - $210,000 per year"
+    employment_type: Full-time
+    work_mode: Hybrid
+    seniority: Senior
+    experience_required: "5+ years"
+    skills: [Python, Go, PostgreSQL, Apache Kafka, AWS]
+    summary: Owns the backend services that move money between merchants and banks.
+
+- key: platform-go-remote
+  for: [backend-senior-us, devops-sre-uk]
+  covers: [remote, no-salary, prose, mid-senior-ambiguous]
+  text: |
+    Platform Engineer (Go) at Quarry Cloud
+
+    We're a fully remote team building a developer platform. You'd write Go
+    services that schedule workloads onto Kubernetes, keep our Redis caches
+    honest, and help run gRPC APIs that thousands of customers depend on.
+    You probably have three or more years of backend work behind you.
+  expected:
+    company: Quarry Cloud
+    title: Platform Engineer (Go)
+    location: ""
+    salary_range: ""
+    employment_type: ""
+    work_mode: Remote
+    seniority: ""
+    experience_required: "3+ years"
+    skills: [Go, Kubernetes, Redis, gRPC]
+    summary: Builds Go platform services that schedule workloads on Kubernetes.
+
+- key: django-mid-onsite
+  for: [backend-senior-us]
+  covers: [on-site, mid, short]
+  text: |
+    Python/Django Developer - Lakeshore Logistics, Chicago IL (on-site)
+    Mid-level. Django, PostgreSQL, Celery, Redis. 3-5 years.
+    $120k-$140k/yr. Full time.
+  expected:
+    company: Lakeshore Logistics
+    title: Python/Django Developer
+    location: Chicago, IL
+    salary_range: "$120k-$140k/yr"
+    employment_type: Full-time
+    work_mode: On-site
+    seniority: Mid
+    experience_required: "3-5 years"
+    skills: [Python, Django, PostgreSQL, Celery, Redis]
+    summary: Mid-level Django developer for a logistics company.
+
+- key: frontend-react-berlin
+  for: [frontend-mid-eu, mobile-dev-ca]
+  covers: [eur-annual, hybrid, europe, accessibility]
+  text: |
+    Frontend Engineer (m/w/d) - Stadtrad Mobility GmbH, Berlin
+
+    Wir suchen... in English: we are looking for a frontend engineer to build
+    our rider app on the web.
+
+    Your toolbox:
+    * React and TypeScript, ideally Next.js
+    * A real commitment to accessibility (WCAG 2.2)
+    * Testing with Playwright or Cypress
+
+    Hybrid, two office days in Kreuzberg. Salary EUR 62,000 - 75,000 gross per
+    year. Permanent, full-time. At least 2 years of professional experience.
+  expected:
+    company: Stadtrad Mobility GmbH
+    title: Frontend Engineer
+    location: Berlin, Germany
+    salary_range: "EUR 62,000 - 75,000 per year"
+    employment_type: Full-time
+    work_mode: Hybrid
+    seniority: Mid
+    experience_required: "2+ years"
+    skills: [React, TypeScript, Next.js, Accessibility, Playwright, Cypress]
+    summary: Builds the rider web app in React and TypeScript with strong accessibility.
+
+- key: design-systems-lead
+  for: [frontend-mid-eu]
+  covers: [senior, gbp, remote-uk, design-system]
+  text: |
+    Lead Design Systems Engineer, Oakmere Bank (Remote, UK)
+    GBP 85,000 - 95,000. Full-time.
+
+    Own our component library end to end: React components, Storybook
+    documentation, visual regression tests and accessibility audits. You've
+    led a design system before and have 6+ years in frontend engineering.
+  expected:
+    company: Oakmere Bank
+    title: Lead Design Systems Engineer
+    location: United Kingdom
+    salary_range: "GBP 85,000 - 95,000"
+    employment_type: Full-time
+    work_mode: Remote
+    seniority: Lead
+    experience_required: "6+ years"
+    skills: [React, Storybook, Accessibility]
+    summary: Leads the bank's design system and component library.
+
+- key: vue-contract
+  for: [frontend-mid-eu]
+  covers: [contract, daily-rate, short-term]
+  text: |
+    CONTRACT: Vue.js developer, 6 months, Amsterdam / remote OK
+    Rate: EUR 550-650 per day. Vue 3, JavaScript, CSS, Jest.
+    Client: Tulpenveld Media (via Polder Staffing).
+  expected:
+    company: Tulpenveld Media
+    title: Vue.js Developer
+    location: Amsterdam, Netherlands
+    salary_range: "EUR 550-650 per day"
+    employment_type: Contract
+    work_mode: Remote
+    seniority: ""
+    experience_required: ""
+    skills: [Vue.js, JavaScript, CSS, Jest]
+    summary: Six month Vue.js contract for a media client.
+
+- key: ds-bengaluru-lpa
+  for: [data-scientist-in]
+  covers: [inr-lpa, india, hybrid, data-science]
+  text: |
+    Data Scientist II | Dhanvi Fintech | Bengaluru (Hybrid)
+    CTC: 24-32 LPA
+    Experience: 2-4 years
+
+    Responsibilities
+    - Build credit risk and fraud models (LightGBM, XGBoost)
+    - Design and read out A/B tests
+    - Write production quality Python and SQL
+    - Work with Apache Spark on large transaction tables
+  expected:
+    company: Dhanvi Fintech
+    title: Data Scientist II
+    location: Bengaluru, India
+    salary_range: "24-32 LPA"
+    employment_type: ""
+    work_mode: Hybrid
+    seniority: Mid
+    experience_required: "2-4 years"
+    skills: [LightGBM, XGBoost, A/B Testing, Python, SQL, Apache Spark]
+    summary: Builds credit risk and fraud models and runs experiments.
+
+- key: analytics-intern-monthly
+  for: [data-scientist-in, new-grad-student]
+  covers: [internship, inr-monthly, entry-level]
+  text: |
+    Analytics Intern (6 months) - Kaveri Retail, Chennai, on-site
+    Stipend: Rs 40,000 per month
+    Must know Python, Pandas and SQL. Tableau a plus. Final year students welcome.
+  expected:
+    company: Kaveri Retail
+    title: Analytics Intern
+    location: Chennai, India
+    salary_range: "Rs 40,000 per month"
+    employment_type: Internship
+    work_mode: On-site
+    seniority: Junior
+    experience_required: ""
+    skills: [Python, Pandas, SQL, Tableau]
+    summary: Six month analytics internship for final year students.
+
+- key: forecasting-scientist
+  for: [data-scientist-in]
+  covers: [usd, remote-us, time-series]
+  text: |
+    Senior Data Scientist, Forecasting
+    Harvest Lane Grocers - Remote (US time zones)
+
+    You'll own demand forecasting for 40,000 products. We use Python,
+    LightGBM, Prophet-style models and a lot of time series cross validation.
+    Streamlit for internal tools. 5+ yrs experience. $160-190K base.
+  expected:
+    company: Harvest Lane Grocers
+    title: Senior Data Scientist, Forecasting
+    location: United States
+    salary_range: "$160-190K base"
+    employment_type: ""
+    work_mode: Remote
+    seniority: Senior
+    experience_required: "5+ years"
+    skills: [Python, LightGBM, Time Series Forecasting, Streamlit]
+    summary: Owns demand forecasting across the product catalogue.
+
+- key: search-ml-engineer
+  for: [ml-research-phd]
+  covers: [chf, europe, ml, retrieval]
+  text: |
+    Machine Learning Engineer, Search Ranking - Matterhorn Labs, Zurich
+
+    Join the team that ranks results for 30 million queries a day. You will
+    train and ship ranking models in PyTorch, build retrieval and reranking
+    pipelines, and design offline evaluation. Strong NLP and information
+    retrieval background; PhD welcome but not required. Our models run on
+    Kubernetes. CHF 140,000 - 170,000. Full-time, hybrid.
+  expected:
+    company: Matterhorn Labs
+    title: Machine Learning Engineer, Search Ranking
+    location: Zurich, Switzerland
+    salary_range: "CHF 140,000 - 170,000"
+    employment_type: Full-time
+    work_mode: Hybrid
+    seniority: ""
+    experience_required: ""
+    skills: [PyTorch, Information Retrieval, Natural Language Processing, Kubernetes]
+    summary: Trains and ships search ranking models and their offline evaluation.
+
+- key: llm-applied-scientist
+  for: [ml-research-phd, data-scientist-in]
+  covers: [genai, rag, remote, no-salary]
+  text: |
+    Applied Scientist, LLM Products @ Fernhill AI (remote, Europe)
+
+    We build retrieval-augmented generation for legal documents. You'll design
+    RAG pipelines, set up LLM evaluation with human-calibrated judges, and run
+    vector search in Qdrant. Python required, PyTorch nice to have.
+  expected:
+    company: Fernhill AI
+    title: Applied Scientist, LLM Products
+    location: Europe
+    salary_range: ""
+    employment_type: ""
+    work_mode: Remote
+    seniority: ""
+    experience_required: ""
+    skills: [Retrieval-Augmented Generation, LLM Evaluation, Qdrant, Python, PyTorch]
+    summary: Designs and evaluates RAG pipelines for legal documents.
+
+- key: sre-london
+  for: [devops-sre-uk]
+  covers: [gbp, hybrid, sre, bullet-list]
+  text: |
+    Site Reliability Engineer
+    Copperfield Games, London (hybrid)
+    GBP 70k - 90k + bonus
+
+    - Run our Kubernetes clusters across AWS regions
+    - Own SLOs, alerting and incident response
+    - Infrastructure as code with Terraform
+    - Observability with Prometheus and Grafana
+    - On-call rota (paid)
+  expected:
+    company: Copperfield Games
+    title: Site Reliability Engineer
+    location: London, UK
+    salary_range: "GBP 70k - 90k"
+    employment_type: ""
+    work_mode: Hybrid
+    seniority: ""
+    experience_required: ""
+    skills: [Kubernetes, AWS, Terraform, Prometheus, Grafana]
+    summary: Runs Kubernetes infrastructure and owns SLOs and incident response.
+
+- key: linux-sysadmin
+  for: [devops-sre-uk]
+  covers: [on-site, junior-friendly, hourly]
+  text: |
+    Linux Systems Administrator - Fenland Council IT, Cambridge (on-site)
+    GBP 18.50 per hour, part-time (24 hrs/week)
+    Ansible, Bash scripting, MySQL backups, patching Ubuntu servers.
+  expected:
+    company: Fenland Council IT
+    title: Linux Systems Administrator
+    location: Cambridge, UK
+    salary_range: "GBP 18.50 per hour"
+    employment_type: Part-time
+    work_mode: On-site
+    seniority: ""
+    experience_required: ""
+    skills: [Linux, Ansible, Bash, MySQL]
+    summary: Part-time Linux administration for a local council.
+
+- key: android-toronto
+  for: [mobile-dev-ca]
+  covers: [cad, hybrid, mobile]
+  text: |
+    Senior Android Developer at Maplewood Health (Toronto, hybrid)
+    CAD $130,000-$150,000
+
+    Kotlin, Jetpack Compose, Room, Coroutines. You've shipped apps with
+    millions of users and care about accessibility. 5 years Android.
+  expected:
+    company: Maplewood Health
+    title: Senior Android Developer
+    location: Toronto, ON, Canada
+    salary_range: "CAD $130,000-$150,000"
+    employment_type: ""
+    work_mode: Hybrid
+    seniority: Senior
+    experience_required: "5 years"
+    skills: [Kotlin, Jetpack Compose, Android, Accessibility]
+    summary: Senior Android role building health apps in Kotlin and Compose.
+
+- key: ios-swiftui
+  for: [mobile-dev-ca]
+  covers: [remote, mid, ios]
+  text: |
+    iOS Engineer (SwiftUI) - Pocketfern - Remote within Canada
+    Build our budgeting app in Swift and SwiftUI, with Core Data offline
+    storage and XCTest coverage. 3+ years iOS. Full-time.
+  expected:
+    company: Pocketfern
+    title: iOS Engineer (SwiftUI)
+    location: Canada
+    salary_range: ""
+    employment_type: Full-time
+    work_mode: Remote
+    seniority: Mid
+    experience_required: "3+ years"
+    skills: [Swift, SwiftUI, Core Data, XCTest, iOS]
+    summary: Builds a budgeting iOS app in SwiftUI.
+
+- key: react-native-startup
+  for: [mobile-dev-ca, new-grad-student]
+  covers: [startup, equity-only-mention, cross-platform]
+  text: |
+    React Native Engineer - Sprout & Spoon (NYC or remote US)
+    $110k-$135k + equity. TypeScript, React Native, Firebase. Jest for tests.
+  expected:
+    company: Sprout & Spoon
+    title: React Native Engineer
+    location: New York, NY
+    salary_range: "$110k-$135k"
+    employment_type: ""
+    work_mode: Remote
+    seniority: ""
+    experience_required: ""
+    skills: [React Native, TypeScript, Firebase, Jest]
+    summary: Builds the company's cross-platform app in React Native.
+
+- key: new-grad-swe
+  for: [new-grad-student]
+  covers: [new-grad, usd, on-site, graduation-requirement]
+  text: |
+    Software Engineer, New Grad (2026) - Bluebird Systems - Atlanta, GA
+    On-site. $105,000/year.
+
+    Requirements: BS in Computer Science or related field by June 2026.
+    Comfortable in at least one of Python, Java or Go. Exposure to
+    distributed systems, Docker and SQL databases such as PostgreSQL.
+  expected:
+    company: Bluebird Systems
+    title: Software Engineer, New Grad (2026)
+    location: Atlanta, GA
+    salary_range: "$105,000/year"
+    employment_type: Full-time
+    work_mode: On-site
+    seniority: Junior
+    experience_required: ""
+    skills: [Python, Java, Go, Distributed Systems, Docker, PostgreSQL]
+    summary: New graduate software engineering role.
+
+- key: fullstack-junior
+  for: [new-grad-student]
+  covers: [junior, mern, hybrid]
+  text: |
+    Junior Full Stack Developer | Trellis Learning | Hybrid (Denver)
+    We use Node.js with Express.js, MongoDB and React. 0-2 years experience,
+    bootcamp grads welcome. 75-90k.
+  expected:
+    company: Trellis Learning
+    title: Junior Full Stack Developer
+    location: Denver, CO
+    salary_range: "75-90k"
+    employment_type: ""
+    work_mode: Hybrid
+    seniority: Junior
+    experience_required: "0-2 years"
+    skills: [Node.js, Express.js, MongoDB, React]
+    summary: Junior full stack role on a Node and React stack.
+
+- key: healthcare-data-analyst
+  for: [career-changer-analyst, data-scientist-in]
+  covers: [analyst, usd-hourly, healthcare]
+  text: |
+    Data Analyst - Mesa Valley Clinics (Phoenix, AZ)
+    $34-$40/hour, full-time, on-site Monday to Thursday, remote Friday.
+
+    Turn clinic operations data into decisions. Daily work in SQL and
+    Tableau, with Excel for ad hoc requests. Python is a bonus.
+    Healthcare experience helpful.
+  expected:
+    company: Mesa Valley Clinics
+    title: Data Analyst
+    location: Phoenix, AZ
+    salary_range: "$34-$40/hour"
+    employment_type: Full-time
+    work_mode: Hybrid
+    seniority: ""
+    experience_required: ""
+    skills: [SQL, Tableau, Excel, Python]
+    summary: Analyst turning clinic operations data into reports and dashboards.
+
+- key: bi-developer
+  for: [career-changer-analyst]
+  covers: [visualization, no-salary, mid]
+  text: |
+    BI Developer, Coyote Creek Insurance. Build data visualizations and
+    dashboards in Tableau and Power BI, write SQL against our warehouse,
+    and train business users. 2+ years.
+  expected:
+    company: Coyote Creek Insurance
+    title: BI Developer
+    location: ""
+    salary_range: ""
+    employment_type: ""
+    work_mode: ""
+    seniority: ""
+    experience_required: "2+ years"
+    skills: [Tableau, Power BI, SQL, Data Visualization]
+    summary: Builds dashboards and SQL reporting for an insurer.
+
+- key: firmware-automotive
+  for: [embedded-firmware-jp]
+  covers: [jpy, japan, embedded, safety]
+  text: |
+    Embedded Software Engineer (Automotive) / Setouchi Motors, Hiroshima
+    Annual salary JPY 7,000,000 - 10,000,000
+
+    - Develop ECU software in C to MISRA C rules
+    - AUTOSAR Classic experience
+    - CAN bus diagnostics (UDS)
+    - ISO 26262 knowledge is a plus
+    Japanese business level preferred. Full-time, on-site.
+  expected:
+    company: Setouchi Motors
+    title: Embedded Software Engineer (Automotive)
+    location: Hiroshima, Japan
+    salary_range: "JPY 7,000,000 - 10,000,000"
+    employment_type: Full-time
+    work_mode: On-site
+    seniority: ""
+    experience_required: ""
+    skills: [C, MISRA C, AUTOSAR, CAN bus]
+    summary: Develops automotive ECU software in C.
+
+- key: iot-firmware-rust
+  for: [embedded-firmware-jp]
+  covers: [rust, iot, remote, ble]
+  text: |
+    Firmware Engineer (Rust) at Lumen Hive - remote-first
+    Write embedded Rust for our battery powered sensors: BLE, FreeRTOS legacy
+    code we are migrating away from, and STM32 parts. 4+ years firmware.
+  expected:
+    company: Lumen Hive
+    title: Firmware Engineer (Rust)
+    location: ""
+    salary_range: ""
+    employment_type: ""
+    work_mode: Remote
+    seniority: ""
+    experience_required: "4+ years"
+    skills: [Rust, Embedded Rust, Bluetooth Low Energy, FreeRTOS, STM32]
+    summary: Writes embedded Rust firmware for battery powered sensors.
+
+- key: eng-manager-platform
+  for: [eng-manager-staff, devops-sre-uk]
+  covers: [manager, remote-us, leadership]
+  text: |
+    Engineering Manager, Developer Platform
+    Ironbark Data - Remote (US)
+    Base $210,000 - $245,000
+
+    Lead two teams (12 engineers) responsible for CI/CD, Kubernetes and
+    internal tooling. You've managed managers or large teams, hired well,
+    and can go deep on system design. Background on AWS expected.
+    8+ years in engineering, 3+ managing.
+  expected:
+    company: Ironbark Data
+    title: Engineering Manager, Developer Platform
+    location: United States
+    salary_range: "$210,000 - $245,000"
+    employment_type: ""
+    work_mode: Remote
+    seniority: Manager
+    experience_required: "8+ years"
+    skills: [Engineering Management, Hiring, Kubernetes, System Design, AWS]
+    summary: Manages the developer platform teams.
+
+- key: staff-java-kafka
+  for: [eng-manager-staff, backend-senior-us]
+  covers: [staff, java, event-driven]
+  text: |
+    Staff Software Engineer, Event Platform - Redfern Commerce, Seattle WA (hybrid)
+    $230k - $280k base. Java, Spring Boot, Apache Kafka at scale, and
+    the system design judgment to set direction for 40 engineers. 10+ years.
+  expected:
+    company: Redfern Commerce
+    title: Staff Software Engineer, Event Platform
+    location: Seattle, WA
+    salary_range: "$230k - $280k base"
+    employment_type: ""
+    work_mode: Hybrid
+    seniority: Staff
+    experience_required: "10+ years"
+    skills: [Java, Spring Boot, Apache Kafka, System Design]
+    summary: Staff engineer setting direction for an event platform.
+
+- key: php-freelance
+  for: [backend-senior-us]
+  covers: [freelance, fixed-price, vague]
+  text: |
+    Looking for a freelancer to fix our PHP/MySQL booking site. Some
+    JavaScript on the front end. Budget USD 2,000 fixed. Two weeks. Remote.
+  expected:
+    company: ""
+    title: PHP Developer
+    location: ""
+    salary_range: "USD 2,000 fixed"
+    employment_type: Freelance
+    work_mode: Remote
+    seniority: ""
+    experience_required: ""
+    skills: [PHP, MySQL, JavaScript]
+    summary: Short freelance fix for a PHP booking site.
+
+- key: long-boilerplate
+  for: [backend-senior-us, new-grad-student]
+  covers: [long-text, boilerplate, benefits-noise, eeo]
+  text: |
+    Backend Engineer
+    Halcyon Insurance Group
+    Hartford, CT - Hybrid
+
+    Who we are
+    Halcyon has protected families for over a century. We believe in
+    integrity, curiosity and putting customers first. Our values guide every
+    decision we make, from how we design products to how we treat each other.
+    We are proud of our award winning culture and our commitment to the
+    communities where we live and work.
+
+    What you'll do
+    Build and maintain Python services on FastAPI that price policies in real
+    time. Store data in PostgreSQL. Ship with Docker.
+
+    What we offer
+    Medical, dental and vision from day one. 401(k) with 6 percent match.
+    Twenty days of paid time off plus holidays. Tuition reimbursement. Gym
+    stipend. Volunteer days. Annual bonus program. Parental leave.
+
+    Halcyon is an equal opportunity employer. All qualified applicants will
+    receive consideration for employment without regard to race, color,
+    religion, sex, sexual orientation, gender identity, national origin,
+    disability or veteran status. Salary range for this role is $115,000 to
+    $135,000 annually depending on experience.
+  expected:
+    company: Halcyon Insurance Group
+    title: Backend Engineer
+    location: Hartford, CT
+    salary_range: "$115,000 to $135,000 annually"
+    employment_type: ""
+    work_mode: Hybrid
+    seniority: ""
+    experience_required: ""
+    skills: [Python, FastAPI, PostgreSQL, Docker]
+    summary: Builds Python pricing services for an insurer.
+
+- key: minimal-title-only
+  for: []
+  covers: [near-empty, missing-everything]
+  text: |
+    Software developer wanted. Apply within.
+  expected:
+    company: ""
+    title: Software Developer
+    location: ""
+    salary_range: ""
+    employment_type: ""
+    work_mode: ""
+    seniority: ""
+    experience_required: ""
+    skills: []
+    summary: ""
+
+- key: registered-nurse
+  for: []
+  covers: [off-domain, non-tech, negative]
+  text: |
+    Registered Nurse, Night Shift - St. Brigid Community Hospital, Tulsa OK
+    $42-$51/hr plus night differential. Full-time.
+    Requirements: active RN license, BLS and ACLS certification, 1 year
+    acute care experience.
+  expected:
+    company: St. Brigid Community Hospital
+    title: Registered Nurse, Night Shift
+    location: Tulsa, OK
+    salary_range: "$42-$51/hr"
+    employment_type: Full-time
+    work_mode: On-site
+    seniority: ""
+    experience_required: "1 year"
+    skills: [BLS, ACLS]
+    summary: Night shift nursing role at a community hospital.
+
+- key: line-cook
+  for: []
+  covers: [off-domain, non-tech, negative, part-time]
+  text: |
+    Line Cook (part-time) at Osteria Fumo, Portland OR. $19/hr + tips.
+    Weekend evenings. Food handler card required.
+  expected:
+    company: Osteria Fumo
+    title: Line Cook
+    location: Portland, OR
+    salary_range: "$19/hr"
+    employment_type: Part-time
+    work_mode: On-site
+    seniority: ""
+    experience_required: ""
+    skills: []
+    summary: Part-time weekend line cook.

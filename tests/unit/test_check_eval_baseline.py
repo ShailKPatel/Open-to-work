@@ -1,4 +1,4 @@
-"""scripts/check_eval_baseline.py's comparison: dense always, and each
+"""scripts/check_eval_baseline.py's comparison: the app retrieval always, and each
 candidate list the baseline has numbers for."""
 
 import pytest
@@ -9,17 +9,17 @@ _SCORES = {"precision_at_5": 0.5, "recall_at_10": 0.9}
 
 
 def _report(candidates: dict | None = None) -> dict:
-    return {"dense": _SCORES, "bm25": _SCORES, "candidates": candidates or {}}
+    return {"retrieval": _SCORES, "bm25": _SCORES, "candidates": candidates or {}}
 
 
 def _baseline(candidates: dict | None = None) -> dict:
-    baseline = {"dense": _SCORES, "tolerance": 0.01}
+    baseline = {"retrieval": _SCORES, "tolerance": 0.01}
     if candidates is not None:
         baseline["candidates"] = candidates
     return baseline
 
 
-def test_dense_only_baseline_gates_dense_only():
+def test_retrieval_only_baseline_gates_retrieval_only():
     rows = _rows(_report({"skills": _SCORES}), _baseline())
 
     assert [row[0] for row in rows] == ["precision@5", "recall@10"]

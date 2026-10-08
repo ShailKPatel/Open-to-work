@@ -82,7 +82,7 @@ flowchart LR
 
 ### Resume generation
 
-1. Semantic search finds candidate projects, skills, and experience bullets for the posting.
+1. Hybrid search finds candidate projects, skills, and experience bullets for the posting: one query for the role and one per required skill, each run as both embedding search and keyword (BM25) search, merged by reciprocal rank fusion. It searches with the posting's extracted title, summary, and skills rather than the raw text.
 2. One LLM call picks from those candidates and writes the summary and project bullets.
 3. Anything not on the candidate list is dropped. Work history and education come straight from your profile.
 4. A Jinja2 LaTeX template renders the result and Tectonic compiles it.
@@ -156,13 +156,44 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d qdrant
 
 ### Evaluation
 
-`make eval` scores retrieval against a hand-labeled golden set:
+The app has no users or production traffic to learn from, so it is evaluated on two purpose-built sets. Neither contains anyone's real profile.
 
-- Dense retrieval against a BM25 baseline (precision@5, recall@10)
-- Precision over the top 10 (precision@10)
-- LLM-judged groundedness of generated bullets
+| Set | What is in it | Labels |
+| --- | --- | --- |
+| Real-text (`evals/real/`) | 28 public job postings from 14 employers' job boards, 21 pinned open-source repositories as one portfolio | Hand-labeled against written criteria |
+| Synthetic (`evals/synthetic/`) | 10 invented profiles (new grad to manager, six countries), 29 postings, 45 labeled resume bullets, 25 prompt injection postings | Rule-labeled; bullets and attacks by hand |
 
-Label your own set with `python -m scripts.label_golden_set --account <id>`. CI runs the same eval on a synthetic fixture and fails if retrieval drops below the committed baseline.
+[`evals/real/DATA_SOURCES.md`](evals/real/DATA_SOURCES.md) covers sources, privacy, and limits. Posting and README text is downloaded on first run and never committed.
+
+**Retrieval** (2026-10-08, real-text set, 26 queries, 95% bootstrap intervals):
+
+| System | precision@5 | nDCG@10 | MRR |
+| --- | --- | --- | --- |
+| Hybrid search (what the app runs) | **0.800** [0.69, 0.89] | **0.703** [0.61, 0.79] | **0.918** [0.82, 1.00] |
+| Single-query embedding search (previous) | 0.515 [0.43, 0.61] | 0.481 [0.40, 0.57] | 0.785 [0.66, 0.89] |
+| BM25 keyword baseline | 0.654 [0.56, 0.75] | 0.597 [0.51, 0.68] | 0.827 [0.73, 0.92] |
+
+Paired over the same queries, hybrid beats BM25 by +0.146 precision@5 [+0.062, +0.223] and the previous search by +0.285 [+0.169, +0.392]. On the synthetic set (68 queries) it beats the previous search on every metric and ties BM25 on precision@5, which that set's keyword-based labels favour. `scripts/compare_retrieval.py` shows how the design was chosen: cross-encoder rerankers (MiniLM, bge-reranker-base) and adding the project description to indexed text each made results worse, so neither ships. Six embedding models compared under the same hybrid search all landed within about 0.05 precision@5 of each other, so bge-base-en-v1.5 stays ([results](evals/results/embedding-retrieval-20261008.md)).
+
+**Prompt injection detector** (flags and logs, never blocks; the defence is that posting text only ever reaches the model as a quarantined document):
+
+| Set | Attacks detected | False positives |
+| --- | --- | --- |
+| Development (rules written alongside) | 11/11 | 0/4 |
+| Held-out (written after, never tuned on) | 0/10 | 0/5 |
+| Ordinary postings | - | 0/57 |
+
+The held-out rate is the honest one: pattern rules catch the attacks they were written for and miss paraphrases, chat-template tokens, homoglyphs, and other languages.
+
+**Commands**
+
+| Command | Runs | Cost |
+| --- | --- | --- |
+| `make eval-real` / `make eval-synthetic` | Retrieval on each set, in a throwaway database | Free |
+| `LIVE_LLM_API_KEY=... make eval-llm` | Job and resume extraction field accuracy, the groundedness judge against human labels (accuracy, Cohen's kappa), extraction under prompt injection | About 160 billed calls |
+| `make eval ACCOUNT=<id>` | Retrieval and groundedness on your own profile against a golden set you label (`scripts/label_golden_set.py`) | Free without the judge |
+
+Add `WRITE=1` to save a report to `evals/results/`. CI runs retrieval on a separate invented fixture and fails if it drops below `evals/ci_baseline.json`; dependencies are pinned in `constraints.txt` so the gate measures code changes, not package releases.
 
 ### Project layout
 
@@ -171,12 +202,13 @@ app/
   api/            FastAPI routers and page routes
   core/           settings, models, LLM client, embeddings, credential storage
   ingest/github/  GitHub client, sync, manifest parsing, cancellation
-  profile/        skill extraction and weighting, resume and job extraction
-  retrieval/      Qdrant indexing and search
+  profile/        skill extraction and weighting, resume and job extraction, injection detection
+  retrieval/      Qdrant indexing, hybrid search (embeddings + BM25)
   resume_build/   resume assembly, LaTeX templates, compilation, page fitting
-  evals/          golden set, BM25 baseline, metrics, groundedness
+  evals/          metrics, eval sets, groundedness judge, LLM and injection evals
   web/templates/  Jinja2 pages
-scripts/          golden-set labeling, eval gate, embedding benchmark, maintenance
+scripts/          eval runners, retrieval comparison, eval gate, labeling, maintenance
+evals/            synthetic and real-text eval sets, CI fixture and baseline, results
 tests/            unit and live suites
 ```
 

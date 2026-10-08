@@ -1,0 +1,93 @@
+key: data-scientist-in
+account_id: 9103
+first_name: Priya
+last_name: Raghunathan
+github_username: demo-praghu
+headline: Data Scientist
+location: Bengaluru, India
+email: priya.r@example.in
+phone: "+91 98450 55501"
+links:
+  - {platform: github, url: "https://github.com/demo-praghu"}
+  - {platform: linkedin, url: "https://www.linkedin.com/in/demo-praghu"}
+  - {platform: other, url: "https://www.kaggle.com/demo-praghu", label: Kaggle}
+resume_style: classic
+date_style: mon_year
+covers: [mid, india, data-science, python, ml, cgpa, internship]
+
+repos:
+  - key: churn-model
+    name: churn-model
+    language: Jupyter Notebook
+    stars: 76
+    description: Telecom churn prediction with gradient boosting and SHAP explanations.
+    readme: |
+      # churn-model
+      Predicts customer churn on a public telecom dataset. Feature engineering
+      in Pandas, LightGBM and XGBoost models tuned with Optuna, and SHAP plots
+      explaining each prediction. AUC 0.89 on the held out month.
+    manifests:
+      requirements.txt: [pandas, numpy, lightgbm, xgboost, optuna, shap, matplotlib, jupyter]
+    readme_skills: [Feature Engineering, Machine Learning]
+  - key: demand-forecast
+    name: demand-forecast
+    language: Python
+    stars: 41
+    description: Weekly SKU demand forecasting with hierarchical reconciliation.
+    readme: |
+      # demand-forecast
+      Forecasts weekly demand for 3,000 SKUs. Compares Prophet, LightGBM and a
+      seasonal naive baseline with time series cross validation. Results are
+      served in a Streamlit dashboard.
+    manifests:
+      requirements.txt: [pandas, lightgbm, statsmodels, streamlit, scikit-learn]
+    readme_skills: [Time Series Forecasting, Prophet]
+  - key: sql-practice
+    name: sql-practice
+    language: SQL
+    stars: 8
+    description: Window function and CTE exercises with solutions.
+    readme: null
+    manifests: {}
+    readme_skills: [SQL]
+
+roles:
+  - key: grocery
+    company: Basketly
+    title: Data Scientist
+    location: Bengaluru, India
+    start: jul 2022
+    end: null
+    skills: [Python, SQL, LightGBM, A/B Testing, Apache Spark]
+    points:
+      - text: Built the delivery slot demand model in LightGBM, reducing missed slots by 18 percent across six cities.
+        skills: [LightGBM, Python]
+      - text: Designed and analysed 30 A/B tests on the checkout funnel, including a sequential testing guide for product managers.
+        skills: [A/B Testing]
+      - text: Rewrote the weekly cohort pipeline in PySpark, cutting runtime from 5 hours to 40 minutes.
+        skills: [Apache Spark]
+      - text: Wrote the SQL metric layer that 40 analysts query for retention and basket size.
+        skills: [SQL]
+  - key: intern
+    company: Aranya Analytics
+    title: Data Science Intern
+    location: Pune, India
+    start: jan 2022
+    end: jun 2022
+    skills: [Python, Pandas, Scikit-learn, Tableau]
+    points:
+      - text: Cleaned and joined five years of loan application data in Pandas for a default risk study.
+        skills: [Pandas]
+      - text: Trained a logistic regression baseline in Scikit-learn that the credit team adopted for screening.
+        skills: [Scikit-learn]
+      - text: Built Tableau dashboards for branch level approval rates.
+        skills: [Tableau]
+
+education:
+  - institution: National Institute of Technology Karnataka
+    degree: B.Tech in Computer Science and Engineering
+    location: Surathkal, India
+    start: aug 2018
+    end: may 2022
+    grade: "CGPA: 8.7/10"
+    details: ["Relevant coursework: Probability and Statistics, Machine Learning, Database Systems"]

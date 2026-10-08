@@ -97,8 +97,9 @@ def test_scores_candidate_skills_by_name_and_projects_by_repository(tmp_path, mo
     assert scores["skills"].precision_at_5 == 1 / 5
     assert scores["skills"].recall_at_10 == 1.0
     assert scores["skills"].pairs_scored == 1
-    # Only Python's repository is relevant; Kafka is role evidence.
-    assert scores["projects"].precision_at_5 == 1 / 2
+    # Only Python's repository is relevant; Kafka is role evidence. Two
+    # projects come back, and precision@5 divides by 5 regardless.
+    assert scores["projects"].precision_at_5 == 1 / 5
     assert scores["projects"].recall_at_10 == 1.0
     assert scores["projects"].pairs_scored == 1
 

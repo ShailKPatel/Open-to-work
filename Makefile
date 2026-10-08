@@ -1,4 +1,4 @@
-.PHONY: test coverage test-live lint ingest eval eval-fixture dev up down start
+.PHONY: test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-llm constraints dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
@@ -63,6 +63,38 @@ eval-fixture:
 		| tee /dev/stderr | sed -n 's/^Written to //p'); \
 	.venv/bin/python -m scripts.check_eval_baseline \
 		--report "$$REPORT" --baseline evals/ci_baseline.json
+
+# Retrieval eval over the invented personas and postings in
+# evals/synthetic/. Seeds into a temporary database and in-process Qdrant
+# and deletes both afterwards, so no Qdrant server is needed and your own
+# profile is never touched. WRITE=1 saves the summary to evals/results/.
+eval-synthetic:
+	.venv/bin/python -m scripts.run_synthetic_eval $(if $(WRITE),--write,)
+
+# Same, on public job postings and open-source repositories labeled by hand
+# (evals/real/, see DATA_SOURCES.md there). Downloads the text into the
+# gitignored evals/real/cache/ on first run; later runs reuse it.
+eval-real:
+	.venv/bin/python -m scripts.fetch_real_eval_data
+	.venv/bin/python -m scripts.run_synthetic_eval --real $(if $(WRITE),--write,)
+
+# LLM-backed evals: job and resume extraction, the groundedness judge
+# against human labels, and prompt injection (scripts/run_llm_evals.py).
+# Real, billed calls with the key you pass, in a throwaway environment:
+#   LIVE_LLM_API_KEY=... make eval-llm [WRITE=1]
+eval-llm:
+	.venv/bin/python -m scripts.fetch_real_eval_data
+	.venv/bin/python -m scripts.run_llm_evals $(if $(WRITE),--write,)
+
+# Re-pin constraints.txt to the current venv. Run deliberately, after the
+# suite passes on upgraded packages, and commit with a note on what moved.
+# CUDA-only packages are dropped: CI and the image use CPU torch.
+constraints:
+	@sed -n '/^#/p' constraints.txt > constraints.txt.new
+	@.venv/bin/pip freeze --exclude-editable | grep -v -i -E '^(nvidia-|triton==|cuda-)' \
+		| sort -f >> constraints.txt.new
+	@mv constraints.txt.new constraints.txt
+	@echo "constraints.txt updated; review the diff before committing"
 
 # Docker (one command, no host Python setup).
 up:

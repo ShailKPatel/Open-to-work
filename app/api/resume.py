@@ -56,6 +56,7 @@ from app.resume_build.checkpoint import progress_steps
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
 from app.resume_build.orchestrator import build_resume_data_from_seed, edit_resume_content
 from app.resume_build.pagefit import PageFitNotAchievedError, fit_to_page_limit
+from app.retrieval.search import Query, query_for_posting
 
 router = APIRouter(prefix="/api/resume")
 logger = logging.getLogger(__name__)
@@ -543,6 +544,16 @@ class ResumeEditRequest(BaseModel):
     message: str
 
 
+def _retrieval_query_for_edit(resume: Resume, db: Session) -> Query | None:
+    """For a resume built for a posting, search with that posting's
+    extracted fields rather than its raw text (search.py's
+    query_for_posting); None leaves retrieval on the edit's job text."""
+    if resume.job_posting_id is None:
+        return None
+    posting = db.get(JobPosting, resume.job_posting_id)
+    return query_for_posting(posting) if posting is not None else None
+
+
 def _job_text_for_edit(resume: Resume, db: Session) -> str:
     """The text this resume's content is (or, for the first edit, will
     be) grounded against: a linked JobPosting's own text when this
@@ -611,7 +622,12 @@ def edit_resume(resume_id: int, body: ResumeEditRequest, *, db: DbSession) -> Re
             base_content = row.content_json
 
         new_content = edit_resume_content(
-            row.account_id, job_text, base_content, message, template=template
+            row.account_id,
+            job_text,
+            base_content,
+            message,
+            template=template,
+            retrieval_query=_retrieval_query_for_edit(row, db),
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

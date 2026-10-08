@@ -1,0 +1,114 @@
+key: eng-manager-staff
+account_id: 9110
+first_name: Olivia
+last_name: Hartmann-Reyes
+github_username: demo-ohartmann
+headline: Engineering Manager
+location: Remote (Seattle, WA, USA)
+email: olivia.hr@example.com
+phone: "+1 206 555 0110"
+links:
+  - {platform: linkedin, url: "https://www.linkedin.com/in/demo-ohartmann"}
+  - {platform: other, url: "https://ohartmann.example.blog", label: Blog}
+resume_style: classic
+date_style: mon_year
+covers: [manager, staff, long-history, leadership, remote, few-repos, freelance-overlap]
+
+repos:
+  - key: eng-ladder
+    name: eng-ladder
+    language: null
+    stars: 270
+    description: An open engineering career ladder with examples per level.
+    readme: |
+      # eng-ladder
+      A career ladder for software engineers from new grad to principal, with
+      concrete examples for each competency. Used by several startups as a
+      starting point.
+    manifests: {}
+    readme_skills: [Engineering Management, Career Development]
+  - key: oncall-calc
+    name: oncall-calc
+    language: Python
+    stars: 18
+    description: Estimates on-call load from PagerDuty exports.
+    readme: |
+      # oncall-calc
+      Reads PagerDuty incident exports with Pandas and reports pages per
+      shift, after hours load and the noisiest services.
+    manifests:
+      requirements.txt: [pandas]
+    readme_skills: [Python, PagerDuty]
+
+roles:
+  - key: em-current
+    company: Cobaltline Software
+    title: Engineering Manager, Platform
+    location: Remote
+    start: jan 2022
+    end: null
+    skills: [Engineering Management, Hiring, AWS, Kubernetes]
+    points:
+      - text: Manage three teams and 19 engineers owning the deployment platform, observability and developer tooling.
+        skills: [Engineering Management]
+      - text: Hired 11 engineers in 12 months and rewrote the interview loop around work samples.
+        skills: [Hiring]
+      - text: Led the move from a monolithic Jenkins setup to self service deploys on Kubernetes, raising weekly deploys from 40 to 600.
+        skills: [Kubernetes]
+      - text: Cut AWS spend by 2.4 million dollars a year through a quarterly cost review with every team.
+        skills: [AWS]
+  - key: staff
+    company: Cobaltline Software
+    title: Staff Software Engineer
+    location: Seattle, WA
+    start: mar 2018
+    end: dec 2021
+    skills: [Java, Spring Boot, System Design, Apache Kafka]
+    points:
+      - text: Designed the event backbone on Apache Kafka that replaced point to point integrations between 30 services.
+        skills: [Apache Kafka, System Design]
+      - text: Wrote the architecture review process and chaired it for three years.
+        skills: [System Design]
+      - text: Rebuilt the billing service in Java and Spring Boot with no customer facing downtime.
+        skills: [Java, Spring Boot]
+  - key: consulting
+    company: Independent Consultant
+    title: Technical Advisor
+    location: Remote
+    start: jun 2019
+    end: dec 2020
+    skills: [System Design]
+    points:
+      - text: Advised two seed stage startups on architecture and first engineering hires, part time alongside a full time role.
+        skills: [System Design, Hiring]
+  - key: senior
+    company: Evergreen Retail
+    title: Senior Software Engineer
+    location: Seattle, WA
+    start: jul 2013
+    end: feb 2018
+    skills: [Java, Oracle, JavaScript]
+    points:
+      - text: Built the store inventory sync in Java against an Oracle database for 400 stores.
+        skills: [Java, Oracle]
+      - text: Led the team's switch from quarterly to two week releases.
+        skills: []
+  - key: early
+    company: Evergreen Retail
+    title: Software Engineer
+    location: Seattle, WA
+    start: jul 2010
+    end: jun 2013
+    skills: [Java, JavaScript]
+    points:
+      - text: Wrote the store locator page and its search API.
+        skills: [JavaScript, Java]
+
+education:
+  - institution: University of Washington
+    degree: B.S. in Computer Engineering
+    location: Seattle, WA
+    start: sep 2006
+    end: jun 2010
+    grade: ""
+    details: []

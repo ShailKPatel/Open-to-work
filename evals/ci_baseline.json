@@ -2,31 +2,44 @@
   "notes": [
     "Expected retrieval numbers for the synthetic CI fixture (account 9001,",
     "scripts/seed_eval_fixture.py) scored against evals/golden/ci_fixture.yaml.",
-    "The eval job fails if dense precision@5 or recall@10, or either number",
-    "for a list under `candidates`, drops more than `tolerance` below these",
-    "values. Rising numbers never fail the gate. `candidates` scores what the",
-    "resume builder hands the model (app/evals/candidates.py): skills by name,",
-    "projects by repository, over the 8 skill_evidence pairs.",
+    "The eval job fails if the app's retrieval precision@5 or recall@10, or",
+    "either number for a list under `candidates`, drops more than `tolerance`",
+    "below these values. Rising numbers never fail the gate. `retrieval` is",
+    "the hybrid search the app runs (app/retrieval/search.py); `candidates`",
+    "scores what the resume builder hands the model (app/evals/candidates.py):",
+    "skills by name, projects by repository, over the 8 skill_evidence pairs.",
     "",
     "These are a canary for retrieval breaking, not a quality measurement:",
     "the data behind them is invented. See the header of ci_fixture.yaml.",
     "",
+    "Last re-recorded when search moved from one dense query to hybrid search",
+    "(per-skill sub-queries, dense and BM25, fused by reciprocal rank) and",
+    "precision@k began dividing by k. On this fixture precision@5 rose from",
+    "0.585 to 0.615 and recall@10 fell from 0.962 to 0.923, one document in",
+    "one pair; on the 26 real-text pairs (evals/real/) precision@5 rose from",
+    "0.515 to 0.823. Candidate skills precision@5 moved from 0.575 to 0.600",
+    "only because of the denominator change.",
+    "",
     "To update deliberately, when a change legitimately moves the numbers:",
     "run `make eval-fixture`, confirm the new numbers are what the change",
-    "should have produced, copy them into `dense` or `candidates` below, and say in the",
-    "commit message which change moved them and why the new value is right.",
+    "should have produced, copy them into `retrieval` or `candidates` below, and",
+    "say in the commit message which change moved them and why the new value is right.",
     "Never update this file to make a red build go green without that."
   ],
   "account_id": 9001,
   "golden_set": "evals/golden/ci_fixture.yaml",
   "pairs_scored": 13,
-  "dense": {
+  "retrieval": {
+    "precision_at_5": 0.615385,
+    "recall_at_10": 0.923077
+  },
+  "dense_reference": {
     "precision_at_5": 0.584615,
     "recall_at_10": 0.961538
   },
   "candidates": {
     "skills": {
-      "precision_at_5": 0.575,
+      "precision_at_5": 0.6,
       "recall_at_10": 1.0
     },
     "projects": {
@@ -60,10 +73,9 @@
     "document that stops being retrieved, and is non-zero only so that it",
     "tests ranking rather than float equality.",
     "",
-    "One caveat worth knowing before trusting a red build. This project's",
-    "dependencies are declared with floors and resolved fresh on every run,",
-    "so a torch or sentence-transformers release can change these vectors",
-    "without a line of this repository changing. Until the dependency tree",
-    "is pinned, check what moved before assuming the code did."
+    "CI installs from constraints.txt, so a torch or sentence-transformers",
+    "release cannot change these vectors unless that file changes. When",
+    "`make constraints` re-pins it, run the eval gate before committing: a",
+    "moved number there is the dependency upgrade, not the code."
   ]
 }

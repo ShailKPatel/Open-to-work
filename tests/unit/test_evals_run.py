@@ -66,7 +66,7 @@ def test_no_golden_pairs_for_account_reports_zero_scored(tmp_path, monkeypatch, 
     report = run_eval(account_id, golden_path=golden_path, include_groundedness=False)
 
     assert report.pairs_scored == 0
-    assert report.dense_beats_bm25 is None
+    assert report.retrieval_beats_bm25 is None
     assert any("no golden pairs" in n for n in report.notes)
 
 
@@ -118,9 +118,14 @@ def test_dense_and_bm25_scored_against_real_evidence(tmp_path, monkeypatch, tmp_
 
     assert report.pairs_scored == 1
     # only 2 rows exist total, both land in the top-5 window: precision is
-    # 1 relevant of 2 retrieved, recall is the 1 relevant id fully found.
-    assert report.dense["precision_at_5"] == 0.5
+    # 1 relevant of 5 slots, recall is the 1 relevant id fully found.
+    assert report.dense["precision_at_5"] == 1 / 5
     assert report.dense["recall_at_10"] == 1.0
+    assert report.dense["retrieved_avg"] == 2.0
+    assert report.dense["mrr"] == 1.0
+    # The app's hybrid search finds the same row first.
+    assert report.retrieval["recall_at_10"] == 1.0
+    assert report.retrieval["mrr"] == 1.0
     assert report.precision_at_10 is not None
     assert report.groundedness is None  # skipped
     assert any("groundedness check skipped" in n for n in report.notes)
@@ -214,3 +219,69 @@ def test_write_report_creates_a_json_file(tmp_path, tmp_path_factory):
     assert out_path.exists()
     assert out_path.suffix == ".json"
     assert str(account_id) in out_path.name
+
+
+def test_partial_pairs_are_excluded_and_noted(tmp_path, monkeypatch, tmp_path_factory):
+    _reset(tmp_path)
+    account_id = _make_account()
+    golden_path = tmp_path_factory.mktemp("golden") / "golden_set.yaml"
+    save_golden_set(
+        [
+            GoldenPair(
+                id="half", account_id=account_id, collection="skill_evidence",
+                query_text="python", relevant_ids=[1], partial=True,
+            )
+        ],
+        golden_path,
+    )
+
+    report = run_eval(account_id, golden_path=golden_path, include_groundedness=False)
+
+    assert report.pairs_scored == 0
+    assert any("partly judged" in n and "half" in n for n in report.notes)
+
+
+def test_differences_report_paired_intervals(tmp_path, monkeypatch, tmp_path_factory):
+    _reset(tmp_path)
+    _fake_embed(monkeypatch)
+    account_id = _make_account()
+    db = get_db()
+    repo = Repository(
+        account_id=account_id, github_id=1, name="proj", full_name="octocat/proj",
+        url="https://example.invalid/proj",
+    )
+    db.add(repo)
+    db.commit()
+    rows = []
+    for skill in ("Python", "Go", "Rust"):
+        row = SkillEvidence(
+            repo_id=repo.id, skill=skill, evidence_type="readme_described",
+            weight=1.0, confidence=1.0,
+        )
+        db.add(row)
+        rows.append(row)
+    db.commit()
+    for row in rows:
+        db.refresh(row)
+    db.close()
+    index_skill_evidence(rows, account_id=account_id)
+
+    golden_path = tmp_path_factory.mktemp("golden") / "golden_set.yaml"
+    save_golden_set(
+        [
+            GoldenPair(
+                id=f"p{i}", account_id=account_id, collection="skill_evidence",
+                query_text=query, relevant_ids=[rows[i].id],
+            )
+            for i, query in enumerate(["python", "go", "rust"])
+        ],
+        golden_path,
+    )
+
+    report = run_eval(account_id, golden_path=golden_path, include_groundedness=False)
+
+    assert report.pairs_scored == 3
+    assert set(report.differences) == {"retrieval - bm25", "retrieval - dense"}
+    diff = report.differences["retrieval - bm25"]["precision_at_5"]
+    assert set(diff) == {"mean", "ci95"}
+    assert diff["ci95"] is not None

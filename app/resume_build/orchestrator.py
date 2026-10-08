@@ -60,6 +60,7 @@ from app.resume_build.grounding import (
     years_of_experience,
 )
 from app.resume_build.latex import render_resume
+from app.retrieval.search import Query, query_for_posting
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +84,13 @@ _DEFAULT_POINTS_PER_ROLE = {"onepage": 3, "twopage": 5}
 _MAX_POINTS_PER_ROLE_CHOICE = 8
 _MAX_RESERVE_PROJECTS = 4
 _MAX_RESERVE_SKILLS = 20
-# Candidates whose search similarity is within this of each other are a
-# tie on relevance, and the stronger evidence (app/profile/weighting.py)
-# goes first. Outside a tie similarity alone decides, so evidence weight
-# never pushes a better match out of the candidate list.
+# Candidates whose search score is within this of each other are a tie on
+# relevance, and the stronger evidence (app/profile/weighting.py) goes
+# first. Outside a tie the score alone decides, so evidence weight never
+# pushes a better match out of the candidate list. Search scores are fused
+# reciprocal rank scores in (0, 1] (app/retrieval/search.py); values from
+# 0 to 0.05 moved candidate precision@5 and nDCG@10 by under 0.01 on both
+# eval sets, so the value set for cosine similarity was kept.
 _NEAR_TIE = 0.02
 
 _LENGTH_GUIDANCE = {
@@ -288,7 +292,7 @@ def _by_strength[T](items: list[T], weight: Callable[[T], float]) -> list[T]:
 def _candidate_projects(
     db: Session,
     account_id: int,
-    job_text: str,
+    job_text: str | Query,
     selected_project_ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     from app.retrieval.search import search_skill_evidence
@@ -378,7 +382,10 @@ def _candidate_projects(
 
 
 def _candidate_skills(
-    db: Session, account_id: int, job_text: str, selected_skills: list[str] | None = None
+    db: Session,
+    account_id: int,
+    job_text: str | Query,
+    selected_skills: list[str] | None = None,
 ) -> list[str]:
     from app.retrieval.search import search_skill_evidence
 
@@ -506,7 +513,7 @@ def _pick_experience_points(
 
 def _select_experience_points(
     experience: list[dict[str, Any]],
-    job_text: str,
+    job_text: str | Query,
     account_id: int,
     top_k: int = _MAX_POINTS_PER_ROLE,
 ) -> list[dict[str, Any]]:
@@ -877,7 +884,13 @@ def _build_deterministic_context(
     selected_phone: str | None = None,
     selected_project_ids: list[int] | None = None,
     selected_skills: list[str] | None = None,
+    retrieval_query: Query | None = None,
 ) -> _DeterministicContext:
+    # Retrieval searches with the posting's extracted fields when the
+    # caller has them (query_for_posting); the raw text is what the model
+    # reads, and is too long for the embedding model to see past its
+    # opening paragraphs.
+    search_query: str | Query = retrieval_query or job_text
     social_links = list(
         db.execute(select(SocialLink).where(SocialLink.account_id == account_id)).scalars()
     )
@@ -887,15 +900,15 @@ def _build_deterministic_context(
     full_experience = build_experience_context(db, account_id)
     all_points = {role["id"]: list(role["points"]) for role in full_experience}
     pool = _select_experience_points(
-        full_experience, job_text, account_id, top_k=_POINT_POOL_PER_ROLE
+        full_experience, search_query, account_id, top_k=_POINT_POOL_PER_ROLE
     )
     experience = [{**role, "points": role["points"][:_MAX_POINTS_PER_ROLE]} for role in pool]
     education = build_education_context(db, account_id)
     candidates = _candidate_projects(
-        db, account_id, job_text, selected_project_ids=selected_project_ids
+        db, account_id, search_query, selected_project_ids=selected_project_ids
     )
     candidate_skill_names = _candidate_skills(
-        db, account_id, job_text, selected_skills=selected_skills
+        db, account_id, search_query, selected_skills=selected_skills
     )
     skill_strength, repo_strength = _evidence_strength(db, account_id)
     return _DeterministicContext(
@@ -928,6 +941,7 @@ def _build_resume_data_for_text(
     selected_education_ids: list[int] | None = None,
     custom_instruction: str | None = None,
     points_per_role: int | None = None,
+    retrieval_query: Query | None = None,
 ) -> dict[str, Any]:
     ctx = _build_deterministic_context(
         db,
@@ -938,6 +952,7 @@ def _build_resume_data_for_text(
         selected_phone=selected_phone,
         selected_project_ids=selected_project_ids,
         selected_skills=selected_skills,
+        retrieval_query=retrieval_query,
     )
     candidates_by_id = {c["repo_id"]: c for c in ctx.candidates}
 
@@ -1058,6 +1073,7 @@ def build_resume_data(
             selected_education_ids=selected_education_ids,
             custom_instruction=custom_instruction,
             points_per_role=points_per_role,
+            retrieval_query=query_for_posting(posting),
         )
     finally:
         db.close()
@@ -1159,6 +1175,7 @@ def edit_resume_content(
     current_content: dict[str, Any],
     message: str,
     template: str = "onepage",
+    retrieval_query: Query | None = None,
 ) -> dict[str, Any]:
     """Applies a free-text edit instruction from the account holder to an
     existing resume's summary/projects/skills, re-grounded against the
@@ -1180,7 +1197,9 @@ def edit_resume_content(
         account = db.get(Account, account_id)
         if account is None:
             raise ValueError(f"no account with id={account_id}")
-        ctx = _build_deterministic_context(db, account, account_id, job_text)
+        ctx = _build_deterministic_context(
+            db, account, account_id, job_text, retrieval_query=retrieval_query
+        )
         candidates_by_id = {c["repo_id"]: c for c in ctx.candidates}
 
         # sort_keys so the same resume content always serializes to the

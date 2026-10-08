@@ -82,6 +82,7 @@ The recheck lists models instead of generating text. It proves the credential wo
 - `evidence.py`: skill-evidence CRUD shared by projects and experience.
 - `resume_extract.py`, `resume_ingest.py`, `resume_profile_merge.py`: read a resume upload (PDF or image) with a multimodal model into `Skill` and `Experience` rows. The read runs in a worker thread, so the upload returns at once. An upload left pending by a restart is marked failed at startup. Skills are deduplicated by casefolded name. Roles match on company and title, and dates fill only empty fields. Resumes made by this app are refused, so tailored wording does not flow back into the profile. Each generated PDF carries `Creator: Open to Work`, and PDFs without it are caught by comparing bytes with the library.
 - `job_extract.py`, `job_screenshot_extract.py`: pull structured fields from postings. `skills_required` is a list of `{skill, level}`. `parse_skills_required()` also reads a plain list of strings.
+- `injection.py`: flags posting text that looks written to steer a model (override directives, role spoofing, hidden markup, zero-width and bidi characters, output injection, encoded payloads). Detections are stored under `extracted_json["injection_flags"]` and logged, never acted on; the quarantined user-role document is the defence.
 - `skill_map.py`: builds the 2D skill map. Each skill is embedded with its context (the languages of its repos and the skills next to it). Bare names embed by spelling, so `ElasticNet` and `EfficientNet` would land on top of each other. The map uses `bge-small`, not the retrieval `EMBEDDING_MODEL`. It never writes to Qdrant, and `embedding_cache` is keyed by model, so the two live side by side. Vectors are projected with t-SNE: on the committed benchmark it kept 0.530 of each skill's nearest neighbours against 0.294 for PCA (`evals/results/embeddings-20260921T111424Z.md`). Clustering runs on the projected points, so the groups match the screen. The finished layout is stored in `skill_map_cache` with a fingerprint of its input, so `GET /api/skills/map` usually embeds nothing. `scripts/benchmark_embeddings.py` runs the benchmark.
 - `role_family.py`: searches the `role_families` collection (cosine similarity 0.86 or more) before creating a family with a bulk-tier LLM call. `canonical_name` is unique. If a concurrent insert wins, the existing row is used.
 
@@ -89,13 +90,14 @@ The recheck lists models instead of generating text. It proves the credential wo
 
 - `vectorstore.py`: Qdrant client and `ensure_collection()`. `QDRANT_URL=":memory:"` runs Qdrant in memory for tests.
 - `index.py`: writers for the `skill_evidence`, `experience_points`, `resumes`, `role_families`, and `job_postings` collections. It embeds short claims (a skill with its source, a posting's extracted fields), not raw documents. Skill evidence from experience uses point id `id + 1_000_000_000` (`experience_evidence_point_id()`) so it cannot collide with repo evidence in the same collection. Deletes must use the same offset.
-- `search.py`: searches each collection, filtered by account. Role families are the one global search.
+- `search.py`: searches each collection, filtered by account. Role families are the one global search. Skill evidence and experience points are searched hybrid: a `Query` holds the posting text and the skills it names, and the full text plus one sub-query per skill each run as a dense search (with the BGE query instruction) and as BM25 over the same points, merged by reciprocal rank fusion. `query_for_posting()` builds the query from a posting's extracted title, summary and skills, because the embedding model reads only the first 512 tokens of raw text. `mode="dense"` keeps the old single-vector search for the eval harness to report as a reference.
+- `keyword.py`: BM25 over a fixed corpus (`rank_bm25`). Returns only documents sharing a token with the query, ties broken by id.
 
 ### `app/resume_build`
 
 - `context.py`: header, experience, and education data taken straight from the database.
 - `orchestrator.py`: `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`.
-  1. Semantic search over the posting text finds candidate projects and skills. Similarity sets the order. Evidence weight breaks near-ties.
+  1. Hybrid search with the posting's extracted query (`query_for_posting`) finds candidate projects and skills. The fused score sets the order. Evidence weight breaks near-ties.
   2. Experience points are picked per role, up to 5 each. If search returns nothing for a role, all its points are used.
   3. One quality-tier call returns JSON with the summary, projects, and skills, following length rules for the chosen template. The rules aim a little long, because page fit trims cheaper than it fills.
   4. Any repo id or skill that was not a candidate is dropped. Project bullets and the summary go through `grounding.py`: a bullet with a number its project's evidence does not state, or a technology the project does not have, is dropped. A project left with no bullets falls back to its description. A summary sentence with an unsupported number is removed. The selected skills are then ordered by evidence weight.
@@ -114,11 +116,15 @@ The recheck lists models instead of generating text. It proves the credential wo
 ### `app/evals`
 
 - `golden.py`: golden-set pairs stored in YAML.
-- `bm25.py`: the keyword baseline, using `rank_bm25`.
-- `metrics.py`: precision@k and recall@k.
-- `candidates.py`: scores what the resume builder hands the model (`_candidate_skills` by name, `_candidate_projects` by repo) against the golden pairs, so a change in candidate ranking shows up in the numbers. The CI gate checks these against `evals/ci_baseline.json` with the dense numbers.
+- `bm25.py`: the keyword baseline, re-exported from `app/retrieval/keyword.py`.
+- `metrics.py`: precision@k (divided by k), recall@k, nDCG@k, reciprocal rank, percentile bootstrap intervals, and paired differences between two systems over the same pairs.
+- `candidates.py`: scores what the resume builder hands the model (`_candidate_skills` by name, `_candidate_projects` by repo) against the golden pairs, so a change in candidate ranking shows up in the numbers. The CI gate checks these against `evals/ci_baseline.json` with the retrieval numbers.
 - `groundedness.py`: an LLM judge that checks generated bullets against project evidence, capped by `max_checks`.
-- `run.py`: `run_eval(account_id) -> MetricsReport` and `write_report()`. The BM25 corpus is built from SQLite with the same text builders as the dense index.
+- `run.py`: `run_eval(account_id) -> MetricsReport` and `write_report()`. Scores three systems on every pair: the app's hybrid retrieval, the single-query dense search it replaced, and BM25, with paired bootstrap differences. The BM25 corpus is built from SQLite with the same text builders as the index. Pairs marked `partial` are excluded and noted.
+- `synthetic.py`: the invented eval set in `evals/synthetic/` (personas, postings, judge bullets, red team postings), its golden pairs, rendered resumes, and `isolated_environment()`, a throwaway database, in-memory Qdrant and encryption key that every seeding eval runs inside.
+- `real.py`: the real-text set in `evals/real/`: public postings and pinned open-source repositories, labels, and the PII scrub applied on download.
+- `injection.py`: detection and false positive rates for `app/profile/injection.py` on development, held-out and ordinary postings.
+- `llm_evals.py`: billed evals of job and resume extraction, the groundedness judge against human labels (accuracy, Cohen's kappa), and extraction under prompt injection. Run by `scripts/run_llm_evals.py` only.
 
 ### `app/api` and `app/web`
 

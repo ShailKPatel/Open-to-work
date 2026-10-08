@@ -77,6 +77,27 @@ def _project_evidence_text(
     return format_project_evidence(repo.name, repo.description or "", skills, user_note)
 
 
+def judge_bullet(evidence: str, bullet: str, account_id: int | None) -> bool | None:
+    """The judge's verdict on one bullet against its project's evidence:
+    True grounded, False not, None when the reply was not usable JSON.
+    Provider errors (no key, budget, rate limit) propagate to the caller.
+    One function so the eval that validates the judge against human labels
+    (app/evals/llm_evals.py) runs exactly the judge this module uses."""
+    response = complete(
+        "bulk",
+        [
+            system_message(_SYSTEM_PROMPT),
+            user_message(f"Evidence:\n{evidence}\n\nBullet: {bullet}"),
+        ],
+        schema=_SCHEMA,
+        account_id=account_id,
+        purpose="groundedness_eval",
+    )
+    if response.parsed is None:
+        return None
+    return bool(response.parsed.get("grounded", False))
+
+
 def score_groundedness(
     account_id: int,
     sample_size: int = _DEFAULT_SAMPLE_SIZE,
@@ -135,16 +156,7 @@ def score_groundedness(
                     if len(outcomes) >= max_checks:
                         break
                     try:
-                        response = complete(
-                            "bulk",
-                            [
-                                system_message(_SYSTEM_PROMPT),
-                                user_message(f"Evidence:\n{evidence}\n\nBullet: {bullet}"),
-                            ],
-                            schema=_SCHEMA,
-                            account_id=account_id,
-                            purpose="groundedness_eval",
-                        )
+                        verdict = judge_bullet(evidence, bullet, account_id)
                     except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
                         logger.info("groundedness check stopped early: %s", e)
                         if outcomes:
@@ -154,8 +166,8 @@ def score_groundedness(
                                 skipped_reason=f"stopped early: {e}",
                             )
                         return GroundednessResult(score=None, checked=0, skipped_reason=str(e))
-                    if response.parsed is not None:
-                        outcomes.append(bool(response.parsed.get("grounded", False)))
+                    if verdict is not None:
+                        outcomes.append(verdict)
 
         if not outcomes:
             return GroundednessResult(

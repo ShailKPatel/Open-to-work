@@ -43,6 +43,7 @@ from app.core.db import (
 from app.core.filetypes import sniff_file, sniff_image_type
 from app.core.llm import error_kind
 from app.core.settings import get_settings
+from app.profile.injection import detect_injection
 from app.profile.job_extract import (
     JobExtraction,
     JobExtractionError,
@@ -82,6 +83,22 @@ def _apply_salary(posting: JobPosting) -> None:
     posting.salary_currency = salary.currency
 
 
+def _with_injection_flags(posting: JobPosting, extracted: dict) -> dict:
+    """The extraction plus any prompt injection detections in the posting's
+    raw text (app/profile/injection.py), under "injection_flags". Recorded
+    and logged so they can be shown, never acted on: the posting is saved
+    and read either way, and the quarantined user-role document is what
+    keeps the text from steering the model."""
+    flags = [d.as_dict() for d in detect_injection(posting.raw_text_quarantined or "")]
+    if flags:
+        logger.warning(
+            "job posting id=%s has possible prompt injection: %s",
+            posting.id,
+            ", ".join(f["kind"] for f in flags),
+        )
+    return {**extracted, "injection_flags": flags}
+
+
 def _run_extraction(
     posting: JobPosting, db: Session, bypass_cache: bool = False, note: str | None = None
 ) -> None:
@@ -103,7 +120,7 @@ def _run_extraction(
             account_id=posting.account_id,
             bypass_cache=bypass_cache,
         )
-        posting.extracted_json = extraction.as_extracted_json()
+        posting.extracted_json = _with_injection_flags(posting, extraction.as_extracted_json())
         _apply_salary(posting)
         if posting.company == _UNSPECIFIED and extraction.company:
             posting.company = extraction.company
@@ -135,7 +152,7 @@ def _store_extraction(posting: JobPosting, extraction: JobExtraction, db: Sessio
     """Saves an extraction that already ran elsewhere (a screenshot read
     does extraction in the same call), with the same backfill rules as
     _run_extraction, then enriches."""
-    posting.extracted_json = extraction.as_extracted_json()
+    posting.extracted_json = _with_injection_flags(posting, extraction.as_extracted_json())
     _apply_salary(posting)
     if posting.company == _UNSPECIFIED and extraction.company:
         posting.company = extraction.company

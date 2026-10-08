@@ -17,3 +17,5 @@ htmlcov/
 app/web/static/
 # Benchmark output lists the skills of whichever profile it ran against.
 evals/results/*.json
+# Downloaded text for the real-text eval set (scripts/fetch_real_eval_data.py).
+evals/real/cache/

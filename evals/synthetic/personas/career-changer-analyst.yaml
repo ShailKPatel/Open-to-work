@@ -1,0 +1,88 @@
+key: career-changer-analyst
+account_id: 9108
+first_name: Rosa
+last_name: Delgado
+github_username: demo-rdelgado
+headline: Data Analyst
+location: Phoenix, AZ, USA
+email: rosa.delgado.data@example.net
+phone: "602-555-0161"
+links:
+  - {platform: linkedin, url: "https://www.linkedin.com/in/demo-rdelgado"}
+  - {platform: other, url: "https://public.tableau.example.com/demo-rdelgado", label: Tableau Public}
+resume_style: classic
+date_style: year_only
+covers: [career-changer, non-tech-history, bootcamp, year-only-dates, employment-gap, analytics, sql]
+
+repos:
+  - key: school-attendance
+    name: school-attendance-analysis
+    language: Jupyter Notebook
+    stars: 6
+    description: Analysis of attendance and test scores across a school district.
+    readme: |
+      # school-attendance-analysis
+      Bootcamp capstone. Joins five years of public attendance and test score
+      data in SQL, explores it in Pandas and Seaborn, and presents findings in
+      a Tableau story.
+    manifests:
+      requirements.txt: [pandas, seaborn, matplotlib, jupyter]
+    readme_skills: [SQL, Tableau, Data Visualization]
+  - key: budget-dashboard
+    name: budget-dashboard
+    language: Python
+    stars: 3
+    description: Household budget dashboard built with Plotly Dash.
+    readme: |
+      # budget-dashboard
+      Imports bank CSV exports and shows spending by category in a Plotly
+      Dash app.
+    manifests:
+      requirements.txt: [dash, plotly, pandas]
+    readme_skills: [Python]
+
+roles:
+  - key: analyst
+    company: Saguaro Health Partners
+    title: Data Analyst
+    location: Phoenix, AZ
+    start: "2023"
+    end: null
+    skills: [SQL, Tableau, Excel, Python]
+    points:
+      - text: Built Tableau dashboards on clinic wait times used in every regional operations meeting.
+        skills: [Tableau]
+      - text: Wrote SQL queries that replaced a 30 tab Excel workbook for monthly staffing reports.
+        skills: [SQL, Excel]
+      - text: Automated the weekly no-show report in Python, saving the operations team six hours a week.
+        skills: [Python]
+  - key: teacher
+    company: Desert Vista Unified School District
+    title: High School Math Teacher
+    location: Phoenix, AZ
+    start: "2014"
+    end: "2021"
+    skills: [Excel]
+    points:
+      - text: Taught algebra and statistics to 150 students a year.
+        skills: []
+      - text: Tracked student progress in Excel and used it to regroup classes each quarter, raising pass rates by 12 percent.
+        skills: [Excel]
+      - text: Led the department's move to standards based grading.
+        skills: []
+
+education:
+  - institution: Sonoran Code Academy
+    degree: Data Analytics Bootcamp
+    location: Phoenix, AZ
+    start: "2022"
+    end: "2022"
+    grade: ""
+    details: ["Capstone: school attendance analysis"]
+  - institution: Arizona State University
+    degree: B.A. in Mathematics Education
+    location: Tempe, AZ
+    start: "2010"
+    end: "2014"
+    grade: ""
+    details: []

@@ -42,7 +42,9 @@ jobs:
           # in production, not whatever the runner defaults to this month.
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
 
       - name: Install dependencies
         run: |
@@ -51,8 +53,8 @@ jobs:
           # cublas, nccl, triton) in behind sentence-transformers, several GB
           # that nothing in this project uses. Installing the CPU build first
           # satisfies the dependency before pip can reach for the GPU one.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[dev]"
+          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -c constraints.txt -e ".[dev]"
 
       - name: ruff
         run: ruff check .
@@ -73,13 +75,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
 
       - name: Install dependencies
         run: |
           # Same CPU-only torch reasoning as the lint job above.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[dev]"
+          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -c constraints.txt -e ".[dev]"
 
       - name: pytest
         shell: bash
@@ -156,7 +160,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
 
       - name: Cache the embedding model
         uses: actions/cache@v4
@@ -170,8 +176,8 @@ jobs:
       - name: Install dependencies
         run: |
           # Same CPU-only torch reasoning as the jobs above.
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -e ".[dev]"
+          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -c constraints.txt -e ".[dev]"
 
       - name: Wait for Qdrant
         run: |

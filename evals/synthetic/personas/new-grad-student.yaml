@@ -1,0 +1,101 @@
+key: new-grad-student
+account_id: 9107
+first_name: Kwame
+last_name: Asante
+github_username: demo-kasante
+headline: Software Engineering Student
+location: Atlanta, GA, USA
+email: kwame.asante@example.edu
+phone: "(404) 555-0126"
+links:
+  - {platform: github, url: "https://github.com/demo-kasante"}
+  - {platform: linkedin, url: "https://www.linkedin.com/in/demo-kasante"}
+  - {platform: other, url: "https://leetcode.com/u/demo-kasante", label: LeetCode}
+resume_style: skills_first
+date_style: mon_year
+covers: [entry-level, student, in-progress-degree, projects-heavy, internship, full-stack]
+
+repos:
+  - key: campus-eats
+    name: campus-eats
+    language: TypeScript
+    stars: 23
+    description: Hackathon app that matches students with leftover dining hall food.
+    readme: |
+      # campus-eats
+      Built in 36 hours at a university hackathon (2nd place). Express.js API,
+      MongoDB, and a React front end. Deployed on Render.
+    manifests:
+      package.json: [express, mongoose, react, react-dom, typescript, jsonwebtoken]
+    readme_skills: [Node.js]
+  - key: tiny-raft
+    name: tiny-raft
+    language: Go
+    stars: 15
+    description: Raft consensus implementation for a distributed systems course.
+    readme: |
+      # tiny-raft
+      Leader election, log replication and snapshots following the Raft paper.
+      Passes the course's partition and crash tests. Written in Go.
+    manifests: {}
+    readme_skills: [Go, Distributed Systems]
+  - key: sudoku-cv
+    name: sudoku-cv
+    language: Python
+    stars: 9
+    description: Solves a sudoku from a phone photo.
+    readme: |
+      # sudoku-cv
+      Finds the grid with OpenCV contour detection, reads digits with a small
+      PyTorch CNN, and solves with backtracking.
+    manifests:
+      requirements.txt: [opencv-python, torch, numpy]
+    readme_skills: [Computer Vision]
+  - key: kasante
+    name: demo-kasante
+    language: null
+    stars: 0
+    description: Profile README.
+    readme: |
+      Hi, I'm Kwame. CS student who likes distributed systems and web dev.
+      Currently learning Rust.
+    manifests: {}
+    readme_skills: [Rust]
+    profile_readme: true
+
+roles:
+  - key: internship
+    company: Peachtree Health
+    title: Software Engineering Intern
+    location: Atlanta, GA
+    start: may 2025
+    end: aug 2025
+    skills: [Python, FastAPI, PostgreSQL, Docker]
+    points:
+      - text: Built a FastAPI endpoint for appointment reminders that sends 8,000 texts per week.
+        skills: [FastAPI, Python]
+      - text: Wrote PostgreSQL migrations and seed scripts for the reminders schema.
+        skills: [PostgreSQL]
+      - text: Containerised the service with Docker for the team's staging environment.
+        skills: [Docker]
+  - key: ta
+    company: Georgia Institute of Technology
+    title: Teaching Assistant, Data Structures
+    location: Atlanta, GA
+    start: jan 2024
+    end: null
+    skills: [Java]
+    points:
+      - text: Ran weekly recitations for 40 students and graded Java programming assignments.
+        skills: [Java]
+      - text: Wrote an autograder test suite that cut grading time by half.
+        skills: [Java]
+
+education:
+  - institution: Georgia Institute of Technology
+    degree: B.S. Computer Science (Systems and Architecture thread)
+    location: Atlanta, GA
+    start: aug 2022
+    end: may 2026
+    grade: "GPA 3.8/4.0"
+    details: ["Dean's List, six semesters", "Relevant coursework: Distributed Computing, Operating Systems, Databases"]

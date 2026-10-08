@@ -38,6 +38,7 @@ from app.resume_build import background
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
 from app.resume_build.orchestrator import build_resume_data, generate_resume
 from app.resume_build.pagefit import PageFitNotAchievedError, fit_to_page_limit
+from app.retrieval.search import query_for_posting
 
 router = APIRouter(prefix="/api/resume-build")
 logger = logging.getLogger(__name__)
@@ -250,7 +251,7 @@ def _skill_options(
                 (posting.extracted_json or {}).get("skills_required", [])
             )
         ]
-        cand_skills = _candidate_skills(db, account_id, posting.raw_text_quarantined)
+        cand_skills = _candidate_skills(db, account_id, query_for_posting(posting))
     for name in cand_skills:
         names.setdefault(name.casefold(), name)
 
@@ -326,7 +327,7 @@ def get_resume_build_options(
         phones = [{"id": 0, "phone": account.contact_phone, "is_primary": True}]
 
     cand_projects = (
-        _candidate_projects(db, account_id, posting.raw_text_quarantined) if posting else []
+        _candidate_projects(db, account_id, query_for_posting(posting)) if posting else []
     )
     recommended_repo_ids = {c["repo_id"] for c in cand_projects[:4]}
 

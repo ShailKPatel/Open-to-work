@@ -4,7 +4,8 @@ retrieval got worse.
 The eval harness prints numbers; on its own it cannot tell a regression
 from a Tuesday. This is the part that decides. It reads a report written
 by `python -m app.evals` and the expected numbers in evals/ci_baseline.json,
-and exits non-zero when dense precision@5 or recall@10, or the same two
+and exits non-zero when the app's retrieval precision@5 or recall@10 (the
+hybrid search in app/retrieval/search.py), or the same two
 numbers for each candidate list the baseline has a `candidates` entry for
 (app/evals/candidates.py), has dropped by more than the baseline's stated
 tolerance. Improvements never fail.
@@ -14,7 +15,7 @@ Both paths are explicit arguments with no env-var default, same rule as
 which baseline are per-call inputs, not deployment config.
 
 When GITHUB_STEP_SUMMARY is set, the comparison table is appended to it so
-a pull request shows dense against BM25 and the verdict without anyone
+a pull request shows retrieval against BM25 and the verdict without anyone
 opening the job log.
 
 Usage:
@@ -36,11 +37,11 @@ _METRICS = (("precision_at_5", "precision@5"), ("recall_at_10", "recall@10"))
 def _rows(
     report: dict, baseline: dict
 ) -> list[tuple[str, float, float, float, bool, float | None]]:
-    """(label, actual, expected, drop, ok, bm25) per gated metric: dense
-    retrieval, then each candidate list (app/evals/candidates.py) the
-    baseline has numbers for. bm25 is the reference value, dense only."""
+    """(label, actual, expected, drop, ok, bm25) per gated metric: the
+    app's retrieval, then each candidate list (app/evals/candidates.py) the
+    baseline has numbers for. bm25 is the reference value, retrieval only."""
     tolerance = float(baseline["tolerance"])
-    systems = [("dense", "", report["dense"], baseline["dense"], report["bm25"])]
+    systems = [("retrieval", "", report["retrieval"], baseline["retrieval"], report["bm25"])]
     for name, expected_scores in baseline.get("candidates", {}).items():
         actual_scores = report.get("candidates", {}).get(name)
         if actual_scores is None:

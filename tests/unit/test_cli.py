@@ -18,9 +18,10 @@ def _report(**overrides) -> MetricsReport:
         account_id=7,
         golden_set_size=4,
         pairs_scored=3,
+        retrieval={"precision_at_5": 0.7, "recall_at_10": 0.9, "pairs_scored": 3},
         dense={"precision_at_5": 0.6, "recall_at_10": 0.8, "pairs_scored": 3},
         bm25={"precision_at_5": 0.4, "recall_at_10": 0.5, "pairs_scored": 3},
-        dense_beats_bm25=True,
+        retrieval_beats_bm25=True,
         precision_at_10=0.75,
         groundedness=0.9,
         groundedness_checked=10,
@@ -81,7 +82,8 @@ def test_evals_cli_full_run_prints_every_metric(monkeypatch, tmp_path, capsys):
 
     assert calls["run_eval"] == (7, True)
     assert "Eval report for account 7" in out
-    assert "dense beats the BM25 baseline" in out
+    assert "retrieval beats the BM25 baseline" in out
+    assert "retrieval (app)" in out and "dense (reference)" in out
     assert "precision@10 (vs ground truth): 0.750" in out
     assert "groundedness: 0.900 (10 bullets checked)" in out
     assert "cost this run: $0.0123" in out
@@ -92,7 +94,7 @@ def test_evals_cli_full_run_prints_every_metric(monkeypatch, tmp_path, capsys):
 def test_evals_cli_no_groundedness_flag_and_unmeasured_metrics(monkeypatch, tmp_path, capsys):
     report = _report(
         pairs_scored=0,
-        dense_beats_bm25=None,
+        retrieval_beats_bm25=None,
         precision_at_10=None,
         groundedness=None,
         groundedness_checked=0,
@@ -102,16 +104,30 @@ def test_evals_cli_no_groundedness_flag_and_unmeasured_metrics(monkeypatch, tmp_
     out = capsys.readouterr().out
 
     assert calls["run_eval"] == (7, False)
-    assert "dense vs baseline: not measured" in out
+    assert "retrieval vs baseline: not measured" in out
     assert "groundedness: not measured" in out
     assert "precision@10" not in out
     assert "Notes:" not in out
 
 
-def test_evals_cli_reports_when_dense_loses_to_baseline(monkeypatch, tmp_path, capsys):
-    _run_evals_cli(monkeypatch, tmp_path, ["7"], _report(dense_beats_bm25=False))
+def test_evals_cli_reports_when_retrieval_loses_to_baseline(monkeypatch, tmp_path, capsys):
+    _run_evals_cli(monkeypatch, tmp_path, ["7"], _report(retrieval_beats_bm25=False))
 
-    assert "dense does NOT beat the BM25 baseline" in capsys.readouterr().out
+    assert "retrieval does NOT beat the BM25 baseline" in capsys.readouterr().out
+
+
+def test_evals_cli_prints_paired_differences(monkeypatch, tmp_path, capsys):
+    report = _report(
+        differences={
+            "retrieval - bm25": {"precision_at_5": {"mean": 0.1, "ci95": [0.02, 0.2]}},
+            "retrieval - dense": {"precision_at_5": {"mean": 0.0, "ci95": None}},
+        }
+    )
+    _run_evals_cli(monkeypatch, tmp_path, ["7"], report)
+    out = capsys.readouterr().out
+
+    assert "retrieval - bm25 precision_at_5: +0.100, 95% CI [+0.020, +0.200]" in out
+    assert "retrieval - dense precision_at_5: +0.000, 95% CI n/a" in out
 
 
 @pytest.mark.parametrize("argv", [[], ["not-a-number"]])

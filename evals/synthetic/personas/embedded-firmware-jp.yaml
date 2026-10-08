@@ -1,0 +1,92 @@
+key: embedded-firmware-jp
+account_id: 9109
+first_name: Haruto
+last_name: Nishimura
+github_username: demo-hnishimura
+headline: Embedded Software Engineer
+location: Osaka, Japan
+email: haruto.nishimura@example.jp
+phone: "+81 6 5555 0134"
+links:
+  - {platform: github, url: "https://github.com/demo-hnishimura"}
+resume_style: classic
+date_style: numeric
+covers: [senior, asia, embedded, firmware, c, cpp, rust, hardware]
+
+repos:
+  - key: rtos-sensor-hub
+    name: rtos-sensor-hub
+    language: C
+    stars: 158
+    description: FreeRTOS firmware for an STM32 sensor hub with BLE.
+    readme: |
+      # rtos-sensor-hub
+      Firmware for an STM32L4 board that samples six I2C sensors, filters the
+      data with a fixed point Kalman filter and streams it over BLE. Built on
+      FreeRTOS with CMake, and tested on target with Unity.
+    manifests: {}
+    readme_skills: [C, FreeRTOS, STM32, Bluetooth Low Energy, I2C]
+  - key: embassy-motor
+    name: embassy-motor
+    language: Rust
+    stars: 61
+    description: Async brushless motor controller in embedded Rust.
+    readme: |
+      # embassy-motor
+      Field oriented control for a BLDC motor on an RP2040, written in
+      embedded Rust with the Embassy async runtime.
+    manifests:
+      Cargo.toml: [embassy-executor, embassy-rp, defmt]
+    readme_skills: [Rust, Embedded Rust]
+  - key: can-logger
+    name: can-logger
+    language: C++
+    stars: 34
+    description: CAN bus logger with SD card storage.
+    readme: |
+      # can-logger
+      Logs CAN bus frames to an SD card in a compact binary format, with a
+      Python script for converting logs to CSV. Firmware in modern C++17.
+    manifests: {}
+    readme_skills: [C++, CAN bus, Python]
+
+roles:
+  - key: automotive
+    company: Kansai Drive Systems
+    title: Senior Embedded Software Engineer
+    location: Osaka, Japan
+    start: apr 2019
+    end: null
+    skills: [C, C++, AUTOSAR, CAN bus, MISRA C]
+    points:
+      - text: Developed AUTOSAR software components for a battery management system in C, certified to ISO 26262 ASIL C.
+        skills: [AUTOSAR, C]
+      - text: Reduced ECU boot time from 410ms to 180ms by restructuring initialisation and flash layout.
+        skills: [C]
+      - text: Wrote the CAN bus diagnostics stack used across four vehicle programs.
+        skills: [CAN bus, C++]
+      - text: Brought the codebase to zero MISRA C mandatory violations with static analysis in CI.
+        skills: [MISRA C]
+  - key: consumer
+    company: Hikari Devices
+    title: Firmware Engineer
+    location: Kyoto, Japan
+    start: apr 2015
+    end: mar 2019
+    skills: [C, FreeRTOS, Bluetooth Low Energy]
+    points:
+      - text: Wrote BLE firmware for a fitness band shipped to 300,000 customers.
+        skills: [Bluetooth Low Energy, C]
+      - text: Cut standby power draw by 40 percent with a tickless FreeRTOS idle mode.
+        skills: [FreeRTOS]
+      - text: Built the factory test fixture that checks every unit in 20 seconds.
+        skills: []
+
+education:
+  - institution: Osaka University
+    degree: M.Eng. in Electronic Engineering
+    location: Osaka, Japan
+    start: apr 2013
+    end: mar 2015
+    grade: ""
+    details: []

@@ -1,0 +1,102 @@
+key: ml-research-phd
+account_id: 9104
+first_name: Tomasz
+last_name: Wierzbicki
+github_username: demo-twierz
+headline: Machine Learning Engineer
+location: Zurich, Switzerland
+email: t.wierzbicki@example.ch
+phone: "+41 44 555 72 10"
+links:
+  - {platform: github, url: "https://github.com/demo-twierz"}
+  - {platform: other, url: "https://scholar.example.org/demo-twierz", label: Google Scholar}
+resume_style: classic
+date_style: mon_year
+covers: [phd, europe, machine-learning, nlp, research, pytorch, publications]
+
+repos:
+  - key: sparse-retriever
+    name: sparse-retriever
+    language: Python
+    stars: 512
+    description: Learned sparse retrieval with a BERT encoder, code for a published paper.
+    readme: |
+      # sparse-retriever
+      Training and evaluation code for a learned sparse retrieval model. A
+      BERT encoder predicts term weights, documents are indexed in an inverted
+      index, and evaluation reports MRR@10 and nDCG@10 on MS MARCO and BEIR.
+      Training runs on PyTorch with mixed precision across 8 GPUs.
+    manifests:
+      requirements.txt: [torch, transformers, numpy, faiss-cpu, pytest]
+    readme_skills: [Information Retrieval, Natural Language Processing, Python]
+  - key: rag-eval-kit
+    name: rag-eval-kit
+    language: Python
+    stars: 133
+    description: Small library for evaluating retrieval augmented generation pipelines.
+    readme: |
+      # rag-eval-kit
+      Scores RAG pipelines on retrieval recall, answer faithfulness and
+      citation accuracy. Uses an LLM judge calibrated against human labels and
+      reports bootstrap confidence intervals. Vector search through Qdrant.
+    manifests:
+      pyproject.toml: [qdrant-client, sentence-transformers, openai, pandas]
+    readme_skills: [Retrieval-Augmented Generation, LLM Evaluation]
+  - key: thesis-latex
+    name: thesis-latex
+    language: TeX
+    stars: 12
+    description: LaTeX source of a doctoral thesis on neural retrieval.
+    readme: |
+      # thesis-latex
+      Source for my doctoral thesis. Build with latexmk.
+    manifests: {}
+    readme_skills: [LaTeX]
+
+roles:
+  - key: search-co
+    company: Alpenglow Search AG
+    title: Machine Learning Engineer
+    location: Zurich, Switzerland
+    start: feb 2023
+    end: null
+    skills: [PyTorch, Natural Language Processing, Information Retrieval, Kubernetes, Python]
+    points:
+      - text: Shipped a distilled cross-encoder reranker that raised nDCG@10 by 6 points while keeping p95 latency under 35ms.
+        skills: [PyTorch, Information Retrieval]
+      - text: Built the offline evaluation harness with 4,000 judged queries and bootstrap confidence intervals, now gating every ranking release.
+        skills: [Information Retrieval, Python]
+      - text: Fine-tuned multilingual embeddings for German, French and Italian queries, lifting recall@100 by 11 percent.
+        skills: [Natural Language Processing, PyTorch]
+      - text: Moved model serving onto Kubernetes with GPU autoscaling, halving idle GPU spend.
+        skills: [Kubernetes]
+  - key: phd
+    company: ETH Zurich
+    title: Doctoral Researcher
+    location: Zurich, Switzerland
+    start: sep 2018
+    end: jan 2023
+    skills: [PyTorch, Natural Language Processing, Information Retrieval]
+    points:
+      - text: Published four first-author papers on learned sparse retrieval at SIGIR and ECIR.
+        skills: [Information Retrieval]
+      - text: Trained BERT based retrievers on a 64 GPU cluster with PyTorch distributed data parallel.
+        skills: [PyTorch]
+      - text: Taught the graduate NLP lab for three semesters, 120 students per term.
+        skills: [Natural Language Processing]
+
+education:
+  - institution: ETH Zurich
+    degree: PhD in Computer Science
+    location: Zurich, Switzerland
+    start: sep 2018
+    end: jan 2023
+    grade: ""
+    details: ["Thesis: Learned term weighting for first stage retrieval"]
+  - institution: Warsaw University of Technology
+    degree: M.Sc. in Computer Science
+    location: Warsaw, Poland
+    start: oct 2016
+    end: jul 2018
+    grade: ""
+    details: []
