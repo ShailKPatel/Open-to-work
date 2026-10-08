@@ -688,7 +688,7 @@ def test_role_matches_despite_company_descriptor_and_suffix(tmp_path, monkeypatc
     db = get_db()
 
     first = ExperienceClaim(
-        company="RestaurantPilot.ai",
+        company="Northwind Labs",
         title="Founding Machine Learning Engineer",
         start_date="nov 2025",
         end_date=None,
@@ -697,15 +697,15 @@ def test_role_matches_despite_company_descriptor_and_suffix(tmp_path, monkeypatc
 
     again = [
         ExperienceClaim(
-            company="RestaurantPilot.ai (Restaurant Tech)",
+            company="Northwind Labs (Logistics Tech)",
             title="Founding Machine-Learning Engineer",
             start_date="nov 2025",
             end_date=None,
-            location="Seattle, USA (Remote)",
+            location="Lisbon, Portugal (Remote)",
             points=["Built the forecasting service"],
         ),
         ExperienceClaim(
-            company="restaurantpilot.ai, Inc.",
+            company="northwind labs, Inc.",
             title="founding machine learning engineer",
             start_date=None,
             end_date=None,
@@ -716,8 +716,8 @@ def test_role_matches_despite_company_descriptor_and_suffix(tmp_path, monkeypatc
     assert summary.experiences_added == 0
     assert summary.experiences_enriched == 1
     (row,) = db.execute(select(Experience).where(Experience.account_id == account_id)).scalars()
-    assert row.company == "RestaurantPilot.ai"
-    assert row.location == "Seattle, USA (Remote)"
+    assert row.company == "Northwind Labs"
+    assert row.location == "Lisbon, Portugal (Remote)"
     points = db.execute(select(ExperiencePoint).where(ExperiencePoint.experience_id == row.id))
     assert [p.text for p in points.scalars()] == ["Built the forecasting service"]
     db.close()

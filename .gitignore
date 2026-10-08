@@ -15,3 +15,5 @@ htmlcov/
 .vscode/
 .eval-fixture/
 app/web/static/
+# Benchmark output lists the skills of whichever profile it ran against.
+evals/results/*.json

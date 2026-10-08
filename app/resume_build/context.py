@@ -80,7 +80,7 @@ def _link_display(platform: str, url: str) -> str:
     """What the header prints for a link, the href stays the full URL.
     Profile platforms (LinkedIn, GitHub, Instagram) print just the
     handle; anything else prints the URL without its scheme, "www." or
-    trailing slash, e.g. "shailkpatel.github.io"."""
+    trailing slash, e.g. "jane-doe.dev"."""
     parts = urlsplit(url)
     host = parts.netloc.lower().removeprefix("www.")
     path = parts.path.strip("/")
