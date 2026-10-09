@@ -53,7 +53,11 @@ jobs:
           # cublas, nccl, triton) in behind sentence-transformers, several GB
           # that nothing in this project uses. Installing the CPU build first
           # satisfies the dependency before pip can reach for the GPU one.
-          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu
+          # PyPI as an extra index supplies torch's own dependencies at their
+          # pinned versions, which the CPU index does not carry; torch itself
+          # still comes from the CPU index, since 2.x+cpu sorts above 2.x.
+          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple
           pip install -c constraints.txt -e ".[dev]"
 
       - name: ruff
@@ -82,7 +86,8 @@ jobs:
       - name: Install dependencies
         run: |
           # Same CPU-only torch reasoning as the lint job above.
-          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple
           pip install -c constraints.txt -e ".[dev]"
 
       - name: pytest
@@ -176,7 +181,8 @@ jobs:
       - name: Install dependencies
         run: |
           # Same CPU-only torch reasoning as the jobs above.
-          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple
           pip install -c constraints.txt -e ".[dev]"
 
       - name: Wait for Qdrant

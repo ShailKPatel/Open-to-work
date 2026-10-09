@@ -48,6 +48,10 @@ _SYSTEM_PROMPT = (
     "directly stated in the evidence or a reasonable, conservative "
     "paraphrase of it. Answer `grounded: false` if the bullet states "
     "anything the evidence doesn't support, even if it sounds plausible. "
+    "Claims about who the work was for or with are concrete claims too: a "
+    "team, a company or client, an organisation, users, customers, or "
+    "production use. Unless the evidence says so, treat the project as one "
+    "person's code with no stated users. "
     "A user note is the account holder's own statement about the project "
     "and counts as evidence."
 )

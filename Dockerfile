@@ -63,8 +63,11 @@ COPY pyproject.toml constraints.txt ./
 # (nvidia_cudnn, nvidia_cublas, nccl, triton...) even though nothing here
 # uses a GPU: several GB and 5+ minutes of downloads for nothing. Installing
 # the CPU build first satisfies sentence-transformers' torch dependency
-# without pip ever reaching for the GPU one.
-RUN pip install --no-cache-dir -c constraints.txt torch --index-url https://download.pytorch.org/whl/cpu
+# without pip ever reaching for the GPU one. PyPI is an extra index for
+# torch's own dependencies at their pinned versions (the CPU index does not
+# carry them); torch still comes from the CPU index, as 2.x+cpu sorts above 2.x.
+RUN pip install --no-cache-dir -c constraints.txt torch \
+    --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 
 # -e install needs the package source present, but only app/__init__.py-level
 # metadata; a placeholder empty app/ satisfies it so this layer (and the torch

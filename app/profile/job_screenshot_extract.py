@@ -22,7 +22,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core.llm import complete, image_part, system_message
-from app.profile.job_extract import JobExtraction, RequiredSkill, parse_skills_required
+from app.profile.job_extract import (
+    JobExtraction,
+    RequiredSkill,
+    parse_skills_required,
+    stated_employment_type,
+)
 
 _SCHEMA = {
     "type": "object",
@@ -171,7 +176,9 @@ def extract_job_posting_from_images(
         title=str(p.get("title", "")).strip(),
         location=str(p.get("location", "")).strip(),
         salary_range=str(p.get("salary_range", "")).strip(),
-        employment_type=str(p.get("employment_type", "")).strip(),
+        employment_type=stated_employment_type(
+            str(p.get("employment_type", "")).strip(), f"{raw_text}\n{context_text}"
+        ),
         seniority=str(p.get("seniority", "")).strip(),
         experience_required=str(p.get("experience_required", "")).strip(),
         skills_required=[

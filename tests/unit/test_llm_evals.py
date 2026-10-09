@@ -34,6 +34,14 @@ from app.profile.resume_extract import (
         ("experience_required", "5+ years", "at least 5 years", True),
         ("location", "Berlin, Germany", "Berlin, Germany (Hybrid)", True),
         ("location", "Berlin, Germany", "Munich, Germany", False),
+        ("location", "Berlin, Germany", "Berlin", True),
+        ("location", "United Kingdom", "UK", True),
+        ("location", "London, UK", "London, United Kingdom", True),
+        ("location", "United States", "US", True),
+        ("location", "New York, NY", "NYC or remote US", False),
+        ("location", "Toronto, ON", "Toronto, Canada", True),
+        ("location", "New York, NY", "New York, New York, United States", True),
+        ("location", "Toronto, ON", "Ottawa, ON", False),
         ("location", "", "", True),
         ("location", "", "Remote", False),
         ("title", "Senior Software Frontend Engineer - Dashboards",
@@ -252,7 +260,8 @@ def test_run_judge_validation_uses_the_projects_evidence(monkeypatch):
 
     assert "ledger-sync" in evidence_seen[0] and "FastAPI" in evidence_seen[0]
     assert score.accuracy == 1.0
-    assert len(score.unusable) == 1
+    assert score.unusable == []
+    assert len(score.errors) == 1 and "rate limited" in score.errors[0]
 
 
 def test_llm_environment_stores_only_the_given_key(monkeypatch):
@@ -418,3 +427,47 @@ def test_a_quota_stop_keeps_partial_results(monkeypatch):
     assert score.stopped == "every key is out until tomorrow"
     robust = llm_evals.RobustnessScore(name="t")
     assert robust.stopped is None
+
+
+def test_eval_keys_prefers_the_environment_then_the_gitignored_file(tmp_path, monkeypatch):
+    import scripts.run_llm_evals as runner
+
+    keys_file = tmp_path / ".llm-eval-keys"
+    keys_file.write_text("# comment\nk1\n\n k2 \n")
+    monkeypatch.setattr(runner, "KEYS_FILE", keys_file)
+    monkeypatch.setenv("LIVE_LLM_API_KEY", "e1, e2")
+    assert runner.eval_keys() == ["e1", "e2"]
+    monkeypatch.delenv("LIVE_LLM_API_KEY")
+    assert runner.eval_keys() == ["k1", "k2"]
+    monkeypatch.setattr(runner, "KEYS_FILE", tmp_path / "missing")
+    assert runner.eval_keys() == []
+
+
+def test_keys_file_is_gitignored():
+    from pathlib import Path
+
+    assert "evals/.llm-eval-keys" in Path(".gitignore").read_text()
+    assert "evals/.llm-eval-keys" in Path(".dockerignore").read_text()
+
+
+def test_paced_rests_every_n_calls(monkeypatch):
+    slept = []
+    monkeypatch.setattr(
+        llm_evals, "PACING", llm_evals.Pacing(pause_every=2, pause_seconds=90.0)
+    )
+    monkeypatch.setattr(llm_evals, "_calls_made", 0)
+    monkeypatch.setattr(llm_evals.time, "sleep", slept.append)
+    for _ in range(5):
+        llm_evals._paced(lambda: None)
+    assert slept.count(90.0) == 2
+
+
+def test_pacing_from_env(monkeypatch):
+    monkeypatch.setattr(llm_evals, "PACING", llm_evals.Pacing())
+    monkeypatch.setenv("LIVE_LLM_RPM", "4")
+    monkeypatch.setenv("LIVE_LLM_PAUSE_EVERY", "10")
+    monkeypatch.delenv("LIVE_LLM_PAUSE_SECONDS", raising=False)
+    llm_evals.pacing_from_env()
+    assert llm_evals.PACING.min_interval == 15.0
+    assert llm_evals.PACING.pause_every == 10
+    assert llm_evals.PACING.pause_seconds == 90.0

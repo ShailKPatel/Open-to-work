@@ -574,3 +574,37 @@ def test_per_account_unique_migration_rolls_back_on_failure(tmp_path, monkeypatc
     assert repos["ix_repositories_github_id"] == (True, ("github_id",))
     assert "uq_repositories_account_github_id" not in repos
     assert _index_shape(engine, "job_postings")["ix_job_postings_content_hash"][0] is True
+
+
+def test_contact_migration_copies_legacy_email_and_phone(tmp_path, monkeypatch):
+    """A raw INSERT bypasses the ORM default for created_at, which is NOT
+    NULL; the migration must supply it or every copied row fails."""
+    import app.core.db as db_module
+    from app.core.db import Account, ContactEmail, ContactPhone, get_db
+    from app.core.db.migrations import _migrate_contact_items
+    from app.core.settings import get_settings
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/legacy.db")
+    get_settings.cache_clear()
+    db_module.reset_engine()
+    init_db()
+    db = get_db()
+    db.add(Account(id=1, first_name="A", last_name="B", github_username="ab",
+                   contact_email="a@example.com", contact_phone="+1 555 0100"))
+    db.commit()
+    db.close()
+
+    _migrate_contact_items(db_module.get_engine())
+
+    db = get_db()
+    emails = db.query(ContactEmail).all()
+    phones = db.query(ContactPhone).all()
+    assert [(e.email, e.is_primary) for e in emails] == [("a@example.com", True)]
+    assert [(p.phone, p.is_primary) for p in phones] == [("+1 555 0100", True)]
+    assert emails[0].created_at is not None
+    db.close()
+
+    _migrate_contact_items(db_module.get_engine())
+    db = get_db()
+    assert db.query(ContactEmail).count() == 1
+    db.close()

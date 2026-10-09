@@ -30,6 +30,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Callable, Iterator
@@ -49,15 +50,33 @@ class Pacing:
     """How fast the evals call the provider. Free tiers allow a few
     requests a minute, so `min_interval` spaces calls out, and a call
     refused for rate or quota waits `retry_wait` seconds and tries again,
-    up to `retries` times, before it counts as a failure."""
+    up to `retries` times, before it counts as a failure. `pause_every`
+    calls in, the run also rests `pause_seconds`, so a long run never sits
+    at the edge of a per-minute limit."""
 
     min_interval: float = 0.0
     retries: int = 0
     retry_wait: float = 65.0
+    pause_every: int = 0
+    pause_seconds: float = 0.0
 
 
 PACING = Pacing()
 _last_call = 0.0
+_calls_made = 0
+
+
+def pacing_from_env() -> None:
+    """Sets PACING from LIVE_LLM_RPM (requests per minute, default 6),
+    LIVE_LLM_PAUSE_EVERY (default 20 calls) and LIVE_LLM_PAUSE_SECONDS
+    (default 90). The defaults keep a run of free-tier keys well inside
+    their per-minute limits."""
+    rpm = float(os.environ.get("LIVE_LLM_RPM") or 6)
+    PACING.min_interval = 60.0 / rpm if rpm > 0 else 0.0
+    PACING.retries = 5
+    PACING.pause_every = int(os.environ.get("LIVE_LLM_PAUSE_EVERY") or 20)
+    PACING.pause_seconds = float(os.environ.get("LIVE_LLM_PAUSE_SECONDS") or 90)
+
 
 # Waiting longer than this for a key to come back is not worth it inside one
 # run: a free tier's daily allowance resets hours later.
@@ -91,15 +110,18 @@ def _keys_back_at() -> dt.datetime | None:
 
 def _paced[T](call: Callable[[], T]) -> T:
     """Runs one provider call under PACING."""
-    global _last_call
+    global _last_call, _calls_made
     from app.core.llm import LLMRateLimitedError, is_out_of_keys
 
     attempt = 0
     while True:
+        if PACING.pause_every and _calls_made and _calls_made % PACING.pause_every == 0:
+            time.sleep(PACING.pause_seconds)
         wait = PACING.min_interval - (time.monotonic() - _last_call)
         if wait > 0:
             time.sleep(wait)
         _last_call = time.monotonic()
+        _calls_made += 1
         try:
             return call()
         except Exception as e:
@@ -113,6 +135,8 @@ def _paced[T](call: Callable[[], T]) -> T:
                 ) from e
             attempt += 1
             time.sleep(PACING.retry_wait)
+
+
 _WORD = re.compile(r"[a-z0-9]+")
 
 
@@ -122,10 +146,18 @@ def _norm(value: Any) -> str:
 
 
 def _numbers(value: Any) -> list[str]:
-    """The numbers in a salary or experience string, commas dropped and
-    sorted, so "$120,000-$150,000" and "120000 to 150000" compare equal."""
-    found = re.findall(r"\d+(?:[.,]\d+)*", str(value or ""))
-    return sorted(n.replace(",", "") for n in found)
+    """The numbers in a salary or experience string, normalised and
+    sorted, so "$120,000-$150,000", "120000 to 150000" and "$120k-$150k"
+    compare equal, as do "$25.50" and "25.5"."""
+    out = []
+    for digits, k in re.findall(r"(\d+(?:[.,]\d+)*)\s?([kK]\b)?", str(value or "")):
+        number = digits.replace(",", "")
+        if "." in number:
+            number = number.rstrip("0").rstrip(".")
+        if k:
+            number = f"{float(number) * 1000:.0f}"
+        out.append(number)
+    return sorted(out)
 
 
 def field_matches(name: str, expected: Any, predicted: Any) -> bool:
@@ -133,13 +165,42 @@ def field_matches(name: str, expected: Any, predicted: Any) -> bool:
     if name in ("salary_range", "experience_required"):
         return _numbers(expected) == _numbers(predicted)
     if name == "location":
-        want = set(_WORD.findall(_norm(expected)))
-        got = set(_WORD.findall(_norm(predicted)))
-        return want <= got if want else not got
+        want, got = _place_words(expected), _place_words(predicted)
+        if not want or not got:
+            return want == got
+        # "Berlin" for "Berlin, Germany" is right: a posting often names
+        # only the city, and a label that adds the country should not mark
+        # the model wrong for reading what was written. So is "Toronto,
+        # Canada" for "Toronto, ON": the same city, its region spelled
+        # differently.
+        return want <= got or got <= want or _first_place(expected) == _first_place(predicted)
     if name in ("company", "title"):
         e, p = _norm(expected), _norm(predicted)
         return e == p or (bool(e) and bool(p) and (e in p or p in e))
     return _norm(expected) == _norm(predicted)
+
+
+_PLACE_ALIASES = {
+    "uk": "united kingdom",
+    "u.k": "united kingdom",
+    "us": "united states",
+    "u.s": "united states",
+    "usa": "united states",
+}
+
+
+def _first_place(value: Any) -> str:
+    """The first comma-separated part of a location, usually the city."""
+    return re.split(r"[,;(]", _norm(value))[0].strip()
+
+
+def _place_words(value: Any) -> set[str]:
+    """A location's words with common country abbreviations spelled out."""
+    parts = [p.strip() for p in re.split(r"[,;()]", _norm(value)) if p.strip()]
+    words: set[str] = set()
+    for part in parts:
+        words |= set(_WORD.findall(_PLACE_ALIASES.get(part.rstrip("."), part)))
+    return words
 
 
 def skill_recall(expected: list[str], predicted: list[str]) -> float | None:
@@ -175,6 +236,8 @@ class ExtractionScore:
     mismatches: list[str] = field(default_factory=list)
     # Set when the run stopped early on quota; the counts above are partial.
     stopped: str | None = None
+    # Items scored from a saved extraction rather than a new call.
+    from_cache: int = 0
 
     def tally(self, name: str) -> FieldTally:
         return self.fields.setdefault(name, FieldTally())
@@ -223,11 +286,23 @@ def _extraction_dict(extraction: Any) -> dict[str, Any]:
     }
 
 
-def run_job_extraction(jobs: list[Any], name: str) -> ExtractionScore:
+def run_job_extraction(jobs: list[Any], name: str, save_dir: Path | None = None) -> ExtractionScore:
+    """Extracts and scores each posting. With `save_dir`, each extraction
+    is also written there as <key>.json, and a posting already saved is
+    scored from its file instead of called again: a run spread over several
+    days of free-tier quota picks up where the last one stopped, and later
+    evals (the public retrieval set) can search with what the app actually
+    extracted."""
     from app.profile.job_extract import extract_job_posting
 
     score = ExtractionScore(name=name)
     for job in jobs:
+        saved = save_dir / f"{job.key}.json" if save_dir is not None else None
+        if saved is not None and saved.exists():
+            predicted = json.loads(saved.read_text(encoding="utf-8"))
+            score.from_cache += 1
+            score_job_extraction(job.key, job.expected, predicted, score)
+            continue
         try:
             extraction = _paced(partial(extract_job_posting, job.text))
         except QuotaExhaustedError as e:
@@ -237,8 +312,29 @@ def run_job_extraction(jobs: list[Any], name: str) -> ExtractionScore:
             score.items += 1
             score.failures.append(f"{job.key}: {e}")
             continue
-        score_job_extraction(job.key, job.expected, _extraction_dict(extraction), score)
+        predicted = _extraction_dict(extraction)
+        if saved is not None:
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            saved.write_text(json.dumps(predicted, indent=1), encoding="utf-8")
+        score_job_extraction(job.key, job.expected, predicted, score)
     return score
+
+
+def models_used() -> dict[str, int]:
+    """Calls per model in the run's throwaway database. The app falls back
+    to its bulk model when the quality model is unavailable, so a report
+    names what actually answered rather than what was configured."""
+    from collections import Counter
+
+    from sqlalchemy import select
+
+    from app.core.db import LLMCall, get_db
+
+    db = get_db()
+    try:
+        return dict(Counter(db.execute(select(LLMCall.model)).scalars()))
+    finally:
+        db.close()
 
 
 @dataclass
@@ -434,6 +530,9 @@ def cohens_kappa(labels: list[bool], verdicts: list[bool]) -> float | None:
 class JudgeScore:
     bullets: int = 0
     unusable: list[str] = field(default_factory=list)
+    # Calls that failed at the provider (quota, outage), kept apart from
+    # unusable replies: they say nothing about the judge.
+    errors: list[str] = field(default_factory=list)
     labels: list[bool] = field(default_factory=list)
     verdicts: list[bool] = field(default_factory=list)
     by_kind: dict[str, FieldTally] = field(default_factory=dict)
@@ -501,8 +600,9 @@ def run_judge_validation(personas: list[Any], bullets: list[Any]) -> JudgeScore:
             except QuotaExhaustedError as e:
                 score.stopped = str(e)
                 break
-            except Exception:  # noqa: BLE001
-                verdict = None
+            except Exception as e:  # noqa: BLE001
+                score.errors.append(f"{key}: {e}")
+                continue
             score.add(key, bullet.kind, bullet.grounded, verdict)
     finally:
         db.close()

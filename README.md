@@ -156,24 +156,48 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d qdrant
 
 ### Evaluation
 
-The app has no users or production traffic to learn from, so it is evaluated on two purpose-built sets. Neither contains anyone's real profile.
+The app has no users or production traffic to learn from, so it is evaluated on purpose-built sets. None contains anyone's real profile.
+
+**Method.** Every set is split into dev and test by a hash of each posting (`app/evals/splits.py`). Prompts, rules and search design are changed while looking at dev only, and only test is reported. Labels are frozen before a system is first run on them. Once something changes after a test result has been read, that test set counts as dev, and a fresh sample is drawn. Accuracy figures carry 95% Wilson intervals and retrieval figures bootstrap intervals, so a perfect score on a small set reads as a range, not 1.00.
 
 | Set | What is in it | Labels |
 | --- | --- | --- |
-| Real-text (`evals/real/`) | 28 public job postings from 14 employers' job boards, 21 pinned open-source repositories as one portfolio | Hand-labeled against written criteria |
-| Synthetic (`evals/synthetic/`) | 10 invented profiles (new grad to manager, six countries), 29 postings, 45 labeled resume bullets, 25 prompt injection postings | Rule-labeled; bullets and attacks by hand |
+| Public (`evals/public/`) | 260 postings from the [LinkedIn Job Postings 2023-2024](https://www.kaggle.com/datasets/arshkon/linkedin-job-postings) dataset (CC BY-SA 4.0), sampled deterministically | Extraction: the posters' own LinkedIn form fields. Retrieval: judged against written criteria, before any run |
+| Real-text (`evals/real/`) | 28 postings from 14 employers' job boards, 21 pinned open-source repositories as one portfolio | Hand-labeled; dev only |
+| Generated bullets (`evals/judge/`) | 126 project bullets the app's own resume writer produced for 47 resumes, plus 40 copies each given one unsupported claim | Hand-labeled before the judge ran |
+| Synthetic (`evals/synthetic/`) | 10 invented profiles, 29 postings, prompt injection postings | Rule-labeled; regression signal only |
 
-[`evals/real/DATA_SOURCES.md`](evals/real/DATA_SOURCES.md) covers sources, privacy, and limits. Posting and README text is downloaded on first run and never committed.
+[`evals/public/DATA_SOURCES.md`](evals/public/DATA_SOURCES.md) and [`evals/real/DATA_SOURCES.md`](evals/real/DATA_SOURCES.md) cover sources, privacy and limits. Posting and README text is downloaded on first run and never committed.
 
-**Retrieval** (2026-10-08, real-text set, 26 queries, 95% bootstrap intervals):
+**Retrieval, held-out** (60 LinkedIn software postings never tuned on; queries are the app's own LLM extraction of each posting; [report](evals/results/public-fresh-20261009T013435Z.md)):
 
 | System | precision@5 | nDCG@10 | MRR |
 | --- | --- | --- | --- |
-| Hybrid search (what the app runs) | **0.800** [0.69, 0.89] | **0.703** [0.61, 0.79] | **0.918** [0.82, 1.00] |
-| Single-query embedding search (previous) | 0.515 [0.43, 0.61] | 0.481 [0.40, 0.57] | 0.785 [0.66, 0.89] |
-| BM25 keyword baseline | 0.654 [0.56, 0.75] | 0.597 [0.51, 0.68] | 0.827 [0.73, 0.92] |
+| Hybrid search (what the app runs) | **0.624** [0.55, 0.70] | **0.733** [0.66, 0.80] | **0.830** [0.75, 0.91] |
+| BM25 keyword baseline | 0.536 [0.47, 0.61] | 0.631 [0.56, 0.70] | 0.733 [0.64, 0.83] |
+| Single-query embedding search (original) | 0.172 [0.12, 0.24] | 0.234 [0.17, 0.31] | 0.414 [0.30, 0.54] |
 
-Paired over the same queries, hybrid beats BM25 by +0.146 precision@5 [+0.062, +0.223] and the previous search by +0.285 [+0.169, +0.392]. On the synthetic set (68 queries) it beats the previous search on every metric and ties BM25 on precision@5, which that set's keyword-based labels favour. `scripts/compare_retrieval.py` shows how the design was chosen: cross-encoder rerankers (MiniLM, bge-reranker-base) and adding the project description to indexed text each made results worse, so neither ships. Six embedding models compared under the same hybrid search all landed within about 0.05 precision@5 of each other, so bge-base-en-v1.5 stays ([results](evals/results/embedding-retrieval-20261008.md)).
+Paired over the same queries, hybrid beats BM25 by +0.088 precision@5 [+0.048, +0.136] and +0.102 nDCG@10 [+0.064, +0.140].
+
+The first test set is why this is the second one. The search was designed on the real-text set, where it beat BM25 by 0.15. On the first 58 held-out LinkedIn postings it lost to BM25, 0.519 against 0.642 ([report](evals/results/public-test-20261009T010921Z.md)). Diagnosed on dev: the real-text queries had been built from the same hand labels that defined relevance, and real extracted queries name many skills an account lacks, for each of which a dense sub-query still ranked every document. Skill sub-queries now run keyword search only (`scripts/compare_retrieval.py`: better or equal on every dev set), and the change was scored once, on the fresh sample above. Cross-encoder rerankers and richer indexed text were measured on dev and made results worse, so neither ships; six embedding models landed within about 0.05 of each other ([results](evals/results/embedding-retrieval-20261008.md)).
+
+**LLM steps, held-out** (test split, gemini-flash-lite; [extraction](evals/results/llm-20261009T013454Z.md), [judge](evals/results/llm-20261009T010730Z.md)):
+
+| Eval | Result | 95% CI | n |
+| --- | --- | --- | --- |
+| Job extraction: company / title / location | 0.986 / 0.972 / 0.972 | [0.93, 1.00] | 141 postings |
+| Job extraction: salary, including not inventing one | 0.988 | [0.94, 1.00] | 85 |
+| Job extraction: employment type stated in the text | 1.000 | [0.91, 1.00] | 37 |
+| Job extraction: remote | 0.812 | [0.57, 0.93] | 16 |
+| Unsupported claims in bullets the app writes | 3 of 80 | [0.01, 0.10] | 80 bullets |
+| Groundedness judge agreement with hand labels | 0.975, kappa 0.95 | [0.93, 0.99] | 120 bullets |
+| Unsupported claims the judge catches | 40 of 43 | | 43 |
+| Unsupported claims the deterministic filter drops | 8 of 43 | [0.10, 0.33] | 43 |
+| Grounded bullets the filter wrongly drops | 0 of 77 | [0.00, 0.05] | 77 |
+
+The writer is conservative: its natural error rate is too low to measure the judge's recall, so 40 of its test bullets were each given one unsupported claim (invented numbers, swapped tools, scope, role, outcome and credential claims) and frozen before the judge saw them. The rule filter catches what a string match can see (numbers, technology names) and never drops an honest bullet; the judge catches the rest, missing one role claim and two cases labeled borderline. Extraction errors that remain are real ones, such as reading only the lower end of a pay range.
+
+**Dev sets** (tuned against; regression signal, not claims): real-text retrieval precision@5 0.808 [0.73, 0.88] against BM25 0.654; synthetic retrieval ties BM25, which that set's keyword labels favour; resume extraction on 10 synthetic resumes, judge sets of 45, 30 and 16 hand-written bullets, and prompt injection robustness ([reports](evals/results/)). Two fixes came from them: extraction keeps an employment type only when the posting states it, and the judge treats who the work was for (a team, a company, users) as a claim needing evidence.
 
 **Prompt injection detector** (flags and logs, never blocks; the defence is that posting text only ever reaches the model as a quarantined document):
 
@@ -189,8 +213,9 @@ The held-out rate is the honest one: pattern rules catch the attacks they were w
 
 | Command | Runs | Cost |
 | --- | --- | --- |
-| `make eval-real` / `make eval-synthetic` | Retrieval on each set, in a throwaway database | Free |
-| `LIVE_LLM_API_KEY=... make eval-llm` | Job and resume extraction field accuracy, the groundedness judge against human labels (accuracy, Cohen's kappa), extraction under prompt injection | About 160 billed calls |
+| `make eval-public SPLIT=fresh` / `make eval-real` / `make eval-synthetic` | Retrieval on each set, in a throwaway database | Free |
+| `LIVE_LLM_API_KEY=... make eval-llm [ONLY="public judge-generated"]` | Job and resume extraction field accuracy, the groundedness judge against human labels (accuracy, Cohen's kappa), extraction under prompt injection | About 160 billed calls by default; `public` adds 141, `judge-generated` 120 |
+| `.venv/bin/python -m scripts.collect_generated_bullets` | Collects new bullets from the app's resume writer for labeling | One call per resume |
 | `make eval ACCOUNT=<id>` | Retrieval and groundedness on your own profile against a golden set you label (`scripts/label_golden_set.py`) | Free without the judge |
 
 Add `WRITE=1` to save a report to `evals/results/`. CI runs retrieval on a separate invented fixture and fails if it drops below `evals/ci_baseline.json`; dependencies are pinned in `constraints.txt` so the gate measures code changes, not package releases.

@@ -303,3 +303,35 @@ def test_isolated_environment_off_the_main_thread_skips_the_handler():
     thread.start()
     thread.join()
     assert results == [True]
+
+
+def test_hard_judge_bullets_are_consistent(personas):
+    bullets = synthetic.load_judge_bullets(synthetic.SYNTHETIC_DIR / "judge_bullets_hard.yaml")
+    repos = {(p.key, r.key) for p in personas for r in p.repos}
+    grounded_kinds = {"grounded_inference", "generalization"}
+    ungrounded_kinds = {"adjacent_tech", "unstated_number", "role_inflation", "scope_shift"}
+    assert len(bullets) >= 25
+    for bullet in bullets:
+        assert (bullet.persona, bullet.repo) in repos
+        assert bullet.kind in grounded_kinds | ungrounded_kinds
+        assert bullet.grounded == (bullet.kind in grounded_kinds)
+    assert {b.kind for b in bullets} == grounded_kinds | ungrounded_kinds
+
+
+def test_seeding_twice_in_one_environment_skips_existing_personas(monkeypatch, personas):
+    _fake_embed(monkeypatch)
+    with synthetic.isolated_environment():
+        first = synthetic.seed(personas[:2])
+        second = synthetic.seed(personas[:3])
+    assert first["accounts"] == 2
+    assert second["accounts"] == 1
+
+
+def test_scope_judge_bullets_are_balanced_and_consistent(personas):
+    bullets = synthetic.load_judge_bullets(synthetic.SYNTHETIC_DIR / "judge_bullets_scope.yaml")
+    repos = {(p.key, r.key) for p in personas for r in p.repos}
+    for bullet in bullets:
+        assert (bullet.persona, bullet.repo) in repos
+        assert bullet.grounded == (bullet.kind == "grounded_control")
+    kinds = [b.kind for b in bullets]
+    assert kinds.count("scope_inflation") == kinds.count("grounded_control") >= 8

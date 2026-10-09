@@ -101,6 +101,21 @@ def score_pair[Id: Hashable](retrieved: Sequence[Id], relevant: AbstractSet[Id])
     )
 
 
+def wilson_interval(correct: int, total: int) -> tuple[float, float] | None:
+    """95 percent Wilson score interval for a proportion. Unlike a
+    bootstrap, it stays honest at the edges: 30 correct out of 30 gives
+    roughly (0.89, 1.0), not a point at 1.0, which is what a perfect score
+    on a small set actually supports."""
+    if total <= 0:
+        return None
+    z = 1.959963984540054
+    p = correct / total
+    denominator = 1 + z * z / total
+    centre = (p + z * z / (2 * total)) / denominator
+    half = z * math.sqrt(p * (1 - p) / total + z * z / (4 * total * total)) / denominator
+    return max(0.0, centre - half), min(1.0, centre + half)
+
+
 def bootstrap_ci(values: Sequence[float]) -> tuple[float, float] | None:
     """95 percent percentile bootstrap interval on the mean of `values`:
     resample the pairs with replacement, take each resample's mean, and

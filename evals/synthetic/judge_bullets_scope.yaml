@@ -1,0 +1,47 @@
+# Second held-out set for the groundedness judge, written after the subtle
+# set (judge_bullets_hard.yaml) showed the judge passing claims of team or
+# organisation scope. It measures a prompt change aimed at that weakness,
+# so it was written before the change and is scored against both prompts.
+# Half the bullets are grounded controls, to catch a judge that starts
+# flagging honest bullets. Same evidence rule as the other judge sets.
+#
+# Kinds:
+#   scope_inflation   claims a team, a company, users, customers or
+#                     production use the evidence does not mention
+#   grounded_control  a faithful bullet, some phrased with ownership words
+#                     ("built", "designed", "maintained") that are true of
+#                     anyone's own repository
+
+- {persona: backend-senior-us, repo: ratelimit-go, grounded: false, kind: scope_inflation,
+   bullet: "Built the token bucket rate limiter that protects the company's public APIs, in Go with Redis."}
+- {persona: backend-senior-us, repo: pg-audit-trail, grounded: false, kind: scope_inflation,
+   bullet: "Rolled out trigger-based audit history across every PostgreSQL database in the organisation."}
+- {persona: frontend-mid-eu, repo: route-planner, grounded: false, kind: scope_inflation,
+   bullet: "Built a Next.js bike route planner used by thousands of cyclists."}
+- {persona: data-scientist-in, repo: churn-model, grounded: false, kind: scope_inflation,
+   bullet: "Delivered a telecom churn model to the client's retention team, with SHAP explanations."}
+- {persona: mobile-dev-ca, repo: recipe-rn, grounded: false, kind: scope_inflation,
+   bullet: "Shipped a React Native recipe app to production on both app stores."}
+- {persona: devops-sre-uk, repo: incident-bot, grounded: false, kind: scope_inflation,
+   bullet: "Built the Slack incident bot every on-call engineer in the company uses to open incidents."}
+- {persona: ml-research-phd, repo: rag-eval-kit, grounded: false, kind: scope_inflation,
+   bullet: "Led a team of researchers building a library for evaluating RAG pipelines."}
+- {persona: new-grad-student, repo: sudoku-cv, grounded: false, kind: scope_inflation,
+   bullet: "Built a sudoku solver for a startup's mobile app using OpenCV and a PyTorch CNN."}
+
+- {persona: backend-senior-us, repo: ratelimit-go, grounded: true, kind: grounded_control,
+   bullet: "Designed a Redis-backed token bucket rate limiter in Go with a gRPC API."}
+- {persona: backend-senior-us, repo: pg-audit-trail, grounded: true, kind: grounded_control,
+   bullet: "Wrote PL/pgSQL triggers that record audit history for PostgreSQL tables."}
+- {persona: frontend-mid-eu, repo: route-planner, grounded: true, kind: grounded_control,
+   bullet: "Built a bike route planner in Next.js and TypeScript with a Mapbox map view."}
+- {persona: data-scientist-in, repo: churn-model, grounded: true, kind: grounded_control,
+   bullet: "Engineered features in Pandas for a gradient boosting churn model."}
+- {persona: mobile-dev-ca, repo: recipe-rn, grounded: true, kind: grounded_control,
+   bullet: "Built a React Native recipe app in TypeScript with offline favourites and Firebase."}
+- {persona: devops-sre-uk, repo: incident-bot, grounded: true, kind: grounded_control,
+   bullet: "Maintained a Slack bot that opens incident channels and keeps a timeline."}
+- {persona: ml-research-phd, repo: rag-eval-kit, grounded: true, kind: grounded_control,
+   bullet: "Wrote a small library for evaluating RAG pipelines with Qdrant and Sentence Transformers."}
+- {persona: new-grad-student, repo: sudoku-cv, grounded: true, kind: grounded_control,
+   bullet: "Solved sudokus from phone photos with OpenCV and a PyTorch digit classifier."}

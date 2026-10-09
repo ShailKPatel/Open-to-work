@@ -237,6 +237,38 @@ def test_hybrid_finds_named_skills_the_vector_alone_misses(tmp_path, monkeypatch
     assert all(0 < h.score <= 1 for h in hits)
 
 
+def test_a_skill_the_account_lacks_adds_no_ranking(tmp_path, monkeypatch):
+    """Skills get keyword runs only. A dense run for "Angular", which this
+    account has no evidence for, would still rank every row; a keyword
+    run matches nothing and leaves the fusion alone."""
+    from app.retrieval import search
+    from app.retrieval.search import Query
+
+    _reset(tmp_path)
+    _fake_embed(monkeypatch)
+    embedded: list[str] = []
+    original = search.embed
+
+    def counting(texts):
+        embedded.extend(texts)
+        return original(texts)
+
+    monkeypatch.setattr("app.retrieval.search.embed", counting)
+    index_skill_evidence(
+        [_evidence(id=1, skill="Python"), _evidence(id=2, skill="Go")], account_id=1
+    )
+
+    with_missing = search_skill_evidence(
+        Query(text="Backend engineer", skills=("Go", "Angular", "C#")), account_id=1, top_k=2
+    )
+    without = search_skill_evidence(
+        Query(text="Backend engineer", skills=("Go",)), account_id=1, top_k=2
+    )
+
+    assert [h.id for h in with_missing] == [h.id for h in without]
+    assert len(embedded) == 2  # one dense query per search, never one per skill
+
+
 def test_dense_mode_is_the_single_vector_search(tmp_path, monkeypatch):
     from app.retrieval.search import Query
 

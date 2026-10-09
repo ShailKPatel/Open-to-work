@@ -6,7 +6,10 @@ everything it created. Your own database and Qdrant server are never
 opened (see app/evals/synthetic.py's isolated_environment).
 
 --real needs the downloaded text: run
-`python -m scripts.fetch_real_eval_data` first.
+`python -m scripts.fetch_real_eval_data` first. --public dev|test scores
+the LinkedIn software postings (evals/public/) against the same portfolio;
+it needs `python -m scripts.fetch_public_eval_data` and the extractions
+saved by `python -m scripts.run_llm_evals --only public public-dev`.
 
 Loads the real embedding model; makes no LLM calls.
 
@@ -14,7 +17,7 @@ With --write, the summary table is also saved as markdown under
 evals/results/ so a run can be committed as evidence. It holds only
 aggregate numbers, never document text.
 
-Usage: .venv/bin/python -m scripts.run_synthetic_eval [--real] [--write]
+Usage: .venv/bin/python -m scripts.run_synthetic_eval [--real | --public SPLIT] [--write]
 """
 
 from __future__ import annotations
@@ -34,6 +37,13 @@ _SYNTHETIC_NOTE = (
     "when it names a skill the posting asks for), which favours keyword",
     "matching. Read these as a regression signal across varied profiles, not",
     "as real-world retrieval quality.",
+)
+_PUBLIC_NOTE = (
+    "LinkedIn software postings (public dataset, CC BY-SA 4.0) scored against",
+    "the composite open-source portfolio. Queries are the app's own LLM",
+    "extraction of each posting. Relevance was labeled before the search was",
+    "first run on these postings; the test split was never tuned against.",
+    "One labeler; see evals/public/DATA_SOURCES.md.",
 )
 _REAL_NOTE = (
     "Public job postings scored against a composite portfolio of public",
@@ -92,14 +102,30 @@ def main() -> None:
         "--real", action="store_true", help="score the labeled real-text set instead"
     )
     parser.add_argument(
+        "--public", choices=("dev", "test", "fresh"),
+        help="score a split of the LinkedIn set instead (fresh: the second test set)",
+    )
+    parser.add_argument(
         "--write", action="store_true", help="also save the summary under evals/results/"
     )
     args = parser.parse_args()
 
-    if args.real:
+    note: tuple[str, ...] = _SYNTHETIC_NOTE
+    if args.public:
+        from app.evals.public import build_retrieval_jobs
+
+        name = f"public-{args.public}"
+        personas = [build_portfolio()]
+        if args.public == "fresh":
+            jobs = build_retrieval_jobs("test", groups=("software-fresh",))
+        else:
+            jobs = build_retrieval_jobs(args.public)
+        note = _PUBLIC_NOTE
+    elif args.real:
         name = "real-text"
         personas = [build_portfolio()]
         jobs = build_jobs()
+        note = _REAL_NOTE
     else:
         name = "synthetic"
         personas = load_personas()
@@ -116,7 +142,7 @@ def main() -> None:
         "",
         *_summary(reports),
         "",
-        *(_REAL_NOTE if args.real else _SYNTHETIC_NOTE),
+        *note,
     ]
     print("\n".join(lines))
 

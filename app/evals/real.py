@@ -172,12 +172,23 @@ def build_jobs(
                 key=key,
                 for_personas=["real-portfolio"] if relevant else [],
                 covers=[item.get("role", "")],
-                text=cached["text"],
+                text=posting_text(cached),
                 expected={**label["expected"], "summary": label.get("summary", "")},
                 relevant_skills=relevant,
             )
         )
     return jobs
+
+
+def posting_text(cached: dict[str, Any]) -> str:
+    """The posting as someone pasting it from the job board would copy it:
+    the header the board shows (title, company, location) and then the
+    description. Greenhouse returns those header fields apart from the
+    description body, so without this the extraction eval would be asking
+    the model for a title and location the text never shows."""
+    header = [cached.get("title", ""), cached.get("company", ""), cached.get("location", "")]
+    lines = [line for line in header if line]
+    return "\n".join([*lines, "", cached.get("text", "")]).strip()
 
 
 def run_real_retrieval_eval() -> list[Any]:

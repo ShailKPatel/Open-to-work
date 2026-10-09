@@ -1,0 +1,140 @@
+# Labels for evals/judge/generated_bullets.yaml, keyed by bullet id.
+# Assigned before the groundedness judge was run on any of these bullets.
+#
+# grounded    true when every concrete claim is stated in the bullet's
+#             evidence or is a conservative paraphrase of it; false when
+#             any claim (a technology, what was built, scale, who it was
+#             for) goes beyond it. Same rule as the judge's prompt.
+# borderline  the call could reasonably go either way; reported apart so
+#             agreement on clear cases is not diluted by judgment calls
+# claim       for ungrounded bullets, the claim the evidence lacks
+# note        for borderline grounded bullets, why it was let through
+#
+# One labeler. See LABELING.md for what that limits.
+
+payments-senior-backend/backend-senior-us#0: {grounded: true}
+payments-senior-backend/backend-senior-us#1: {grounded: true}
+payments-senior-backend/backend-senior-us#2: {grounded: true}
+payments-senior-backend/backend-senior-us#3: {grounded: true}
+platform-go-remote/backend-senior-us#0: {grounded: true}
+platform-go-remote/backend-senior-us#1: {grounded: true}
+platform-go-remote/devops-sre-uk#0: {grounded: true}
+django-mid-onsite/backend-senior-us#0: {grounded: true}
+django-mid-onsite/backend-senior-us#1: {grounded: true, borderline: true, note: "'ensured data integrity' reads idempotent posting and reconciliation as integrity work"}
+django-mid-onsite/backend-senior-us#2: {grounded: true}
+django-mid-onsite/backend-senior-us#3: {grounded: true}
+frontend-react-berlin/frontend-mid-eu#0: {grounded: true}
+frontend-react-berlin/frontend-mid-eu#1: {grounded: true}
+frontend-react-berlin/frontend-mid-eu#2: {grounded: true}
+frontend-react-berlin/frontend-mid-eu#3: {grounded: true}
+frontend-react-berlin/mobile-dev-ca#0: {grounded: true}
+frontend-react-berlin/mobile-dev-ca#1: {grounded: true, borderline: true, note: "ties offline favourites to Firebase; both are in the evidence, the link is inferred"}
+design-systems-lead/frontend-mid-eu#0: {grounded: true}
+design-systems-lead/frontend-mid-eu#1: {grounded: true}
+vue-contract/frontend-mid-eu#0: {grounded: true}
+ds-bengaluru-lpa/data-scientist-in#0: {grounded: true}
+ds-bengaluru-lpa/data-scientist-in#1: {grounded: true}
+analytics-intern-monthly/data-scientist-in#0: {grounded: true}
+analytics-intern-monthly/data-scientist-in#1: {grounded: true}
+analytics-intern-monthly/data-scientist-in#2: {grounded: true}
+forecasting-scientist/data-scientist-in#0: {grounded: true}
+forecasting-scientist/data-scientist-in#1: {grounded: true}
+search-ml-engineer/ml-research-phd#0: {grounded: true}
+search-ml-engineer/ml-research-phd#1: {grounded: true}
+llm-applied-scientist/ml-research-phd#0: {grounded: true}
+llm-applied-scientist/ml-research-phd#1: {grounded: true}
+llm-applied-scientist/data-scientist-in#0: {grounded: true}
+llm-applied-scientist/data-scientist-in#1: {grounded: true}
+llm-applied-scientist/data-scientist-in#2: {grounded: true}
+llm-applied-scientist/data-scientist-in#3: {grounded: false, borderline: true, claim: "data pipelines and deploying results; the evidence names Streamlit and Pandas but no pipeline or deployment"}
+sre-london/devops-sre-uk#0: {grounded: true}
+sre-london/devops-sre-uk#1: {grounded: true}
+sre-london/devops-sre-uk#2: {grounded: true}
+linux-sysadmin/devops-sre-uk#0: {grounded: true}
+analytics-intern-monthly/new-grad-student#0: {grounded: true}
+analytics-intern-monthly/new-grad-student#1: {grounded: true}
+analytics-intern-monthly/new-grad-student#2: {grounded: true}
+analytics-intern-monthly/new-grad-student#3: {grounded: true}
+android-toronto/mobile-dev-ca#0: {grounded: true}
+ios-swiftui/mobile-dev-ca#0: {grounded: true}
+ios-swiftui/mobile-dev-ca#1: {grounded: true}
+react-native-startup/mobile-dev-ca#0: {grounded: true}
+react-native-startup/mobile-dev-ca#1: {grounded: true}
+react-native-startup/new-grad-student#0: {grounded: true}
+react-native-startup/new-grad-student#1: {grounded: true}
+new-grad-swe/new-grad-student#0: {grounded: true}
+fullstack-junior/new-grad-student#0: {grounded: true}
+fullstack-junior/new-grad-student#1: {grounded: true}
+healthcare-data-analyst/career-changer-analyst#0: {grounded: true}
+healthcare-data-analyst/data-scientist-in#0: {grounded: true}
+bi-developer/career-changer-analyst#0: {grounded: true}
+bi-developer/career-changer-analyst#1: {grounded: true}
+firmware-automotive/embedded-firmware-jp#0: {grounded: false, claim: "C; the evidence lists C++, not C"}
+iot-firmware-rust/embedded-firmware-jp#0: {grounded: true}
+iot-firmware-rust/embedded-firmware-jp#1: {grounded: true}
+iot-firmware-rust/embedded-firmware-jp#2: {grounded: true}
+eng-manager-platform/eng-manager-staff#0: {grounded: true}
+eng-manager-platform/devops-sre-uk#0: {grounded: true}
+eng-manager-platform/devops-sre-uk#1: {grounded: true}
+eng-manager-platform/devops-sre-uk#2: {grounded: true}
+staff-java-kafka/backend-senior-us#0: {grounded: true}
+staff-java-kafka/backend-senior-us#1: {grounded: true}
+staff-java-kafka/backend-senior-us#2: {grounded: true}
+staff-java-kafka/backend-senior-us#3: {grounded: true, borderline: true, note: "'ensured reliability' read from pytest and Docker in the skill list"}
+long-boilerplate/backend-senior-us#0: {grounded: true}
+long-boilerplate/backend-senior-us#1: {grounded: true}
+long-boilerplate/backend-senior-us#2: {grounded: true}
+reddit-8263406/real-portfolio#0: {grounded: true}
+reddit-8263406/real-portfolio#1: {grounded: false, borderline: true, claim: "modern architectural patterns and clean codebase practices; the evidence says only a Kotlin and Compose app"}
+duolingo-8393272002/real-portfolio#0: {grounded: true, borderline: true, note: "the evidence is a library for building applications; the bullet says it built applications"}
+duolingo-8393272002/real-portfolio#1: {grounded: true}
+robinhood-8246088/real-portfolio#0: {grounded: true, borderline: true, note: "restates the library's design goals as features built"}
+robinhood-8246088/real-portfolio#1: {grounded: true, borderline: true, note: "architecture patterns read from a library whose subject is app architecture"}
+stripe-8194604/real-portfolio#0: {grounded: true}
+stripe-8194604/real-portfolio#1: {grounded: true}
+reddit-8194576/real-portfolio#0: {grounded: true}
+reddit-8194576/real-portfolio#1: {grounded: true}
+reddit-8194576/real-portfolio#2: {grounded: true}
+databricks-8230883002/real-portfolio#0: {grounded: true}
+databricks-8230883002/real-portfolio#1: {grounded: true, borderline: true, note: "'scalable' is unstated wording, no concrete claim"}
+reddit-8189317/real-portfolio#0: {grounded: false, borderline: true, claim: "built microservices and REST APIs; the evidence is a framework for building them"}
+reddit-8189317/real-portfolio#1: {grounded: true}
+reddit-8189317/real-portfolio#2: {grounded: true}
+reddit-8189317/real-portfolio#3: {grounded: true}
+stripe-7369543/real-portfolio#0: {grounded: true}
+stripe-7369543/real-portfolio#1: {grounded: true}
+stripe-7369543/real-portfolio#2: {grounded: true}
+stripe-7369543/real-portfolio#3: {grounded: true}
+robinhood-5319465/real-portfolio#0: {grounded: true}
+robinhood-5319465/real-portfolio#1: {grounded: true}
+robinhood-5319465/real-portfolio#2: {grounded: true}
+robinhood-5319465/real-portfolio#3: {grounded: true}
+stripe-6786324/real-portfolio#0: {grounded: true}
+stripe-6786324/real-portfolio#1: {grounded: true}
+stripe-6786324/real-portfolio#2: {grounded: true}
+stripe-6786324/real-portfolio#3: {grounded: true, borderline: true, note: "payments and full stack inferred from Stripe and Next.js in the skill list"}
+discord-8659978002/real-portfolio#0: {grounded: true}
+discord-8659978002/real-portfolio#1: {grounded: false, borderline: true, claim: "validation with Tailwind CSS and Prisma; validation is Zod's job in this evidence"}
+discord-8659978002/real-portfolio#2: {grounded: true}
+discord-8659978002/real-portfolio#3: {grounded: true}
+discord-8659978002/real-portfolio#4: {grounded: true}
+discord-8659978002/real-portfolio#5: {grounded: true, borderline: true, note: "testing async features and protocol support is inferred from pytest, HTTP/2 and async in the skills"}
+cloudflare-8043974/real-portfolio#0: {grounded: true, borderline: true, note: "'optimized' leans on the description's 'fastest'"}
+cloudflare-8043974/real-portfolio#1: {grounded: true}
+cloudflare-8043974/real-portfolio#2: {grounded: true}
+cloudflare-8043974/real-portfolio#3: {grounded: true, borderline: true, note: "'analysis tools' goes past notebooks of a handbook"}
+cloudflare-8043974/real-portfolio#4: {grounded: true}
+cloudflare-8043974/real-portfolio#5: {grounded: true}
+airbnb-8031901/real-portfolio#0: {grounded: true}
+airbnb-8031901/real-portfolio#1: {grounded: true}
+airbnb-8031901/real-portfolio#2: {grounded: true}
+airbnb-8031901/real-portfolio#3: {grounded: true}
+airbnb-8031901/real-portfolio#4: {grounded: true}
+discord-8840756002/real-portfolio#0: {grounded: true}
+discord-8840756002/real-portfolio#1: {grounded: true, borderline: true, note: "'improve analytics workflows' is unstated but vague"}
+discord-8840756002/real-portfolio#2: {grounded: true}
+discord-8840756002/real-portfolio#3: {grounded: true}
+stripe-5416444/real-portfolio#0: {grounded: true}
+stripe-5416444/real-portfolio#1: {grounded: true}
+stripe-5416444/real-portfolio#2: {grounded: true}
+stripe-5416444/real-portfolio#3: {grounded: true}

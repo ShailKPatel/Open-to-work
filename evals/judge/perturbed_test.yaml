@@ -1,0 +1,350 @@
+# Held-out positives for the groundedness judge: bullets the app wrote
+# (test split of generated_bullets.yaml, labeled grounded), each changed to
+# carry exactly one claim its evidence does not support. Written before
+# the judge was run on them and never used to change the judge's prompt.
+# Natural bullets alone hold too few ungrounded cases (about 4 percent) to
+# measure how many the judge catches; this set measures that, by kind.
+#
+# Kinds: adjacent_tech, unstated_number, scope_inflation, role_inflation,
+# wrong_pairing (both tools are in the evidence, the job given to one is
+# not), scope_shift, outcome_claim, credential_claim.
+
+- id: perturbed-00
+  source: django-mid-onsite/backend-senior-us#0
+  kind: adjacent_tech
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  original: Built a double-entry ledger service backed by PostgreSQL, SQLAlchemy, and Celery with Redis.
+  bullet: Built a double-entry ledger service backed by MySQL, SQLAlchemy, and Celery with Redis.
+  grounded: false
+- id: perturbed-01
+  source: design-systems-lead/frontend-mid-eu#1
+  kind: adjacent_tech
+  evidence: name='shelf-ui' description='Accessible React component library with Storybook docs.' skills=React,
+    TypeScript, Tailwind CSS, Playwright, Vite, Storybook, Accessibility
+  original: Utilized TypeScript, Tailwind CSS, Playwright, and Vite for robust component development and
+    testing.
+  bullet: Utilized TypeScript, Tailwind CSS, Cypress, and Vite for component development and testing.
+  grounded: false
+- id: perturbed-02
+  source: analytics-intern-monthly/data-scientist-in#1
+  kind: adjacent_tech
+  evidence: name='demand-forecast' description='Weekly SKU demand forecasting with hierarchical reconciliation.'
+    skills=Pandas, LightGBM, Statsmodels, Streamlit, Scikit-learn, Time Series Forecasting, Prophet
+  original: Forecasted weekly SKU demand with hierarchical reconciliation using Pandas and LightGBM.
+  bullet: Forecasted weekly SKU demand with hierarchical reconciliation using Pandas and CatBoost.
+  grounded: false
+- id: perturbed-03
+  source: android-toronto/mobile-dev-ca#0
+  kind: adjacent_tech
+  evidence: name='transit-android' description='Jetpack Compose app for real time bus arrivals.' skills=JUnit,
+    Kotlin, Jetpack Compose, Android
+  original: Built a Jetpack Compose application for real time bus arrivals using Kotlin.
+  bullet: Built a Jetpack Compose application for real time bus arrivals using Kotlin and Room.
+  grounded: false
+- id: perturbed-04
+  source: reddit-8189317/real-portfolio#3
+  kind: adjacent_tech
+  evidence: name='terraform-aws-vpc' description='Terraform module to create AWS VPC resources' skills=Terraform,
+    AWS, HCL, Cloud Networking
+  original: Created AWS VPC resources using Terraform.
+  bullet: Created AWS VPC resources using Terraform and CloudFormation.
+  grounded: false
+- id: perturbed-05
+  source: django-mid-onsite/backend-senior-us#2
+  kind: unstated_number
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  original: Implemented a token bucket rate limiter backed by Redis and Lua.
+  bullet: Implemented a token bucket rate limiter backed by Redis and Lua handling 50,000 requests per
+    second.
+  grounded: false
+- id: perturbed-06
+  source: search-ml-engineer/ml-research-phd#0
+  kind: unstated_number
+  evidence: name='sparse-retriever' description='Learned sparse retrieval with a BERT encoder, code for
+    a published paper.' skills=PyTorch, Hugging Face Transformers, NumPy, FAISS, pytest, Information Retrieval,
+    Natural Language Processing, Python
+  original: Implemented learned sparse retrieval using a BERT encoder and Python.
+  bullet: Implemented learned sparse retrieval using a BERT encoder and Python, improving recall by 12
+    percent.
+  grounded: false
+- id: perturbed-07
+  source: sre-london/devops-sre-uk#1
+  kind: unstated_number
+  evidence: name='tf-aws-baseline' description='Terraform modules for an AWS landing zone with VPC, IAM
+    and GuardDuty.' skills=Terraform, AWS
+  original: Provides Terraform modules for an AWS landing zone including VPC, IAM, and GuardDuty.
+  bullet: Provides Terraform modules for an AWS landing zone including VPC, IAM, and GuardDuty across
+    30 accounts.
+  grounded: false
+- id: perturbed-08
+  source: analytics-intern-monthly/new-grad-student#0
+  kind: unstated_number
+  evidence: name='sudoku-cv' description='Solves a sudoku from a phone photo.' skills=OpenCV, PyTorch,
+    NumPy, Computer Vision
+  original: Developed a pipeline to solve sudoku puzzles directly from phone images using OpenCV and Computer
+    Vision techniques.
+  bullet: Developed a pipeline that solves sudoku puzzles from phone images with 98 percent accuracy using
+    OpenCV.
+  grounded: false
+- id: perturbed-09
+  source: cloudflare-8043974/real-portfolio#4
+  kind: unstated_number
+  evidence: name='imbalanced-learn' description='A Python Package to Tackle the Curse of Imbalanced Datasets
+    in Machine Learning' skills=NumPy, Scikit-learn, SciPy, Python, Machine Learning, Imbalanced Classification
+  original: Developed machine learning utilities in Python to address imbalanced classification challenges.
+  bullet: Developed machine learning utilities in Python for imbalanced classification, used in over 200
+    downstream projects.
+  grounded: false
+- id: perturbed-10
+  source: sre-london/devops-sre-uk#2
+  kind: scope_inflation
+  evidence: name='incident-bot' description='Slack bot that opens incident channels and keeps a timeline.'
+    skills=AWS, Flask, Python, PagerDuty
+  original: Automates incident response by opening Slack channels and keeping a timeline.
+  bullet: Automates incident response for the company's on-call engineers by opening Slack channels and
+    keeping a timeline.
+  grounded: false
+- id: perturbed-11
+  source: react-native-startup/mobile-dev-ca#0
+  kind: scope_inflation
+  evidence: name='recipe-rn' description='React Native recipe app with offline favourites.' skills=React
+    Native, React, TypeScript, Firebase, Jest
+  original: Built a React Native recipe app featuring offline favourites.
+  bullet: Shipped a React Native recipe app with offline favourites to thousands of users.
+  grounded: false
+- id: perturbed-12
+  source: analytics-intern-monthly/new-grad-student#2
+  kind: scope_inflation
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  original: Constructed an application to match university students with surplus dining hall food.
+  bullet: Launched an application across three universities to match students with surplus dining hall
+    food.
+  grounded: false
+- id: perturbed-13
+  source: linux-sysadmin/devops-sre-uk#0
+  kind: scope_inflation
+  evidence: name='ansible-hardening' description='Ansible roles that apply CIS hardening to Ubuntu servers.'
+    skills=Ansible, Linux
+  original: Applied CIS hardening to Ubuntu servers using Ansible roles.
+  bullet: Applied CIS hardening to the production Ubuntu fleet using Ansible roles.
+  grounded: false
+- id: perturbed-14
+  source: stripe-5416444/real-portfolio#0
+  kind: scope_inflation
+  evidence: name='dbt-utils' description='Utility functions for dbt projects.' skills=dbt, SQL, Data Modeling,
+    Data Quality Testing
+  original: Provided utility functions for dbt projects using SQL and data modeling.
+  bullet: Provided utility functions for dbt projects used by the analytics team in production.
+  grounded: false
+- id: perturbed-15
+  source: django-mid-onsite/backend-senior-us#3
+  kind: role_inflation
+  evidence: name='pg-audit-trail' description='Trigger-based audit history for PostgreSQL tables.' skills=PostgreSQL,
+    SQL, PL/pgSQL
+  original: Created trigger-based audit history for PostgreSQL tables using PL/pgSQL and SQL.
+  bullet: Led a team of three building trigger-based audit history for PostgreSQL tables with PL/pgSQL.
+  grounded: false
+- id: perturbed-16
+  source: design-systems-lead/frontend-mid-eu#0
+  kind: role_inflation
+  evidence: name='shelf-ui' description='Accessible React component library with Storybook docs.' skills=React,
+    TypeScript, Tailwind CSS, Playwright, Vite, Storybook, Accessibility
+  original: Built an accessible React component library featuring Storybook docs.
+  bullet: Led the design system team building an accessible React component library with Storybook docs.
+  grounded: false
+- id: perturbed-17
+  source: new-grad-swe/new-grad-student#0
+  kind: role_inflation
+  evidence: name='tiny-raft' description='Raft consensus implementation for a distributed systems course.'
+    skills=Go, Distributed Systems
+  original: Implemented Raft consensus for a distributed systems course using Go.
+  bullet: Led a student team implementing Raft consensus in Go for a distributed systems course.
+  grounded: false
+- id: perturbed-18
+  source: healthcare-data-analyst/career-changer-analyst#0
+  kind: role_inflation
+  evidence: name='school-attendance-analysis' description='Analysis of attendance and test scores across
+    a school district.' skills=Pandas, Seaborn, Matplotlib, Jupyter, SQL, Tableau, Data Visualization
+  original: Analyzed attendance and test scores across a school district using SQL and Tableau for data
+    visualization.
+  bullet: Managed a district analytics project analyzing attendance and test scores with SQL and Tableau.
+  grounded: false
+- id: perturbed-19
+  source: discord-8659978002/real-portfolio#4
+  kind: role_inflation
+  evidence: name='httpx' description='A next generation HTTP client for Python.' skills=pytest, Python,
+    HTTP, HTTP/2, Async Programming, Command Line Interface
+  original: Built robust HTTP client functionality using Python and async programming principles.
+  bullet: Mentored contributors while building HTTP client functionality in Python with async programming.
+  grounded: false
+- id: perturbed-20
+  source: react-native-startup/new-grad-student#1
+  kind: wrong_pairing
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  original: Integrated MongoDB for data storage and managed authentication using JWT.
+  bullet: Integrated React for data storage and managed authentication using MongoDB.
+  grounded: false
+- id: perturbed-21
+  source: staff-java-kafka/backend-senior-us#0
+  kind: wrong_pairing
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  original: Built a rate limiter using Redis and a gRPC API.
+  bullet: Built a rate limiter using Lua for the API layer and gRPC for token storage.
+  grounded: false
+- id: perturbed-22
+  source: analytics-intern-monthly/data-scientist-in#2
+  kind: wrong_pairing
+  evidence: name='churn-model' description='Telecom churn prediction with gradient boosting and SHAP explanations.'
+    skills=Pandas, NumPy, LightGBM, XGBoost, Optuna, SHAP, Matplotlib, Jupyter, Feature Engineering, Machine
+    Learning
+  original: Predicted telecom churn using gradient boosting and Pandas.
+  bullet: Predicted telecom churn using SHAP and explained the predictions with Optuna.
+  grounded: false
+- id: perturbed-23
+  source: bi-developer/career-changer-analyst#0
+  kind: wrong_pairing
+  evidence: name='school-attendance-analysis' description='Analysis of attendance and test scores across
+    a school district.' skills=Pandas, Seaborn, Matplotlib, Jupyter, SQL, Tableau, Data Visualization
+  original: Built Tableau visualizations for attendance and test score analysis.
+  bullet: Built Seaborn dashboards in Tableau for attendance and test score analysis.
+  grounded: false
+- id: perturbed-24
+  source: stripe-8194604/real-portfolio#0
+  kind: wrong_pairing
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  original: Built an open source application using Next.js and React with TypeScript, Tailwind CSS, and
+    Stripe integration.
+  bullet: Built an open source application with Stripe handling authentication and NextAuth.js handling
+    payments.
+  grounded: false
+- id: perturbed-25
+  source: sre-london/devops-sre-uk#0
+  kind: scope_shift
+  evidence: name='k8s-slo-exporter' description='Prometheus exporter that turns Kubernetes ingress logs
+    into SLO burn rates.' skills=Prometheus, Kubernetes, Go
+  original: Turns Kubernetes ingress logs into SLO burn rates using Prometheus.
+  bullet: Turns Kubernetes ingress logs into real-time anomaly alerts using Prometheus.
+  grounded: false
+- id: perturbed-26
+  source: analytics-intern-monthly/data-scientist-in#0
+  kind: scope_shift
+  evidence: name='sql-practice' description='Window function and CTE exercises with solutions.' skills=SQL
+  original: Completed window function and CTE exercises with solutions using SQL.
+  bullet: Built a SQL query optimizer for window functions and CTEs.
+  grounded: false
+- id: perturbed-27
+  source: robinhood-5319465/real-portfolio#3
+  kind: scope_shift
+  evidence: name='pgvector' description='Open-source vector similarity search for Postgres' skills=PostgreSQL,
+    C, Vector Search
+  original: Implemented vector similarity search capabilities for PostgreSQL databases.
+  bullet: Implemented vector similarity search for MySQL databases.
+  grounded: false
+- id: perturbed-28
+  source: reddit-8189317/real-portfolio#2
+  kind: scope_shift
+  evidence: name='kind' description='Kubernetes IN Docker - local clusters for testing Kubernetes' skills=Kubernetes,
+    Docker, Go, Continuous Integration
+  original: Developed local clusters for testing Kubernetes using Go and Docker.
+  bullet: Developed production Kubernetes clusters on AWS using Go and Docker.
+  grounded: false
+- id: perturbed-29
+  source: airbnb-8031901/real-portfolio#0
+  kind: scope_shift
+  evidence: name='nanoGPT' description='The simplest, fastest repository for training/finetuning medium-sized
+    GPTs.' skills=Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers
+  original: Focused on training and finetuning medium-sized GPTs using PyTorch and Large Language Models.
+  bullet: Pretrained a large GPT model from scratch on a custom corpus using PyTorch.
+  grounded: false
+- id: perturbed-30
+  source: staff-java-kafka/backend-senior-us#2
+  kind: outcome_claim
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  original: Developed a double-entry ledger service with idempotent posting.
+  bullet: Developed a double-entry ledger service with idempotent posting that eliminated reconciliation
+    errors.
+  grounded: false
+- id: perturbed-31
+  source: bi-developer/career-changer-analyst#1
+  kind: outcome_claim
+  evidence: name='school-attendance-analysis' description='Analysis of attendance and test scores across
+    a school district.' skills=Pandas, Seaborn, Matplotlib, Jupyter, SQL, Tableau, Data Visualization
+  original: Wrote SQL queries to support data extraction and analysis.
+  bullet: Wrote SQL queries that cut the district's reporting time in half.
+  grounded: false
+- id: perturbed-32
+  source: analytics-intern-monthly/new-grad-student#3
+  kind: outcome_claim
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  original: Built backend data storage and API services using MongoDB, Express.js, and Node.js.
+  bullet: Built backend data storage and API services with MongoDB and Express.js that reduced food waste
+    on campus.
+  grounded: false
+- id: perturbed-33
+  source: discord-8840756002/real-portfolio#0
+  kind: outcome_claim
+  evidence: name='dbt-utils' description='Utility functions for dbt projects.' skills=dbt, SQL, Data Modeling,
+    Data Quality Testing
+  original: Built and maintained utility functions for dbt projects to support data modeling and quality
+    testing.
+  bullet: Built utility functions for dbt projects that became the standard toolkit for data teams.
+  grounded: false
+- id: perturbed-34
+  source: reddit-8194576/real-portfolio#1
+  kind: outcome_claim
+  evidence: 'name=''react-native-template-obytes'' description=''A template for your next React Native
+    project: Expo, PNPM, TypeScript, TailwindCSS, Husky, EAS, GitHub Actions, Env Vars, expo-router, react-query,
+    react-hook-form.'' skills=TanStack Query, React, Jest, React Native, Tailwind CSS, TypeScript, Expo,
+    GitHub Actions, Mobile Development'
+  original: Implemented automated testing setups using Jest.
+  bullet: Implemented automated testing with Jest that raised test coverage to full coverage.
+  grounded: false
+- id: perturbed-35
+  source: search-ml-engineer/ml-research-phd#1
+  kind: credential_claim
+  evidence: name='sparse-retriever' description='Learned sparse retrieval with a BERT encoder, code for
+    a published paper.' skills=PyTorch, Hugging Face Transformers, NumPy, FAISS, pytest, Information Retrieval,
+    Natural Language Processing, Python
+  original: Applied PyTorch, Hugging Face Transformers, and Information Retrieval techniques.
+  bullet: Applied PyTorch and Hugging Face Transformers in award-winning information retrieval research.
+  grounded: false
+- id: perturbed-36
+  source: new-grad-swe/new-grad-student#0
+  kind: credential_claim
+  evidence: name='tiny-raft' description='Raft consensus implementation for a distributed systems course.'
+    skills=Go, Distributed Systems
+  original: Implemented Raft consensus for a distributed systems course using Go.
+  bullet: Implemented Raft consensus in Go, graded top of the distributed systems course.
+  grounded: false
+- id: perturbed-37
+  source: healthcare-data-analyst/data-scientist-in#0
+  kind: credential_claim
+  evidence: name='sql-practice' description='Window function and CTE exercises with solutions.' skills=SQL
+  original: Completed window function and CTE exercises with solutions.
+  bullet: Completed window function and CTE exercises toward an Oracle SQL certification.
+  grounded: false
+- id: perturbed-38
+  source: robinhood-5319465/real-portfolio#2
+  kind: credential_claim
+  evidence: name='axum' description='HTTP routing and request-handling library for Rust that focuses on
+    ergonomics and modularity' skills=Rust, Tokio, HTTP, REST APIs
+  original: Provided robust routing and request-handling capabilities for HTTP systems.
+  bullet: Provided routing and request-handling for HTTP in Rust, adopted by the Tokio project.
+  grounded: false
+- id: perturbed-39
+  source: cloudflare-8043974/real-portfolio#1
+  kind: credential_claim
+  evidence: name='nanoGPT' description='The simplest, fastest repository for training/finetuning medium-sized
+    GPTs.' skills=Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers
+  original: Applied Python and PyTorch to advance large language model workflows and deep learning capabilities.
+  bullet: Applied Python and PyTorch to large language models in work published at NeurIPS.
+  grounded: false

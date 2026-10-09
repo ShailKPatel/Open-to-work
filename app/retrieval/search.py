@@ -155,10 +155,18 @@ def _hybrid_search(
     top_k: int,
     must: Sequence[Any] | None = None,
 ) -> list[Hit]:
-    """Dense and keyword runs for every sub-query over the account's
-    points in this collection, fused. The keyword corpus is the account's
-    own points, read back from Qdrant with their payloads, so it is
-    exactly the set the dense side searches and needs no database."""
+    """A dense and a keyword run for the full query, and a keyword run
+    for each skill it names, over the account's points in this collection,
+    fused. The keyword corpus is the account's own points, read back from
+    Qdrant with their payloads, so it is exactly the set the dense side
+    searches and needs no database.
+
+    Skills get no dense run. A posting names many skills an account lacks,
+    and a keyword run for one of those matches nothing, where a dense run
+    still ranks every point and hands fusion a full list of near misses.
+    On held-out postings that noise put the fused ranking below plain BM25
+    (evals/results/public-test-20261009T010921Z.md); without it the dev
+    sets improved or held (scripts/compare_retrieval.py)."""
     from qdrant_client.models import FieldCondition, Filter, MatchValue
 
     from app.retrieval.keyword import Bm25Corpus
@@ -189,15 +197,13 @@ def _hybrid_search(
         return []
 
     sub_queries = _sub_queries(query)
-    vectors = embed([QUERY_INSTRUCTION + q for q in sub_queries])
     keyword = Bm25Corpus([(pid, _document_text(p)) for pid, p in sorted(payloads.items())])
-    runs: list[list[int]] = []
-    for text, vector in zip(sub_queries, vectors, strict=True):
-        dense = client.query_points(
-            collection_name=collection, query=vector, query_filter=scope, limit=_RUN_DEPTH
-        )
-        runs.append([int(p.id) for p in dense.points])
-        runs.append(keyword.top_k(text, _RUN_DEPTH))
+    (vector,) = embed([QUERY_INSTRUCTION + query.text])
+    dense = client.query_points(
+        collection_name=collection, query=vector, query_filter=scope, limit=_RUN_DEPTH
+    )
+    runs = [[int(p.id) for p in dense.points]]
+    runs.extend(keyword.top_k(text, _RUN_DEPTH) for text in sub_queries)
     return [
         Hit(id=doc_id, score=score, payload=payloads[doc_id])
         for doc_id, score in _fuse(runs)[:top_k]

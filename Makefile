@@ -1,4 +1,4 @@
-.PHONY: test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-llm constraints dev up down start
+.PHONY: test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-public eval-llm constraints dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
@@ -78,13 +78,24 @@ eval-real:
 	.venv/bin/python -m scripts.fetch_real_eval_data
 	.venv/bin/python -m scripts.run_synthetic_eval --real $(if $(WRITE),--write,)
 
+# Retrieval on LinkedIn software postings (evals/public/, see DATA_SOURCES.md
+# there), searched with the app's own saved extraction of each posting.
+# SPLIT is dev (tune against this), test (spent: the search changed after it
+# was read) or fresh (the current held-out set). The extractions come from
+#   make eval-llm ONLY="public public-dev public-fresh"
+#   make eval-public SPLIT=fresh [WRITE=1]
+eval-public:
+	.venv/bin/python -m scripts.fetch_public_eval_data
+	.venv/bin/python -m scripts.run_synthetic_eval --public $(or $(SPLIT),dev) $(if $(WRITE),--write,)
+
 # LLM-backed evals: job and resume extraction, the groundedness judge
 # against human labels, and prompt injection (scripts/run_llm_evals.py).
 # Real, billed calls with the key you pass, in a throwaway environment:
 #   LIVE_LLM_API_KEY=... make eval-llm [WRITE=1]
+# or with keys listed one per line in evals/.llm-eval-keys (gitignored).
 eval-llm:
 	.venv/bin/python -m scripts.fetch_real_eval_data
-	.venv/bin/python -m scripts.run_llm_evals $(if $(WRITE),--write,)
+	.venv/bin/python -m scripts.run_llm_evals $(if $(ONLY),--only $(ONLY),) $(if $(WRITE),--write,)
 
 # Re-pin constraints.txt to the current venv. Run deliberately, after the
 # suite passes on upgraded packages, and commit with a note on what moved.

@@ -10,6 +10,7 @@ from app.evals.metrics import (
     recall_at_k,
     reciprocal_rank,
     score_pair,
+    wilson_interval,
 )
 
 
@@ -127,3 +128,16 @@ def test_paired_difference_spanning_zero_and_not():
 def test_paired_difference_rejects_unequal_lengths():
     with pytest.raises(ValueError):
         paired_difference([0.1], [0.1, 0.2])
+
+
+def test_wilson_interval_is_wide_for_a_perfect_small_sample():
+    low, high = wilson_interval(30, 30)
+    assert high == pytest.approx(1.0)
+    assert 0.88 < low < 0.9
+
+
+def test_wilson_interval_brackets_the_proportion():
+    low, high = wilson_interval(80, 100)
+    assert low < 0.8 < high
+    assert round(low, 2) == 0.71 and round(high, 2) == 0.87
+    assert wilson_interval(0, 0) is None

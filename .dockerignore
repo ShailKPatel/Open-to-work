@@ -1,0 +1,14 @@
+# Kept out of the build context: none of it is copied into the image, and
+# some of it is private (the local database, its encryption key, API keys
+# for the opt-in evals).
+.git
+.venv
+data/
+evals/.llm-eval-keys
+evals/real/cache/
+evals/public/cache/
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+**/__pycache__

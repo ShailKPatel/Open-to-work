@@ -19,3 +19,7 @@ app/web/static/
 evals/results/*.json
 # Downloaded text for the real-text eval set (scripts/fetch_real_eval_data.py).
 evals/real/cache/
+# Downloaded text for the public-dataset eval set (scripts/fetch_public_eval_data.py).
+evals/public/cache/
+# API keys used only by the opt-in LLM evals (scripts/run_llm_evals.py).
+evals/.llm-eval-keys

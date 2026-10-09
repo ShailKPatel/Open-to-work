@@ -163,3 +163,11 @@ def test_every_relevant_skill_names_real_portfolio_evidence(sources, labels):
     for key, label in labels["postings"].items():
         missing = [s for s in label["relevant_skills"] if s.casefold() not in skills]
         assert not missing, (key, missing)
+
+
+def test_posting_text_puts_the_board_header_first():
+    text = real.posting_text(
+        {"title": "Data Analyst", "company": "Acme", "location": "Toronto", "text": "Body."}
+    )
+    assert text == "Data Analyst\nAcme\nToronto\n\nBody."
+    assert real.posting_text({"text": "Body only."}) == "Body only."

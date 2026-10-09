@@ -657,7 +657,8 @@ def _require_isolation() -> Path:
 
 def seed(personas: list[Persona]) -> dict[str, int]:
     """Writes every persona's rows and indexes them through the real
-    app/retrieval/index.py write path. Only inside isolated_environment()."""
+    app/retrieval/index.py write path, skipping personas already seeded.
+    Only inside isolated_environment()."""
     _require_isolation()
     from app.core.db import (
         Account,
@@ -679,6 +680,9 @@ def seed(personas: list[Persona]) -> dict[str, int]:
     init_db()
     counts = {"accounts": 0, "evidence": 0, "experience_evidence": 0, "points": 0}
     db = get_db()
+    # Personas already seeded in this environment are left as they are, so
+    # several evals can share one environment and each seed what it needs.
+    personas = [p for p in personas if db.get(Account, p.account_id) is None]
     try:
         for persona in personas:
             db.add(

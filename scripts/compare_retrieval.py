@@ -17,12 +17,17 @@ Strategies, all of which return a ranked list of document ids:
   decomposed       one dense+instr query per skill the posting names, plus
                    the full query, fused by reciprocal rank
   decomposed+bm25  decomposed, with a bm25 run per sub-query as well
+                   (what the app shipped first)
+  hybrid+skill-bm25  dense and bm25 on the full query, plus a bm25 run per
+                   skill: a skill this profile lacks matches nothing in
+                   bm25, where a dense run for it still ranks every row
+  bm25+skill-bm25  bm25 on the full query and per skill, no dense at all
   X+rerank         X's top candidates re-scored by a cross-encoder
 
 and two document texts: the current "Skill: X. Evidence: Y." and a
 context-carrying one that adds the project or role the skill came from.
 
-Usage: .venv/bin/python -m scripts.compare_retrieval [--real] [--rerankers NAME ...]
+Usage: .venv/bin/python -m scripts.compare_retrieval [--real | --public dev] [--rerankers NAME ...]
 """
 
 from __future__ import annotations
@@ -120,14 +125,17 @@ def _strategies(job: Job, query: str, ranker: Ranker) -> dict[str, list[int]]:
     full_dense = ranker.dense(query)
     full_bm25 = ranker.keyword(query)
     decomposed_runs = [full_dense] + [ranker.dense(s) for s in subqueries]
+    skill_bm25 = [ranker.keyword(s) for s in subqueries]
     return {
+        "hybrid+skill-bm25": _rrf([full_dense, full_bm25] + skill_bm25),
+        "bm25+skill-bm25": _rrf([full_bm25] + skill_bm25),
         "dense": ranker.dense(query, instruction=False),
         "dense+instr": full_dense,
         "bm25": full_bm25,
         "hybrid": _rrf([full_dense, full_bm25]),
         "decomposed": _rrf(decomposed_runs),
         "decomposed+bm25": _rrf(
-            decomposed_runs + [full_bm25] + [ranker.keyword(s) for s in subqueries]
+            decomposed_runs + [full_bm25] + skill_bm25
         ),
     }
 
@@ -157,10 +165,18 @@ def _rerank(model: object, query: str, ranking: list[int], docs: dict[int, str])
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compare retrieval strategies.")
     parser.add_argument("--real", action="store_true", help="use the real-text set")
+    parser.add_argument(
+        "--public", choices=("dev",), help="the LinkedIn set's dev split (never test)"
+    )
     parser.add_argument("--rerankers", nargs="*", default=list(_DEFAULT_RERANKERS))
     args = parser.parse_args()
 
-    if args.real:
+    if args.public:
+        from app.evals.public import build_retrieval_jobs
+        from app.evals.real import build_portfolio
+
+        personas, jobs = [build_portfolio()], build_retrieval_jobs(args.public)
+    elif args.real:
         from app.evals.real import build_jobs, build_portfolio
 
         personas, jobs = [build_portfolio()], build_jobs()
