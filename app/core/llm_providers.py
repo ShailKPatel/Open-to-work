@@ -135,6 +135,9 @@ _BLOCKED_PHRASES = (
     "billing",
     "has not been used in project",
     "api has not been enabled",
+    # Gemini, for a project Google has shut off: "Your project has been
+    # denied access. Please contact support."
+    "denied access",
     "serviceusage",
 )
 

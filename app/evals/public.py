@@ -83,6 +83,10 @@ def cache_path(job_id: int | str) -> Path:
 # first test set was spent (scripts/fetch_public_eval_data.py --add-fresh).
 # Not part of the extraction set, whose sample stays the original 200.
 FRESH_GROUP = "software-fresh"
+# A second fresh sample, larger, labeled by a validated LLM annotator
+# (evals/public/annotator_prompt.md) rather than by hand. Its labels live
+# in retrieval_labels_llm.yaml, apart from the human ones.
+FRESH2_GROUP = "software-fresh-2"
 
 
 def item_split(item: dict[str, Any]) -> str:
@@ -191,7 +195,7 @@ def build_jobs(split: str | None = TEST, sources: dict[str, Any] | None = None) 
     sources = sources or load_sources()
     jobs = []
     for item in sources["postings"]:
-        if item.get("group") == FRESH_GROUP:
+        if item.get("group") in (FRESH_GROUP, FRESH2_GROUP):
             continue
         if split is not None and item_split(item) != split:
             continue
@@ -226,6 +230,7 @@ def build_retrieval_jobs(
     split: str | None = TEST,
     sources: dict[str, Any] | None = None,
     groups: tuple[str, ...] = ("software",),
+    labels_path: Path | None = None,
 ) -> list[Any]:
     """The software postings as retrieval queries against the composite
     portfolio, searched the way the app searches a saved posting: with the
@@ -236,7 +241,7 @@ def build_retrieval_jobs(
     from app.evals.synthetic import Job
 
     sources = sources or load_sources()
-    labels = load_retrieval_labels()
+    labels = load_retrieval_labels(labels_path)
     jobs = []
     for item in sources["postings"]:
         key = posting_key(item["id"])
@@ -244,6 +249,7 @@ def build_retrieval_jobs(
             continue
         if split is not None and item_split(item) != split:
             continue
+        row = read_cached(item["id"])
         path = extraction_path(key)
         if not path.exists():
             raise CacheMissingError(
@@ -257,7 +263,7 @@ def build_retrieval_jobs(
                 key=key,
                 for_personas=["real-portfolio"] if relevant else [],
                 covers=["software"],
-                text="",
+                text=posting_text(row) if row else "",
                 expected={
                     "title": extracted.get("title", ""),
                     "company": extracted.get("company", ""),

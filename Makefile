@@ -1,4 +1,4 @@
-.PHONY: test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-public eval-llm constraints dev up down start
+.PHONY: test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-public eval-skillspan eval-llm constraints dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
@@ -84,6 +84,10 @@ eval-real:
 # was read) or fresh (the current held-out set). The extractions come from
 #   make eval-llm ONLY="public public-dev public-fresh"
 #   make eval-public SPLIT=fresh [WRITE=1]
+eval-skillspan:
+	.venv/bin/python -m scripts.fetch_skillspan
+	.venv/bin/python -m scripts.run_synthetic_eval --skillspan $(if $(WRITE),--write,)
+
 eval-public:
 	.venv/bin/python -m scripts.fetch_public_eval_data
 	.venv/bin/python -m scripts.run_synthetic_eval --public $(or $(SPLIT),dev) $(if $(WRITE),--write,)

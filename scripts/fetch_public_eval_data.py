@@ -17,7 +17,7 @@ all ASCII (an English-language proxy). Groups:
   general         any other title, without one
 
 --add-fresh N appends N software postings drawn under a new salt (group
-software-fresh, all in test), for when the existing test set has been
+software-fresh by default, or --group; all in test), for when the existing test set has been
 spent: once a change is made after reading test results, those postings
 are dev, and the claim needs postings nothing was tuned on.
 
@@ -127,7 +127,11 @@ def _select(csv_path: Path | None) -> list[dict[str, Any]]:
 
 
 def _select_fresh(
-    csv_path: Path | None, size: int, salt: str, taken: list[dict[str, Any]]
+    csv_path: Path | None,
+    size: int,
+    salt: str,
+    taken: list[dict[str, Any]],
+    group: str = "software-fresh",
 ) -> list[dict[str, Any]]:
     """`size` more software postings, ranked under a new salt, skipping
     every posting and company already in the sample. All go to test: they
@@ -148,7 +152,7 @@ def _select_fresh(
         if company in taken_companies:
             continue
         taken_companies.add(company)
-        chosen.append({"id": int(_job_id(row)), "group": "software-fresh", "split": "test"})
+        chosen.append({"id": int(_job_id(row)), "group": group, "split": "test"})
         if len(chosen) == size:
             break
     return chosen
@@ -180,6 +184,9 @@ def main() -> None:
         help="append N new software postings as a fresh test set",
     )
     parser.add_argument("--salt", default="open-to-work-eval-2026-fresh-1")
+    parser.add_argument(
+        "--group", default="software-fresh", help="group name for --add-fresh postings"
+    )
     args = parser.parse_args()
 
     sources_path = PUBLIC_DIR / "sources.yaml"
@@ -190,7 +197,9 @@ def main() -> None:
         print(f"selected {len(postings)} postings")
     sources = yaml.safe_load(sources_path.read_text(encoding="utf-8"))
     if args.add_fresh:
-        fresh = _select_fresh(args.csv, args.add_fresh, args.salt, sources["postings"])
+        fresh = _select_fresh(
+            args.csv, args.add_fresh, args.salt, sources["postings"], args.group
+        )
         sources["postings"].extend(fresh)
         body = yaml.safe_dump(sources, sort_keys=False)
         header = sources_path.read_text(encoding="utf-8").split("\npostings:", 1)[0]

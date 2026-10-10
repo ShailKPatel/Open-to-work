@@ -237,39 +237,51 @@ def test_hybrid_finds_named_skills_the_vector_alone_misses(tmp_path, monkeypatch
     assert all(0 < h.score <= 1 for h in hits)
 
 
-def test_a_skill_the_account_lacks_adds_no_ranking(tmp_path, monkeypatch):
-    """Skills get keyword runs only. A dense run for "Angular", which this
-    account has no evidence for, would still rank every row; a keyword
-    run matches nothing and leaves the fusion alone."""
-    from app.retrieval import search
+def _skill_embed(monkeypatch):
+    """Stand-in vectors where "Angular" sits partway toward Python: a skill
+    the account lacks whose nearest document is a wrong one."""
+
+    def _encode(texts):
+        out = []
+        for t in texts:
+            low = t.lower()
+            if "angular" in low:
+                out.append([0.6, 0.0, 0.8])
+            elif "python" in low:
+                out.append([1.0, 0.0, 0.0])
+            elif "go" in low.split() or "go." in low:
+                out.append([0.0, 1.0, 0.0])
+            else:
+                out.append([0.0, 0.0, 1.0])
+        return out
+
+    monkeypatch.setattr("app.retrieval.index.embed", _encode)
+    monkeypatch.setattr("app.retrieval.search.embed", _encode)
+
+
+def test_a_skill_the_account_lacks_cannot_outrank_an_exact_match(tmp_path, monkeypatch):
+    """Angular's nearest document is Python, weakly. Ranked per skill and
+    fused by rank, that near miss would tie Go's exact match; scored by
+    best similarity, Go stays first."""
     from app.retrieval.search import Query
 
     _reset(tmp_path)
-    _fake_embed(monkeypatch)
-    embedded: list[str] = []
-    original = search.embed
-
-    def counting(texts):
-        embedded.extend(texts)
-        return original(texts)
-
-    monkeypatch.setattr("app.retrieval.search.embed", counting)
+    _skill_embed(monkeypatch)
     index_skill_evidence(
         [_evidence(id=1, skill="Python"), _evidence(id=2, skill="Go")], account_id=1
     )
 
-    with_missing = search_skill_evidence(
-        Query(text="Backend engineer", skills=("Go", "Angular", "C#")), account_id=1, top_k=2
-    )
-    without = search_skill_evidence(
-        Query(text="Backend engineer", skills=("Go",)), account_id=1, top_k=2
-    )
+    query = Query(text="Frontend engineer", skills=("Angular", "Go"))
+    dense = search_skill_evidence(query, account_id=1, top_k=2, mode="dense")
+    hybrid = search_skill_evidence(query, account_id=1, top_k=2)
 
-    assert [h.id for h in with_missing] == [h.id for h in without]
-    assert len(embedded) == 2  # one dense query per search, never one per skill
+    assert [h.payload["skill"] for h in dense] == ["Go", "Python"]
+    assert dense[0].score == 1.0
+    assert dense[1].score < 0.7
+    assert hybrid[0].payload["skill"] == "Go"
 
 
-def test_dense_mode_is_the_single_vector_search(tmp_path, monkeypatch):
+def test_dense_without_skills_searches_the_full_text(tmp_path, monkeypatch):
     from app.retrieval.search import Query
 
     _reset(tmp_path)
@@ -278,7 +290,23 @@ def test_dense_mode_is_the_single_vector_search(tmp_path, monkeypatch):
         [_evidence(id=1, skill="Python"), _evidence(id=2, skill="Go")], account_id=1
     )
 
-    hits = search_skill_evidence(Query(text="python", skills=("Go",)), account_id=1, mode="dense")
+    hits = search_skill_evidence(Query(text="python"), account_id=1, mode="dense")
+
+    assert hits[0].payload["skill"] == "Python"
+
+
+def test_dense_single_mode_is_the_single_vector_search(tmp_path, monkeypatch):
+    from app.retrieval.search import Query
+
+    _reset(tmp_path)
+    _fake_embed(monkeypatch)
+    index_skill_evidence(
+        [_evidence(id=1, skill="Python"), _evidence(id=2, skill="Go")], account_id=1
+    )
+
+    hits = search_skill_evidence(
+        Query(text="python", skills=("Go",)), account_id=1, mode="dense-single"
+    )
 
     # Skills are ignored and the score is cosine similarity.
     assert hits[0].payload["skill"] == "Python"
@@ -347,3 +375,42 @@ def test_fuse_scales_to_one_and_breaks_ties_by_id():
     fused = _fuse([[5, 9], [5, 9]])
     assert fused[0] == (5, 1.0)
     assert _fuse([[9], [4]]) == [(4, 0.5), (9, 0.5)]
+
+
+def test_mentioned_skills_match_whole_names_only():
+    from app.retrieval.search import Query, _mentioned_skills
+
+    text = "We go fast. Stack: C++, C#, Go and PostgreSQL. Kubernetes a plus."
+    query = Query(text="t", skills=("Kubernetes",), posting_text=text)
+
+    found = _mentioned_skills(query, {"Go", "C", "PostgreSQL", "Kubernetes", "Rust"})
+
+    # "go" in prose and "C" inside C++/C# do not count; an extracted skill is
+    # not repeated.
+    assert found == ["Go", "PostgreSQL"]
+
+
+def test_skill_named_only_in_the_text_is_found_below_extracted_ones(tmp_path, monkeypatch):
+    from app.retrieval.search import Query
+
+    _reset(tmp_path)
+    _fake_embed(monkeypatch)
+    rows = [
+        _evidence(id=1, skill="Ruby"),
+        _evidence(id=2, skill="Go"),
+        _evidence(id=3, skill="Apache Kafka"),
+    ]
+    index_skill_evidence(rows, account_id=1)
+
+    text = "Backend role. We use Apache Kafka; experience with Go is a bonus."
+    without = search_skill_evidence(
+        Query(text="Backend engineer", skills=("Apache Kafka",)), account_id=1, top_k=3
+    )
+    with_text = search_skill_evidence(
+        Query(text="Backend engineer", skills=("Apache Kafka",), posting_text=text),
+        account_id=1,
+        top_k=3,
+    )
+
+    assert "Go" not in [h.payload["skill"] for h in without[:2]]
+    assert [h.payload["skill"] for h in with_text[:2]] == ["Apache Kafka", "Go"]

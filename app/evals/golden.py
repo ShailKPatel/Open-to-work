@@ -53,6 +53,10 @@ class GoldenPair:
     # app/evals/run.py branches on it. Files written before it existed carry
     # no such key and inherit False.
     partial: bool = False
+    # The posting as pasted, for the search's scan of it for skill names the
+    # extraction missed (app/retrieval/search.py's Query.posting_text).
+    # Empty for pairs whose posting text is not available.
+    posting_text: str = ""
     labeled_at: str = field(default_factory=lambda: dt.datetime.now(dt.UTC).isoformat())
 
 

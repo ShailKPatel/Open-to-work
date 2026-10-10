@@ -22,10 +22,15 @@ Strategies, all of which return a ranked list of document ids:
                    skill: a skill this profile lacks matches nothing in
                    bm25, where a dense run for it still ranks every row
   bm25+skill-bm25  bm25 on the full query and per skill, no dense at all
+  dense-maxsim     one dense+instr query per skill, each document scored by
+                   its best similarity to any of them
+  maxsim+skill-bm25  dense-maxsim and bm25 on the full query, plus a bm25
+                   run per skill (what the app ships)
   X+rerank         X's top candidates re-scored by a cross-encoder
 
-and two document texts: the current "Skill: X. Evidence: Y." and a
-context-carrying one that adds the project or role the skill came from.
+and three document texts: the current "Skill: X. Evidence: Y.", a
+context-carrying one that adds the project or role the skill came from, and
+the bare skill name.
 
 Usage: .venv/bin/python -m scripts.compare_retrieval [--real | --public dev] [--rerankers NAME ...]
 """
@@ -71,6 +76,8 @@ def _doc_texts(persona: Persona, variant: str) -> dict[str, list[Doc]]:
     for row in evidence_rows(persona):
         if variant == "current":
             text = f"Skill: {row.skill}. Evidence: {row.evidence_type}."
+        elif variant == "skill-only":
+            text = row.skill
         elif row.repo_key is not None:
             repo = repos[row.repo_key]
             text = f"Skill: {row.skill}. Project: {repo.name}. {repo.description}"
@@ -109,6 +116,14 @@ class Ranker:
         scores = self.matrix @ np.array(self.embed([text])[0])
         return [self.ids[i] for i in np.argsort(-scores)]
 
+    def dense_maxsim(self, queries: list[str]) -> list[int]:
+        """Each document scored by its best similarity to any query."""
+        if not self.docs or not queries:
+            return []
+        vectors = np.array(self.embed([QUERY_INSTRUCTION + q for q in queries]))
+        scores = (self.matrix @ vectors.T).max(axis=1)
+        return [self.ids[i] for i in np.argsort(-scores, kind="stable")]
+
     def keyword(self, query: str) -> list[int]:
         """BM25, dropping documents that share no term with the query: a
         zero score is no match, and keeping those rows would hand fusion an
@@ -126,7 +141,10 @@ def _strategies(job: Job, query: str, ranker: Ranker) -> dict[str, list[int]]:
     full_bm25 = ranker.keyword(query)
     decomposed_runs = [full_dense] + [ranker.dense(s) for s in subqueries]
     skill_bm25 = [ranker.keyword(s) for s in subqueries]
+    maxsim = ranker.dense_maxsim(subqueries) if subqueries else full_dense
     return {
+        "dense-maxsim": maxsim,
+        "maxsim+skill-bm25": _rrf([maxsim, full_bm25] + skill_bm25),
         "hybrid+skill-bm25": _rrf([full_dense, full_bm25] + skill_bm25),
         "bm25+skill-bm25": _rrf([full_bm25] + skill_bm25),
         "dense": ranker.dense(query, instruction=False),
@@ -195,7 +213,7 @@ def main() -> None:
 
         init_db()
         results: dict[tuple[str, str], list[dict[str, float]]] = {}
-        for variant in ("current", "context"):
+        for variant in ("current", "context", "skill-only"):
             for persona in personas:
                 collections = _doc_texts(persona, variant)
                 rankers = {c: Ranker(docs, embed) for c, docs in collections.items()}

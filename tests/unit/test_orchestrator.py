@@ -1178,3 +1178,31 @@ def test_build_searches_with_the_extracted_posting_not_its_raw_text(tmp_path, mo
         assert isinstance(query, Query)
         assert query.skills == ("Python", "Go")
         assert "We need a Python backend engineer." not in query.text
+
+
+def test_candidate_skills_fill_every_slot_when_skills_repeat(tmp_path, monkeypatch):
+    """Two evidence rows per skill: 25 rows would be only 13 skills, so the
+    search is asked for more rows and the list is cut at 25 distinct skills."""
+    from app.resume_build.orchestrator import _MAX_CANDIDATE_SKILLS, _candidate_skills
+    from app.retrieval.search import Hit
+
+    account_id, _ = _seed(tmp_path)
+    db = get_db()
+    rows = [
+        Hit(id=i, score=1.0 - i / 100, payload={"repo_id": 1, "skill": f"Skill {i // 2}"})
+        for i in range(80)
+    ]
+    asked: list[int] = []
+
+    def search(query_text, account_id, top_k=10, source_type=None):
+        asked.append(top_k)
+        return rows[:top_k]
+
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", search)
+    monkeypatch.setattr("app.resume_build.orchestrator._live_hits", lambda db, hits: hits)
+
+    skills = _candidate_skills(db, account_id, "Python")
+    db.close()
+
+    assert asked[0] > _MAX_CANDIDATE_SKILLS
+    assert skills == [f"Skill {i}" for i in range(_MAX_CANDIDATE_SKILLS)]

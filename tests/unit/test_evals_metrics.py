@@ -141,3 +141,12 @@ def test_wilson_interval_brackets_the_proportion():
     assert low < 0.8 < high
     assert round(low, 2) == 0.71 and round(high, 2) == 0.87
     assert wilson_interval(0, 0) is None
+
+
+def test_recall_returned_covers_the_whole_list():
+    from app.evals.metrics import score_pair
+
+    retrieved = list(range(25))
+
+    assert score_pair(retrieved, {3, 24, 99}).recall_returned == 2 / 3
+    assert score_pair([], {1}).recall_returned == 0.0

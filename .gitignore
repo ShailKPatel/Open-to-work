@@ -21,5 +21,6 @@ evals/results/*.json
 evals/real/cache/
 # Downloaded text for the public-dataset eval set (scripts/fetch_public_eval_data.py).
 evals/public/cache/
+evals/skillspan/cache/
 # API keys used only by the opt-in LLM evals (scripts/run_llm_evals.py).
 evals/.llm-eval-keys

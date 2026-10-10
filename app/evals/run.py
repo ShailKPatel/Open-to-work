@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from sqlalchemy import select
@@ -27,7 +27,7 @@ from app.core.db import (
 )
 from app.core.settings import get_settings
 from app.evals.bm25 import Bm25Corpus
-from app.evals.candidates import score_candidates
+from app.evals.candidates import candidate_scores
 from app.evals.golden import GoldenPair, load_golden_set
 from app.evals.groundedness import score_groundedness
 from app.evals.metrics import (
@@ -57,9 +57,9 @@ class MetricsReport:
     account_id: int
     golden_set_size: int
     pairs_scored: int
-    # The app's retrieval as it runs (hybrid, app/retrieval/search.py), the
-    # single-vector dense search it replaced, kept as a reference, and the
-    # keyword baseline.
+    # The app's retrieval as it runs (hybrid, app/retrieval/search.py), its
+    # dense run alone, and the keyword baseline. The single-vector dense
+    # search the hybrid replaced is `dense_single`, below.
     retrieval: dict
     dense: dict
     bm25: dict
@@ -84,6 +84,7 @@ class MetricsReport:
     # in the same pair order for each system, so results across several
     # profiles can be pooled and bootstrapped as one sample.
     per_pair: dict = field(default_factory=dict)
+    dense_single: dict = field(default_factory=dict)
 
 
 def _corpus_for(collection: str, account_id: int) -> list[tuple[int, str]]:
@@ -143,7 +144,7 @@ def _search_hits(pair: GoldenPair, account_id: int, mode: SearchMode) -> list[in
     is posting text in job_posting_text's shape, so its "Skills:" line
     becomes the query's skills, the same ones the app reads from an
     extracted posting (search.py's query_for_posting)."""
-    query = Query.from_posting_text(pair.query_text)
+    query = replace(Query.from_posting_text(pair.query_text), posting_text=pair.posting_text)
     if pair.collection == "skill_evidence":
         hits = search_skill_evidence(query, account_id, top_k=_RECALL_K, mode=mode)
     else:
@@ -189,6 +190,7 @@ def run_eval(
     partial_pairs: list[str] = []
     retrieval_points: list[PairScore] = []
     dense_points: list[PairScore] = []
+    dense_single_points: list[PairScore] = []
     bm25_points: list[PairScore] = []
     precision_at_10_points: list[float] = []
     corpora: dict[str, Bm25Corpus] = {}
@@ -211,12 +213,14 @@ def run_eval(
 
         retrieval_hits = _search_hits(pair, account_id, "hybrid")
         dense_hits = _search_hits(pair, account_id, "dense")
+        dense_single_hits = _search_hits(pair, account_id, "dense-single")
         if pair.collection not in corpora:
             corpora[pair.collection] = Bm25Corpus(_corpus_for(pair.collection, account_id))
         bm25_hits = corpora[pair.collection].top_k(pair.query_text, _RECALL_K)
 
         retrieval_points.append(score_pair(retrieval_hits, relevant))
         dense_points.append(score_pair(dense_hits, relevant))
+        dense_single_points.append(score_pair(dense_single_hits, relevant))
         bm25_points.append(score_pair(bm25_hits, relevant))
         # Plain precision@10: precision over the full retrieved window a
         # downstream generation step would actually be handed (top-10,
@@ -288,6 +292,7 @@ def run_eval(
         notes.append("groundedness check skipped (include_groundedness=False)")
 
     cost_usd, latency_ms_avg, llm_calls = _cost_and_latency_since(account_id, run_started_at)
+    candidate_points = candidate_scores(account_id, pairs)
 
     return MetricsReport(
         generated_at=dt.datetime.now(dt.UTC).isoformat(),
@@ -296,6 +301,7 @@ def run_eval(
         pairs_scored=scored,
         retrieval=asdict(retrieval_result),
         dense=asdict(dense_result),
+        dense_single=asdict(mean_system_score(dense_single_points)),
         bm25=asdict(bm25_result),
         retrieval_beats_bm25=retrieval_beats_bm25,
         precision_at_10=precision_at_10,
@@ -309,10 +315,12 @@ def run_eval(
         per_pair={
             "retrieval": [asdict(p) for p in retrieval_points],
             "dense": [asdict(p) for p in dense_points],
+            "dense_single": [asdict(p) for p in dense_single_points],
             "bm25": [asdict(p) for p in bm25_points],
+            "candidate_skills": [asdict(p) for p in candidate_points["skills"]],
         },
         candidates={
-            name: asdict(score) for name, score in score_candidates(account_id, pairs).items()
+            name: asdict(mean_system_score(points)) for name, points in candidate_points.items()
         },
     )
 

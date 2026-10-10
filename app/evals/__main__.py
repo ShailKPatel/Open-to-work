@@ -34,10 +34,12 @@ def _print_report(report: MetricsReport) -> None:
     systems = (
         ("retrieval (app)", report.retrieval),
         ("dense (reference)", report.dense),
+        ("dense single query", report.dense_single),
         ("bm25 baseline", report.bm25),
     )
     for label, score in systems:
-        print(_score_row(label, score))
+        if score:
+            print(_score_row(label, score))
     for name, score in report.candidates.items():
         print(_score_row("candidate " + name, score))
     print()

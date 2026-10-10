@@ -436,6 +436,7 @@ def golden_pairs(personas: list[Persona], jobs: list[Job]) -> list[GoldenPair]:
                         account_id=persona.account_id,
                         collection=collection,
                         query_text=job.query_text(),
+                        posting_text=job.text,
                         relevant_ids=relevant,
                         notes=(
                             "Synthetic, rule-labeled: documents naming a skill "

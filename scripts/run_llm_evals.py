@@ -88,8 +88,8 @@ def eval_keys() -> list[str]:
 
 
 _PARTS = (
-    "jobs", "public", "public-dev", "public-fresh", "resumes", "judge", "judge-generated",
-    "injection",
+    "jobs", "public", "public-dev", "public-fresh", "public-fresh-2", "skillspan", "resumes",
+    "judge", "judge-generated", "injection",
 )
 
 
@@ -258,6 +258,16 @@ def main() -> None:
         parts.append(("public-dev", _public_jobs(take, "dev")))
     if "public-fresh" in args.only:
         parts.append(("public-fresh", _fresh_extractions(take)))
+    if "skillspan" in args.only:
+        from app.evals.skillspan import CACHE_DIR as SKILLSPAN_CACHE
+        from app.evals.skillspan import build_extraction_jobs
+
+        parts.append(("skillspan", lambda: _scored(_extraction_lines, run_job_extraction(
+            take(build_extraction_jobs()), "job extraction (SkillSpan tech postings)",
+            save_dir=SKILLSPAN_CACHE / "extractions",
+        ))))
+    if "public-fresh-2" in args.only:
+        parts.append(("public-fresh-2", _fresh_extractions(take, "software-fresh-2")))
     if "resumes" in args.only:
         parts.append(("resumes", lambda: _scored(
             _extraction_lines, run_resume_extraction(take(load_personas()))
@@ -368,7 +378,9 @@ def _generated_judge(
     return run
 
 
-def _fresh_extractions(take: Callable[[list], list]) -> Callable[[], tuple[list[str], object]]:
+def _fresh_extractions(
+    take: Callable[[list], list], group: str = "software-fresh"
+) -> Callable[[], tuple[list[str], object]]:
     """Extracts the fresh software postings so the retrieval eval can
     search with them. They carry no extraction labels of their own beyond
     the form fields, which are scored the same way."""
@@ -376,7 +388,6 @@ def _fresh_extractions(take: Callable[[list], list]) -> Callable[[], tuple[list[
     def run() -> tuple[list[str], object]:
         from app.evals.public import (
             CACHE_DIR,
-            FRESH_GROUP,
             expected_fields,
             load_sources,
             posting_key,
@@ -387,16 +398,16 @@ def _fresh_extractions(take: Callable[[list], list]) -> Callable[[], tuple[list[
 
         jobs = []
         for item in load_sources()["postings"]:
-            if item.get("group") != FRESH_GROUP:
+            if item.get("group") != group:
                 continue
             row = read_cached(item["id"])
             if row is None:
                 return [f"{posting_key(item['id'])} is not cached.", ""], None
             jobs.append(Job(
-                key=posting_key(item["id"]), for_personas=[], covers=[FRESH_GROUP],
+                key=posting_key(item["id"]), for_personas=[], covers=[group],
                 text=posting_text(row), expected=expected_fields(row),
             ))
-        name = "job extraction (fresh LinkedIn software postings)"
+        name = f"job extraction (LinkedIn {group} postings)"
         return _scored(
             _extraction_lines,
             run_job_extraction(take(jobs), name, save_dir=CACHE_DIR / "extractions"),

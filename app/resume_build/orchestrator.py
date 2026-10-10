@@ -67,6 +67,11 @@ logger = logging.getLogger(__name__)
 _MAX_CANDIDATE_PROJECTS = 8
 _MAX_SELECTED_PROJECTS = 4
 _MAX_CANDIDATE_SKILLS = 25
+# Evidence rows searched per candidate skill slot. A skill often has
+# several rows (a dependency in one repo, a README mention in another), and
+# searching only 25 rows left about 18 distinct skills on LinkedIn dev
+# postings, not 25.
+_SKILL_HITS_PER_SLOT = 3
 _MAX_SELECTED_SKILLS = 15
 # How much of a repo's own "About" description reaches the prompt. A
 # description is one line of GitHub metadata; anything past this is a repo
@@ -390,7 +395,12 @@ def _candidate_skills(
     from app.retrieval.search import search_skill_evidence
 
     hits = _break_near_ties(
-        _live_hits(db, search_skill_evidence(job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS)),
+        _live_hits(
+            db,
+            search_skill_evidence(
+                job_text, account_id, top_k=_MAX_CANDIDATE_SKILLS * _SKILL_HITS_PER_SLOT
+            ),
+        ),
         lambda hit: float(hit.score),
         _hit_weight,
     )
@@ -413,6 +423,8 @@ def _candidate_skills(
         if key not in seen:
             seen[key] = skill
             order.append(key)
+            if len(order) == _MAX_CANDIDATE_SKILLS:
+                break
 
     if selected_skills:
         for sk in selected_skills:

@@ -45,6 +45,19 @@ _PUBLIC_NOTE = (
     "first run on these postings; the test split was never tuned against.",
     "One labeler; see evals/public/DATA_SOURCES.md.",
 )
+_FRESH2_NOTE = (
+    "150 LinkedIn software postings drawn after every earlier set, scored",
+    "once. Relevance labels are by an LLM annotator validated against the 80",
+    "hand-labeled original postings before use (kappa 0.849, micro F1 0.859),",
+    "written before the search ran on these postings: evals/public/",
+    "retrieval_labels_llm.yaml, docs/RETRIEVAL_IMPROVEMENTS.md entry 4.",
+)
+_SKILLSPAN_NOTE = (
+    "SkillSpan tech postings (Zhang et al., NAACL 2022, CC BY 4.0). A portfolio",
+    "skill is relevant when a span its annotators marked as knowledge names it",
+    "exactly. Covers only named skills and favours keyword matching; a",
+    "regression check on independent labels, not the headline.",
+)
 _REAL_NOTE = (
     "Public job postings scored against a composite portfolio of public",
     "open-source repositories, with relevance labeled by judgment rather than",
@@ -54,8 +67,15 @@ _REAL_NOTE = (
 
 _SYSTEMS = (
     ("retrieval", "app retrieval (hybrid)"),
-    ("dense", "dense, single query (previous)"),
+    ("dense", "dense alone, max similarity per skill"),
+    ("dense_single", "dense alone, single query (previous)"),
     ("bm25", "BM25 keyword baseline"),
+)
+_DIFFERENCES = (
+    ("retrieval", "bm25"),
+    ("retrieval", "dense"),
+    ("dense", "bm25"),
+    ("dense", "dense_single"),
 )
 _METRICS = (
     ("precision_at_5", "p@5"),
@@ -85,14 +105,27 @@ def _summary(reports: list) -> list[str]:
     for key, label in _SYSTEMS:
         cells = [_cell([p[metric] for p in pooled[key]]) for metric, _ in _METRICS]
         lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    scored = [
+        r.candidates["skills"]
+        for r in reports
+        if r.candidates.get("skills", {}).get("pairs_scored")
+    ]
+    if scored:
+        total = sum(s["pairs_scored"] for s in scored)
+        recall = sum(s["recall_returned"] * s["pairs_scored"] for s in scored) / total
+        lines += [
+            "",
+            f"Candidate skills handed to the model (up to 25, deduplicated by name): "
+            f"{recall:.3f} of relevant skills present, over {total} pairs.",
+        ]
     lines += ["", "Paired differences over the same pairs (95 percent bootstrap interval):", ""]
-    for other in ("bm25", "dense"):
+    for system, other in _DIFFERENCES:
         for metric, label in _METRICS[:3]:
             mean, interval = paired_difference(
-                [p[metric] for p in pooled["retrieval"]], [p[metric] for p in pooled[other]]
+                [p[metric] for p in pooled[system]], [p[metric] for p in pooled[other]]
             )
             span = f"[{interval[0]:+.3f}, {interval[1]:+.3f}]" if interval else "n/a"
-            lines.append(f"- retrieval minus {other}, {label}: {mean:+.3f} {span}")
+            lines.append(f"- {system} minus {other}, {label}: {mean:+.3f} {span}")
     return lines
 
 
@@ -102,8 +135,11 @@ def main() -> None:
         "--real", action="store_true", help="score the labeled real-text set instead"
     )
     parser.add_argument(
-        "--public", choices=("dev", "test", "fresh"),
-        help="score a split of the LinkedIn set instead (fresh: the second test set)",
+        "--public", choices=("dev", "test", "fresh", "fresh2"),
+        help="score a split of the LinkedIn set instead (fresh, fresh2: later test sets)",
+    )
+    parser.add_argument(
+        "--skillspan", action="store_true", help="score the SkillSpan tech postings instead"
     )
     parser.add_argument(
         "--write", action="store_true", help="also save the summary under evals/results/"
@@ -118,9 +154,26 @@ def main() -> None:
         personas = [build_portfolio()]
         if args.public == "fresh":
             jobs = build_retrieval_jobs("test", groups=("software-fresh",))
+        elif args.public == "fresh2":
+            from app.evals.public import FRESH2_GROUP, PUBLIC_DIR
+
+            jobs = build_retrieval_jobs(
+                "test",
+                groups=(FRESH2_GROUP,),
+                labels_path=PUBLIC_DIR / "retrieval_labels_llm.yaml",
+            )
+            note = _FRESH2_NOTE
         else:
             jobs = build_retrieval_jobs(args.public)
-        note = _PUBLIC_NOTE
+        if args.public != "fresh2":
+            note = _PUBLIC_NOTE
+    elif args.skillspan:
+        from app.evals.skillspan import build_retrieval_jobs as skillspan_jobs
+
+        name = "skillspan"
+        personas = [build_portfolio()]
+        jobs = skillspan_jobs()
+        note = _SKILLSPAN_NOTE
     elif args.real:
         name = "real-text"
         personas = [build_portfolio()]

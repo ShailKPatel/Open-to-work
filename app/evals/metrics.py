@@ -89,6 +89,10 @@ class PairScore:
     ndcg_at_10: float
     reciprocal_rank: float
     retrieved: int
+    # Recall over everything the system returned, whatever its length. For
+    # the candidate skills the resume builder hands the model (up to 25),
+    # this is the share of relevant skills the model gets to choose from.
+    recall_returned: float = 0.0
 
 
 def score_pair[Id: Hashable](retrieved: Sequence[Id], relevant: AbstractSet[Id]) -> PairScore:
@@ -98,6 +102,7 @@ def score_pair[Id: Hashable](retrieved: Sequence[Id], relevant: AbstractSet[Id])
         ndcg_at_10=ndcg_at_k(retrieved, relevant, NDCG_K),
         reciprocal_rank=reciprocal_rank(retrieved, relevant),
         retrieved=len(retrieved),
+        recall_returned=recall_at_k(retrieved, relevant, len(retrieved)) if retrieved else 0.0,
     )
 
 
@@ -173,6 +178,7 @@ class SystemScore:
     mrr: float = 0.0
     retrieved_avg: float = 0.0
     ci95: dict[str, list[float] | None] = field(default_factory=dict)
+    recall_returned: float = 0.0
 
 
 def mean_system_score(scores: Sequence[PairScore]) -> SystemScore:
@@ -190,6 +196,7 @@ def mean_system_score(scores: Sequence[PairScore]) -> SystemScore:
         "recall_at_10": [s.recall_at_10 for s in scores],
         "ndcg_at_10": [s.ndcg_at_10 for s in scores],
         "mrr": [s.reciprocal_rank for s in scores],
+        "recall_returned": [s.recall_returned for s in scores],
     }
     ci95: dict[str, list[float] | None] = {}
     for name, values in columns.items():
@@ -203,4 +210,5 @@ def mean_system_score(scores: Sequence[PairScore]) -> SystemScore:
         mrr=sum(columns["mrr"]) / n,
         retrieved_avg=sum(s.retrieved for s in scores) / n,
         ci95=ci95,
+        recall_returned=sum(columns["recall_returned"]) / n,
     )

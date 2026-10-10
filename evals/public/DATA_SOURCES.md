@@ -66,6 +66,20 @@ posting, which skills in the composite open-source portfolio a reviewer would
 accept as evidence for it. They were made from the posting text alone, before
 the search was first run on these postings, and have not been changed since.
 
+## Later test samples
+
+- `software-fresh` (60 postings, salt `open-to-work-eval-2026-fresh-1`):
+  drawn after the first test split was spent, labeled by hand in
+  `retrieval_labels.yaml`. It has scored two designs.
+- `software-fresh-2` (150 postings, salt `open-to-work-eval-2026-fresh-2`):
+  drawn after that, skipping every posting and company already sampled.
+  Labeled by an LLM annotator (`annotator_prompt.md`) that was first
+  checked against the 80 hand-labeled original software postings: Cohen's
+  kappa 0.849, micro F1 0.859, and the systems' p@5 within 0.005 of their
+  hand-labeled scores. Its labels are in `retrieval_labels_llm.yaml`, kept
+  apart from the human ones, and were written before the search ran on
+  these postings (docs/RETRIEVAL_IMPROVEMENTS.md, entry 4).
+
 ## What these numbers cannot tell you
 
 - One labeler made the retrieval labels. There is no second labeler and no
