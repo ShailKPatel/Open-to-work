@@ -56,22 +56,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl libgraphit
 # image-size reason as the CPU-only torch install below.
 COPY --from=tools /tools/tectonic /usr/local/bin/tectonic
 
-COPY pyproject.toml ./
+COPY pyproject.toml constraints.txt ./
 
 # CPU-only torch first, from PyTorch's own CPU wheel index. PyPI's default
 # torch wheel drags in the full CUDA/GPU stack as separate packages
 # (nvidia_cudnn, nvidia_cublas, nccl, triton...) even though nothing here
 # uses a GPU: several GB and 5+ minutes of downloads for nothing. Installing
 # the CPU build first satisfies sentence-transformers' torch dependency
-# without pip ever reaching for the GPU one.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+# without pip ever reaching for the GPU one. PyPI is an extra index for
+# torch's own dependencies at their pinned versions (the CPU index does not
+# carry them); torch still comes from the CPU index, as 2.x+cpu sorts above 2.x.
+RUN pip install --no-cache-dir -c constraints.txt torch \
+    --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 
 # -e install needs the package source present, but only app/__init__.py-level
 # metadata; a placeholder empty app/ satisfies it so this layer (and the torch
 # layer above) stay cached across ordinary code edits. The real app/ is
 # copied in below, after deps are settled.
 RUN mkdir app && touch app/__init__.py
-RUN pip install --no-cache-dir -e .
+# constraints.txt pins every version, so a rebuild installs exactly what CI
+# tested rather than whatever is newest that day.
+RUN pip install --no-cache-dir -c constraints.txt -e .
 
 # Fill Tectonic's package cache now, so a resume build never downloads
 # LaTeX packages or fonts mid-compile (a cold fetch can outlast

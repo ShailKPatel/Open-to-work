@@ -87,6 +87,34 @@ _SYSTEM_PROMPT = (
 _VALID_LEVELS = {"", "junior", "mid", "senior", "expert"}
 
 
+# Words a posting uses when it states its employment type. A type the
+# model returns with none of its words in the text was inferred, not read,
+# and the prompt asks for an empty string then.
+_EMPLOYMENT_WORDS: dict[str, tuple[str, ...]] = {
+    "full-time": ("full-time", "full time", "fulltime", "permanent"),
+    "part-time": ("part-time", "part time", "parttime"),
+    "contract": ("contract", "contractor", "fixed-term", "fixed term"),
+    "internship": ("intern", "internship", "co-op", "coop", "placement"),
+    "freelance": ("freelance", "freelancer"),
+}
+
+
+def stated_employment_type(value: str, text: str) -> str:
+    """`value` if the posting's text states that employment type, else "".
+
+    The eval sets (app/evals/llm_evals.py) showed the model filling in
+    "Full-time" for postings that never say it, in about a third of
+    synthetic postings. Same posture as app/resume_build/grounding.py: a
+    deterministic check that what the model reports is actually in its
+    source. An unrecognised value is kept, since there are no words to
+    check it against."""
+    words = _EMPLOYMENT_WORDS.get(value.strip().casefold())
+    if words is None:
+        return value
+    lowered = text.casefold()
+    return value if any(re.search(rf"\b{re.escape(w)}\b", lowered) for w in words) else ""
+
+
 class JobExtractionError(Exception):
     """The LLM call itself failed or returned no parseable JSON, distinct
     from a normal empty-field result (which is a valid extraction, just
@@ -205,7 +233,9 @@ def extract_job_posting(
         title=str(p.get("title", "")).strip(),
         location=str(p.get("location", "")).strip(),
         salary_range=str(p.get("salary_range", "")).strip(),
-        employment_type=str(p.get("employment_type", "")).strip(),
+        employment_type=stated_employment_type(
+            str(p.get("employment_type", "")).strip(), raw_text
+        ),
         seniority=str(p.get("seniority", "")).strip(),
         experience_required=str(p.get("experience_required", "")).strip(),
         skills_required=[

@@ -1,0 +1,97 @@
+key: devops-sre-uk
+account_id: 9105
+first_name: Aisha
+last_name: Bankole
+github_username: demo-abankole
+headline: Site Reliability Engineer
+location: Manchester, UK
+email: aisha.bankole@example.co.uk
+phone: "+44 161 555 0193"
+links:
+  - {platform: github, url: "https://github.com/demo-abankole"}
+  - {platform: linkedin, url: "https://www.linkedin.com/in/demo-abankole"}
+resume_style: compact
+date_style: mon_year
+covers: [senior, united-kingdom, devops, sre, description-only-repos, infrastructure]
+
+# Most of these repos have no README, only GitHub's one-line About text, so
+# extraction has to work from the description alone.
+repos:
+  - key: tf-aws-baseline
+    name: tf-aws-baseline
+    language: HCL
+    stars: 96
+    description: Terraform modules for an AWS landing zone with VPC, IAM and GuardDuty.
+    readme: null
+    manifests: {}
+    readme_skills: [Terraform, AWS]
+  - key: k8s-slo-exporter
+    name: k8s-slo-exporter
+    language: Go
+    stars: 64
+    description: Prometheus exporter that turns Kubernetes ingress logs into SLO burn rates.
+    readme: null
+    manifests:
+      go.mod: [github.com/prometheus/client_golang, k8s.io/client-go]
+    readme_skills: [Prometheus, Kubernetes, Go]
+  - key: ansible-hardening
+    name: ansible-hardening
+    language: Shell
+    stars: 22
+    description: Ansible roles that apply CIS hardening to Ubuntu servers.
+    readme: null
+    manifests: {}
+    readme_skills: [Ansible, Linux]
+  - key: incident-bot
+    name: incident-bot
+    language: Python
+    stars: 15
+    description: Slack bot that opens incident channels and keeps a timeline.
+    readme: |
+      # incident-bot
+      Opens a Slack channel per incident, pages the on-call through PagerDuty
+      and records a timeline for the postmortem. Runs on AWS Lambda.
+    manifests:
+      requirements.txt: [boto3, flask]
+    readme_skills: [Python, PagerDuty]
+
+roles:
+  - key: streaming
+    company: Tidewell Media
+    title: Senior Site Reliability Engineer
+    location: Manchester, UK
+    start: may 2021
+    end: null
+    skills: [Kubernetes, Terraform, Prometheus, AWS, Go]
+    points:
+      - text: Defined SLOs for 22 services and replaced 400 static alerts with multi-window burn rate alerts in Prometheus.
+        skills: [Prometheus]
+      - text: Ran the Kubernetes platform for 180 microservices across three regions with 99.97 percent availability.
+        skills: [Kubernetes]
+      - text: Codified every AWS account in Terraform, eliminating console changes in production.
+        skills: [Terraform, AWS]
+      - text: Cut mean time to recovery from 52 to 14 minutes with runbooks and an incident commander rota.
+        skills: []
+  - key: hosting
+    company: Greystone Hosting
+    title: Systems Administrator
+    location: Leeds, UK
+    start: sep 2016
+    end: apr 2021
+    skills: [Linux, Ansible, Bash, MySQL]
+    points:
+      - text: Automated provisioning of 600 Linux servers with Ansible.
+        skills: [Ansible, Linux]
+      - text: Wrote Bash tooling for nightly MySQL backups with restore tests.
+        skills: [Bash, MySQL]
+      - text: Handled second line support for shared hosting customers.
+        skills: []
+
+education:
+  - institution: University of Leeds
+    degree: BSc Computer Science
+    location: Leeds, UK
+    start: sep 2013
+    end: jun 2016
+    grade: "Upper Second Class Honours"
+    details: []

@@ -11,6 +11,8 @@
              or a write to SQLite/Qdrant; each gets its own border style
     layer    makes the box a link that opens that Data flow layer
     errs     short error strings rendered as red chips
+    metrics  measured results for this step (held-out evals, see README),
+             rendered as green chips
     tip      hover card text, lines separated by "|", first line is the
              heading (the page's script renders one floating tooltip)
 #}
@@ -59,7 +61,7 @@
 </svg>
 {%- endmacro %}
 
-{% macro node(id, kicker, title, sub='', ic='', chips=[], ext=false, area='', mono=false, variant='', layer='', errs=[], tip='', logos=[]) -%}
+{% macro node(id, kicker, title, sub='', ic='', chips=[], ext=false, area='', mono=false, variant='', layer='', errs=[], tip='', logos=[], metrics=[]) -%}
 <div class="ex-node{{ ' ex-node--ext' if ext }}{{ ' ex-node--' ~ variant if variant }}{{ ' ex-node--link' if layer }}{{ ' ex-node--tip' if tip }}" data-node="{{ id }}" style="{{ area }}"
   {%- if layer %} data-layer="{{ layer }}" role="button" tabindex="0" aria-label="Open layer: {{ title }}"{% endif %}
   {%- if tip %} data-tip="{{ tip }}"{% endif %}>
@@ -70,8 +72,9 @@
   </div>
   <p class="ex-title{{ ' ex-mono' if mono }}">{{ title }}</p>
   {% if sub %}<p class="ex-sub">{{ sub }}</p>{% endif %}
-  {% if chips or errs %}<div class="ex-chips">
+  {% if chips or errs or metrics %}<div class="ex-chips">
     {%- for c in chips %}<span>{{ c }}</span>{% endfor -%}
+    {%- for c in metrics %}<span class="ex-chip-metric">{{ c }}</span>{% endfor -%}
     {%- for c in errs %}<span class="ex-chip-err">{{ c }}</span>{% endfor -%}
   </div>{% endif %}
 </div>

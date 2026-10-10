@@ -1,0 +1,90 @@
+# Held-out bullets for the groundedness judge, harder than
+# judge_bullets.yaml. Written after the judge scored 45/45 on that file,
+# which showed its corrupted bullets were too easy to tell apart, and
+# scored against the judge unchanged. Do not tune the judge's prompt
+# against this file; add another held-out file instead.
+#
+# The judge sees only a project's name, its one-line description and its
+# skill list (app/resume_build/orchestrator.py's format_project_evidence),
+# never the README. Labels follow that: a bullet is grounded when every
+# concrete claim is stated in that evidence or is a conservative paraphrase
+# of it, and ungrounded otherwise, however plausible it sounds.
+#
+# Kinds:
+#   grounded_inference  draws only on what the evidence shows (a skill in
+#                       the list used the way the description implies)
+#   generalization      says less than the evidence, in broader words
+#   adjacent_tech       swaps in a neighbouring technology not in the list
+#   unstated_number     adds a small, plausible figure the evidence lacks
+#   role_inflation      claims leadership, a team or users for a project
+#                       the evidence presents as a codebase
+#   scope_shift         changes what the project does in a small way
+#                       (weekly becomes real-time, demos become a library)
+
+- {persona: backend-senior-us, repo: ledger-sync, grounded: true, kind: grounded_inference,
+   bullet: "Wrote pytest tests for a FastAPI ledger service backed by PostgreSQL."}
+- {persona: backend-senior-us, repo: ledger-sync, grounded: true, kind: grounded_inference,
+   bullet: "Packaged a double-entry ledger service with Docker and ran background reconciliation with Celery."}
+- {persona: backend-senior-us, repo: ledger-sync, grounded: false, kind: adjacent_tech,
+   bullet: "Built a double-entry ledger service in Flask with idempotent posting and reconciliation."}
+- {persona: backend-senior-us, repo: ledger-sync, grounded: false, kind: unstated_number,
+   bullet: "Built a double-entry ledger service that reconciles three bank feeds with idempotent posting."}
+- {persona: backend-senior-us, repo: ratelimit-go, grounded: true, kind: generalization,
+   bullet: "Wrote a rate limiting service in Go."}
+- {persona: backend-senior-us, repo: ratelimit-go, grounded: false, kind: unstated_number,
+   bullet: "Built a Redis-backed token bucket rate limiter in Go with sub-millisecond checks."}
+- {persona: backend-senior-us, repo: pg-audit-trail, grounded: false, kind: scope_shift,
+   bullet: "Built trigger-based audit history for PostgreSQL and MySQL tables."}
+
+- {persona: frontend-mid-eu, repo: shelf-ui, grounded: true, kind: grounded_inference,
+   bullet: "Tested an accessible React component library with Playwright and documented it in Storybook."}
+- {persona: frontend-mid-eu, repo: shelf-ui, grounded: false, kind: role_inflation,
+   bullet: "Led a team of three building an accessible React component library with Storybook docs."}
+- {persona: frontend-mid-eu, repo: route-planner, grounded: false, kind: adjacent_tech,
+   bullet: "Built a bike route planner on Next.js with a Leaflet map view."}
+- {persona: frontend-mid-eu, repo: css-houdini-demos, grounded: false, kind: scope_shift,
+   bullet: "Published a CSS Paint API library used across several production sites."}
+
+- {persona: data-scientist-in, repo: churn-model, grounded: true, kind: grounded_inference,
+   bullet: "Tuned LightGBM and XGBoost churn models with Optuna and explained them with SHAP."}
+- {persona: data-scientist-in, repo: churn-model, grounded: false, kind: adjacent_tech,
+   bullet: "Predicted telecom churn with CatBoost and explained the predictions with SHAP."}
+- {persona: data-scientist-in, repo: demand-forecast, grounded: false, kind: scope_shift,
+   bullet: "Built real-time SKU demand forecasting with hierarchical reconciliation."}
+- {persona: data-scientist-in, repo: demand-forecast, grounded: true, kind: generalization,
+   bullet: "Forecast product demand and presented the results in a Streamlit app."}
+
+- {persona: ml-research-phd, repo: sparse-retriever, grounded: true, kind: grounded_inference,
+   bullet: "Implemented learned sparse retrieval with a BERT encoder in PyTorch and Hugging Face Transformers."}
+- {persona: ml-research-phd, repo: sparse-retriever, grounded: false, kind: unstated_number,
+   bullet: "Implemented learned sparse retrieval with a BERT encoder, code for a paper cited over 50 times."}
+- {persona: ml-research-phd, repo: rag-eval-kit, grounded: false, kind: adjacent_tech,
+   bullet: "Wrote a library for evaluating RAG pipelines with Pinecone as the vector store."}
+
+- {persona: devops-sre-uk, repo: k8s-slo-exporter, grounded: true, kind: grounded_inference,
+   bullet: "Wrote a Go service that exports SLO burn rates from Kubernetes ingress logs to Prometheus."}
+- {persona: devops-sre-uk, repo: k8s-slo-exporter, grounded: false, kind: adjacent_tech,
+   bullet: "Built a Prometheus exporter and Grafana dashboards for Kubernetes SLO burn rates."}
+- {persona: devops-sre-uk, repo: incident-bot, grounded: true, kind: grounded_inference,
+   bullet: "Built a Python Slack bot that opens incident channels, integrated with PagerDuty."}
+- {persona: devops-sre-uk, repo: ansible-hardening, grounded: false, kind: role_inflation,
+   bullet: "Hardened the company's Ubuntu fleet to CIS benchmarks with Ansible roles."}
+
+- {persona: mobile-dev-ca, repo: habit-tracker-ios, grounded: true, kind: grounded_inference,
+   bullet: "Built a SwiftUI habit tracker that stores data in Core Data and syncs through CloudKit."}
+- {persona: mobile-dev-ca, repo: habit-tracker-ios, grounded: false, kind: adjacent_tech,
+   bullet: "Built a SwiftUI habit tracker that stores data in Realm and syncs through iCloud."}
+- {persona: mobile-dev-ca, repo: transit-android, grounded: true, kind: generalization,
+   bullet: "Built an Android app in Kotlin for public transit arrivals."}
+
+- {persona: new-grad-student, repo: campus-eats, grounded: true, kind: grounded_inference,
+   bullet: "Built a hackathon app with an Express.js API, MongoDB and JWT authentication."}
+- {persona: new-grad-student, repo: tiny-raft, grounded: false, kind: scope_shift,
+   bullet: "Implemented Raft and Paxos consensus in Go for a distributed systems course."}
+
+- {persona: career-changer-analyst, repo: budget-dashboard, grounded: true, kind: grounded_inference,
+   bullet: "Built a household budget dashboard in Python with Plotly Dash and Pandas."}
+- {persona: embedded-firmware-jp, repo: rtos-sensor-hub, grounded: false, kind: unstated_number,
+   bullet: "Wrote FreeRTOS firmware for an STM32 sensor hub streaming six sensors over BLE."}
+- {persona: eng-manager-staff, repo: oncall-calc, grounded: false, kind: role_inflation,
+   bullet: "Rolled out an on-call load estimator from PagerDuty exports across the engineering org."}

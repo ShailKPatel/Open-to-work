@@ -7,6 +7,7 @@ so startup is idempotent and an older database upgrades itself in place.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 
@@ -303,6 +304,10 @@ def _migrate_contact_items(engine: Engine) -> None:
         return
 
 
+    # created_at is NOT NULL and its default lives on the ORM model, which a
+    # raw INSERT bypasses: without it every copied row failed and nothing
+    # was migrated.
+    now = dt.datetime.now(dt.UTC)
     with engine.connect() as conn:
         try:
             accounts = conn.execute(
@@ -317,10 +322,11 @@ def _migrate_contact_items(engine: Engine) -> None:
                     if not existing_email:
                         conn.execute(
                             text(
-                                "INSERT INTO contact_emails (account_id, email, is_primary)"
-                                " VALUES (:acc_id, :email, 1)"
+                                "INSERT INTO contact_emails"
+                                " (account_id, email, is_primary, created_at)"
+                                " VALUES (:acc_id, :email, 1, :now)"
                             ),
-                            {"acc_id": acc_id, "email": email},
+                            {"acc_id": acc_id, "email": email, "now": now},
                         )
                 if phone:
                     existing_phone = conn.execute(
@@ -330,10 +336,11 @@ def _migrate_contact_items(engine: Engine) -> None:
                     if not existing_phone:
                         conn.execute(
                             text(
-                                "INSERT INTO contact_phones (account_id, phone, is_primary)"
-                                " VALUES (:acc_id, :phone, 1)"
+                                "INSERT INTO contact_phones"
+                                " (account_id, phone, is_primary, created_at)"
+                                " VALUES (:acc_id, :phone, 1, :now)"
                             ),
-                            {"acc_id": acc_id, "phone": phone},
+                            {"acc_id": acc_id, "phone": phone, "now": now},
                         )
             conn.commit()
         except Exception:

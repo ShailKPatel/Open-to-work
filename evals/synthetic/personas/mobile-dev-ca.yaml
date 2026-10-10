@@ -1,0 +1,94 @@
+key: mobile-dev-ca
+account_id: 9106
+first_name: Jordan
+last_name: Tremblay
+github_username: demo-jtremblay
+headline: Mobile Developer
+location: Montreal, QC, Canada
+email: jordan.tremblay@example.ca
+phone: "+1 514 555 0177"
+links:
+  - {platform: github, url: "https://github.com/demo-jtremblay"}
+resume_style: compact
+date_style: numeric
+covers: [mid, canada, mobile, ios, android, kotlin, swift, react-native]
+
+repos:
+  - key: habit-tracker-ios
+    name: habit-tracker-ios
+    language: Swift
+    stars: 143
+    description: SwiftUI habit tracker with widgets and iCloud sync.
+    readme: |
+      # habit-tracker-ios
+      A habit tracker written in SwiftUI. Data is stored with Core Data and
+      synced through CloudKit. Includes home screen widgets and XCTest unit
+      tests.
+    manifests: {}
+    readme_skills: [Swift, SwiftUI, Core Data, CloudKit, XCTest]
+  - key: transit-android
+    name: transit-android
+    language: Kotlin
+    stars: 81
+    description: Jetpack Compose app for real time bus arrivals.
+    readme: |
+      # transit-android
+      Shows live bus arrivals from the city's GTFS realtime feed. Jetpack
+      Compose UI, Retrofit for networking, Room for offline caching and
+      Hilt for dependency injection.
+    manifests:
+      build.gradle.kts: [com.squareup.retrofit2:retrofit, androidx.room:room-runtime, com.google.dagger:hilt-android, junit]
+    readme_skills: [Kotlin, Jetpack Compose, Android]
+  - key: recipe-rn
+    name: recipe-rn
+    language: TypeScript
+    stars: 27
+    description: React Native recipe app with offline favourites.
+    readme: |
+      # recipe-rn
+      Cross platform recipe browser in React Native and TypeScript, using
+      Firebase for auth and storage.
+    manifests:
+      package.json: [react-native, react, typescript, firebase, jest]
+    readme_skills: []
+
+roles:
+  - key: bank
+    company: Banque Laurentide
+    title: Mobile Developer
+    location: Montreal, QC
+    start: jan 2021
+    end: null
+    skills: [Kotlin, Swift, Android, iOS, Jetpack Compose]
+    points:
+      - text: Rebuilt the Android account overview in Jetpack Compose, cutting crash rate from 0.9 to 0.2 percent.
+        skills: [Jetpack Compose, Android, Kotlin]
+      - text: Added biometric login on iOS and Android used by 1.2 million customers.
+        skills: [iOS, Android, Swift, Kotlin]
+      - text: Set up the mobile release train with weekly builds and staged rollouts.
+        skills: []
+      - text: Wrote the shared accessibility guidelines adopted by both app teams.
+        skills: [Accessibility]
+  - key: startup
+    company: Plateful
+    title: React Native Developer
+    location: Montreal, QC
+    start: jun 2019
+    end: dec 2020
+    skills: [React Native, TypeScript, Firebase]
+    points:
+      - text: Launched the restaurant booking app on both stores from one React Native codebase.
+        skills: [React Native]
+      - text: Moved the app from JavaScript to TypeScript with strict mode, fixing 60 latent null bugs.
+        skills: [TypeScript]
+      - text: Built push notification campaigns on Firebase Cloud Messaging.
+        skills: [Firebase]
+
+education:
+  - institution: Concordia University
+    degree: Bachelor of Computer Science
+    location: Montreal, QC
+    start: sep 2015
+    end: may 2019
+    grade: ""
+    details: ["Co-op program, three work terms"]

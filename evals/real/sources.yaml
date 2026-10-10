@@ -1,0 +1,86 @@
+# Where the real-text eval set comes from. Only identifiers live here; the
+# text itself is downloaded by scripts/fetch_real_eval_data.py into
+# evals/real/cache/, which is gitignored. See evals/real/DATA_SOURCES.md.
+#
+# repos: public open-source repositories, pinned to a commit so the README
+# and manifests read are always the same ones. Together they stand in for
+# one developer's portfolio spanning several specialties.
+#
+# postings: public job postings from employers' Greenhouse job boards
+# (boards-api.greenhouse.io), read through the same public API those
+# boards use to render. Postings close; once one is gone it can only be
+# read from a local cache, which is why the cache is kept between runs.
+
+repos:
+  - {repo: encode/httpx, sha: b5addb64f0161ff6bfe94c124ef76f6a1fba5254, license: BSD-3-Clause, language: Python, stars: 15533,
+     description: "A next generation HTTP client for Python."}
+  - {repo: fastapi/sqlmodel, sha: 5ce1a472488734363b2ab36f8ce2bcc773e4593e, license: MIT, language: Python, stars: 18361,
+     description: "SQL databases in Python, designed for simplicity, compatibility, and robustness."}
+  - {repo: pallets/flask, sha: d086db856be187255b8ec61ef409357393020f32, license: BSD-3-Clause, language: Python, stars: 74934,
+     description: "The Python micro framework for building web applications."}
+  - {repo: shadcn-ui/taxonomy, sha: 298a8857c7128a0d121e7f699dfd729f23b3966d, license: MIT, language: TypeScript, stars: 19284,
+     description: "An open source application built using the new router, server components and everything new in Next.js 13."}
+  - {repo: gin-gonic/gin, sha: 43fe48e8a0f44af783116cdb010725e6bb50255f, license: MIT, language: Go, stars: 89297,
+     description: "Gin is a high-performance HTTP web framework written in Go. It provides a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter. Gin is designed for building REST APIs, web applications, and microservices."}
+  - {repo: redis/go-redis, sha: 07b88b5dcd924850f0df28cbbb1113ea41c389d4, license: BSD-2-Clause, language: Go, stars: 22259,
+     description: "Redis Go client"}
+  - {repo: prometheus/node_exporter, sha: 1271bc244266457fd225dcef9b8a33641b582c64, license: Apache-2.0, language: Go, stars: 13828,
+     description: "Exporter for machine metrics"}
+  - {repo: kubernetes-sigs/kind, sha: 54e57d2af1f9b2ac922c2ad2c0528d2ddc04ef06, license: Apache-2.0, language: Go, stars: 15535,
+     description: "Kubernetes IN Docker - local clusters for testing Kubernetes"}
+  - {repo: terraform-aws-modules/terraform-aws-vpc, sha: b3abd6df2ecf052451a361ed55b8f06f8742a795, license: Apache-2.0, language: HCL, stars: 3273,
+     description: "Terraform module to create AWS VPC resources"}
+  - {repo: jakevdp/PythonDataScienceHandbook, sha: d66231454ef753818dc9213c9b5942e067266966, license: MIT, language: Jupyter Notebook, stars: 50112,
+     description: "Python Data Science Handbook: full text in Jupyter Notebooks"}
+  - {repo: android/nowinandroid, sha: a49ed253d75e61a2b6ab80a8da677b57437b08eb, license: Apache-2.0, language: Kotlin, stars: 21896,
+     description: "A fully functional Android app built entirely with Kotlin and Jetpack Compose"}
+  - {repo: pointfreeco/swift-composable-architecture, sha: bc2db5ba8ad3a47deba5db32fa340637ba6c9a76, license: MIT, language: Swift, stars: 14952,
+     description: "A library for building applications in a consistent and understandable way, with composition, testing, and ergonomics in mind."}
+  - {repo: obytes/react-native-template-obytes, sha: fd9b358ed11913d2a49fd9ffa6582fe03ba130e7, license: MIT, language: TypeScript, stars: 4349,
+     description: "A template for your next React Native project: Expo, PNPM, TypeScript, TailwindCSS, Husky, EAS, GitHub Actions, Env Vars, expo-router, react-query, react-hook-form."}
+  - {repo: embassy-rs/embassy, sha: 60b84b4d3cbbe95ab7811a9a9f66baa12ca48aa7, license: Apache-2.0, language: Rust, stars: 9936,
+     description: "Modern embedded framework, using Rust and async."}
+  - {repo: dbt-labs/dbt-utils, sha: 2a8f07bcbd02fb7a8c011298a1bdaf3e92759c14, license: Apache-2.0, language: Makefile, stars: 1819,
+     description: "Utility functions for dbt projects."}
+  - {repo: tokio-rs/axum, sha: 618496288c41da835683ec149432c4869722779f, license: MIT, language: Rust, stars: 27411,
+     description: "HTTP routing and request-handling library for Rust that focuses on ergonomics and modularity"}
+  - {repo: spring-projects/spring-petclinic, sha: 500158f732419217507c7656904b8e6aa1bcc0d6, license: Apache-2.0, language: CSS, stars: 9563,
+     description: "A sample Spring-based application"}
+  - {repo: PanJiaChen/vue-element-admin, sha: 6858a9ad67483025f6a9432a926beb9327037be3, license: MIT, language: Vue, stars: 90157,
+     description: ":tada: A magical vue admin https://panjiachen.github.io/vue-element-admin"}
+  - {repo: karpathy/nanoGPT, sha: 3adf61e154c3fe3fca428ad6bc3818b27a3b8291, license: MIT, language: Python, stars: 63628,
+     description: "The simplest, fastest repository for training/finetuning medium-sized GPTs."}
+  - {repo: pgvector/pgvector, sha: f37c13f68b57d2c3472b2214fbcff699d6d34876, license: PostgreSQL, language: C, stars: 23270,
+     description: "Open-source vector similarity search for Postgres"}
+  - {repo: scikit-learn-contrib/imbalanced-learn, sha: 8504e95f0160f61d1b617ca66f779646d2ee609e, license: MIT, language: Python, stars: 7126,
+     description: "A Python Package to Tackle the Curse of Imbalanced Datasets in Machine Learning"}
+
+postings:
+  - {board: reddit, id: 8263406, role: android}
+  - {board: duolingo, id: 8393272002, role: ios}
+  - {board: robinhood, id: 8246088, role: ios}
+  - {board: stripe, id: 8194604, role: frontend}
+  - {board: reddit, id: 8194576, role: frontend}
+  - {board: databricks, id: 8230883002, role: frontend}
+  - {board: reddit, id: 8189317, role: backend}
+  - {board: stripe, id: 7369543, role: backend}
+  - {board: robinhood, id: 5319465, role: backend}
+  - {board: stripe, id: 6786324, role: full-stack}
+  - {board: discord, id: 8659978002, role: full-stack}
+  - {board: cloudflare, id: 8043974, role: machine-learning}
+  - {board: airbnb, id: 8031901, role: data-science}
+  - {board: discord, id: 8840756002, role: data-science}
+  - {board: stripe, id: 5416444, role: data-analyst}
+  - {board: mongodb, id: 8224590, role: data-analyst}
+  - {board: airbnb, id: 8249633, role: analytics-engineer}
+  - {board: duolingo, id: 8784381002, role: sre}
+  - {board: pinterest, id: 7782538, role: sre}
+  - {board: airbnb, id: 8257909, role: infrastructure}
+  - {board: stripe, id: 8040825, role: firmware}
+  - {board: samsara, id: 8226602, role: firmware-intern}
+  - {board: airbnb, id: 7532824, role: engineering-manager}
+  - {board: figma, id: 6178851004, role: data-engineer-intern}
+  - {board: discord, id: 8299493002, role: data-engineer}
+  - {board: stripe, id: 8194287, role: data-analyst-intern}
+  - {board: brex, id: 8502529002, role: off-domain-sales}
+  - {board: airbnb, id: 8121074, role: off-domain-design}

@@ -1,0 +1,264 @@
+# Labels for the real-text eval set. Sources: sources.yaml. Text: cache/
+# (gitignored, rebuilt by scripts/fetch_real_eval_data.py). Criteria are
+# written out in DATA_SOURCES.md; in short:
+#
+# repos.<repo>.skills
+#   What the README demonstrates beyond the declared dependencies the
+#   app already reads from manifests: languages, frameworks and practices
+#   the README describes the project using or being. Not things it merely
+#   links to or names as an alternative.
+#
+# postings.<board>-<id>.expected
+#   What the posting states. `null` means the posting is ambiguous on that
+#   field (two ranges, two numbers of years, a mode implied but never
+#   said) and the field is not scored. `skills` is the core technology the
+#   posting asks for by name, scored by recall.
+#
+# postings.<board>-<id>.summary
+#   One line on what the role is, standing in for the role_summary the
+#   app extracts from a posting and searches with (see job_posting_text).
+#
+# postings.<board>-<id>.relevant_skills
+#   Which skills in this portfolio a reviewer would accept as evidence for
+#   the posting. A judgment, not a string match: an iOS posting that only
+#   says "Swift" still makes SwiftUI and UIKit evidence relevant, and a
+#   posting that names no technology at all ("strong coding skills in any
+#   language") still makes backend framework evidence relevant. Empty for
+#   postings this portfolio has nothing to offer (sales, design).
+
+repos:
+  encode/httpx: {skills: [Python, HTTP, HTTP/2, Async Programming, Command Line Interface]}
+  fastapi/sqlmodel: {skills: [Python, SQL, FastAPI, ORM]}
+  pallets/flask: {skills: [Python, Flask, WSGI, Jinja]}
+  shadcn-ui/taxonomy: {skills: [NextAuth.js, Zod, MDX, Radix UI]}
+  gin-gonic/gin: {skills: [Go, REST APIs, Microservices, HTTP Middleware]}
+  redis/go-redis: {skills: [Go, Redis]}
+  prometheus/node_exporter: {skills: [Prometheus, Go, Linux, Monitoring, Docker]}
+  kubernetes-sigs/kind: {skills: [Kubernetes, Docker, Go, Continuous Integration]}
+  terraform-aws-modules/terraform-aws-vpc: {skills: [Terraform, AWS, HCL, Cloud Networking]}
+  jakevdp/PythonDataScienceHandbook: {skills: [Python, Data Science, Machine Learning, IPython]}
+  android/nowinandroid: {skills: [Kotlin, Jetpack Compose, Android, Gradle]}
+  pointfreeco/swift-composable-architecture: {skills: [Swift, SwiftUI, iOS, UIKit, State Management, Unit Testing]}
+  obytes/react-native-template-obytes: {skills: [Expo, GitHub Actions, Mobile Development]}
+  embassy-rs/embassy: {skills: [Rust, Embedded Rust, Async Programming, STM32, Embedded Systems, Microcontrollers]}
+  dbt-labs/dbt-utils: {skills: [dbt, SQL, Data Modeling, Data Quality Testing]}
+  tokio-rs/axum: {skills: [Rust, Tokio, HTTP, REST APIs]}
+  spring-projects/spring-petclinic: {skills: [Java, Maven, Gradle, Docker]}
+  PanJiaChen/vue-element-admin: {skills: [JavaScript, Element UI, Single-Page Applications, Internationalization]}
+  karpathy/nanoGPT: {skills: [Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers]}
+  pgvector/pgvector: {skills: [PostgreSQL, C, Vector Search]}
+  scikit-learn-contrib/imbalanced-learn: {skills: [Python, Machine Learning, Imbalanced Classification]}
+
+postings:
+  reddit-8263406:
+    summary: Builds consumer-facing Android features at Reddit in Kotlin, from design through experimentation and launch.
+    expected: {company: Reddit, title: "Android Software Engineer, Consumer Engineering",
+               location: "San Francisco, CA", salary_range: "$164,200-$229,900 USD",
+               employment_type: null, work_mode: null, seniority: null, experience_required: null,
+               skills: [Kotlin, Android, Jetpack Compose]}
+    relevant_skills: [Kotlin, Android, Jetpack Compose, Gradle, Mobile Development]
+
+  duolingo-8393272002:
+    summary: Develops and maintains Duolingo's native iOS app in Swift on the ads or in-app purchase teams.
+    expected: {company: Duolingo, title: Senior iOS Engineer, location: "New York, NY; Pittsburgh, PA",
+               salary_range: "$177,700-$240,400 USD", employment_type: null, work_mode: null,
+               seniority: Senior, experience_required: null, skills: [Swift, iOS]}
+    relevant_skills: [Swift, iOS, SwiftUI, UIKit, Unit Testing, Mobile Development]
+
+  robinhood-8246088:
+    summary: Builds iOS features for Robinhood's international brokerage, money and crypto launches.
+    expected: {company: Robinhood, title: "iOS Developer, International", location: "Toronto, ON",
+               salary_range: "$136,000-$160,000 CAD", employment_type: null, work_mode: Hybrid,
+               seniority: null, experience_required: "3+ years", skills: [Swift, iOS]}
+    relevant_skills: [Swift, iOS, SwiftUI, UIKit, Unit Testing, Mobile Development]
+
+  stripe-8194604:
+    summary: Builds high-performance charting and data visualization interfaces for the Stripe Dashboard in React.
+    expected: {company: Stripe, title: "Frontend Engineer, Data Product Experiences", location: null,
+               salary_range: "", employment_type: null, work_mode: null, seniority: null,
+               experience_required: "2+ years", skills: [React, TypeScript, JavaScript, CSS, D3.js]}
+    relevant_skills: [React, TypeScript, JavaScript, Next.js, Tailwind CSS, Vue.js, Radix UI,
+                      Single-Page Applications]
+
+  reddit-8194576:
+    summary: Builds interactive ad formats for Reddit's web app in TypeScript and React.
+    expected: {company: Reddit, title: "Frontend Engineer, Ads", location: "United States",
+               salary_range: "$164,200-$229,900 USD", employment_type: null, work_mode: Remote,
+               seniority: null, experience_required: "3+ years", skills: [TypeScript, JavaScript, React]}
+    relevant_skills: [TypeScript, JavaScript, React, Next.js, Tailwind CSS, Vue.js, Go, Kubernetes,
+                      Docker, Single-Page Applications]
+
+  databricks-8230883002:
+    summary: Builds the frontend for Databricks dashboards, including authoring, interactivity and analytical workflows.
+    expected: {company: Databricks, title: "Senior Software Frontend Engineer - Dashboards",
+               location: "Vancouver, Canada", salary_range: "$146,200-$201,100 CAD",
+               employment_type: null, work_mode: null, seniority: Senior, experience_required: "5+ years",
+               skills: [React, TypeScript, JavaScript, CSS]}
+    relevant_skills: [React, TypeScript, JavaScript, Next.js, Vue.js, Single-Page Applications, SQL]
+
+  reddit-8189317:
+    summary: Designs and builds Reddit's identity, authentication and authorization backend services, mostly in Go.
+    expected: {company: Reddit, title: "Backend Engineer, IAM", location: "United States",
+               salary_range: "$164,200-$229,900 USD", employment_type: null, work_mode: Remote,
+               seniority: null, experience_required: "3+ years", skills: [Go, Kubernetes, AWS]}
+    relevant_skills: [Go, Kubernetes, AWS, REST APIs, Microservices, Docker]
+
+  stripe-7369543:
+    summary: Builds the APIs and large-scale backend services behind Stripe's money management and Treasury products.
+    expected: {company: Stripe, title: "Backend/API Engineer, Money as a Service (Product)",
+               location: United Kingdom, salary_range: "", employment_type: null, work_mode: null,
+               seniority: null, experience_required: null,
+               skills: [gRPC, GraphQL, Docker, Kubernetes, AWS]}
+    relevant_skills: [REST APIs, Microservices, Docker, Kubernetes, AWS, Go, Rust, Java, Spring Boot,
+                      Python, Flask, FastAPI]
+
+  robinhood-5319465:
+    summary: Builds low-latency, highly concurrent backend systems and APIs for Robinhood's financial instrument data.
+    expected: {company: Robinhood, title: "Senior Software Developer, Backend", location: "Toronto, ON",
+               salary_range: "$166,000-$195,000 CAD", employment_type: null, work_mode: Hybrid,
+               seniority: Senior, experience_required: "5+ years", skills: []}
+    relevant_skills: [REST APIs, Microservices, Go, Rust, Java, Spring Boot, Python, Redis, PostgreSQL]
+
+  stripe-6786324:
+    summary: Builds the distributed backend services and APIs behind Stripe's billing and subscription platform, working across the stack.
+    expected: {company: Stripe, title: "Full Stack Engineer, Billing", location: null, salary_range: "",
+               employment_type: null, work_mode: null, seniority: null, experience_required: "5+ years",
+               skills: []}
+    relevant_skills: [REST APIs, Microservices, Stripe, React, TypeScript, Next.js, Python, Go]
+
+  discord-8659978002:
+    summary: Builds Discord's ads and rewards products end to end, from backend services to the React frontend.
+    expected: {company: Discord, title: "Senior Full-Stack Software Engineer, Ads",
+               location: "San Francisco Bay Area", salary_range: "$196,000 to $245,000",
+               employment_type: Full-time, work_mode: null, seniority: Senior,
+               experience_required: "4+ years", skills: [TypeScript, React, Python]}
+    relevant_skills: [TypeScript, React, Python, Next.js, React Native, Flask, FastAPI, Mobile Development]
+
+  cloudflare-8043974:
+    summary: Optimizes and productionizes machine learning models, including LLMs, for Cloudflare's serverless GPU inference platform.
+    expected: {company: Cloudflare, title: Senior Machine Learning Engineer, location: null,
+               salary_range: "", employment_type: null, work_mode: Hybrid, seniority: Senior,
+               experience_required: null, skills: [Python, PyTorch]}
+    relevant_skills: [Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers,
+                      Machine Learning, Vector Search]
+
+  airbnb-8031901:
+    summary: Builds LLM and machine learning models and evaluation for Airbnb's customer support.
+    expected: {company: Airbnb, title: "Data Scientist - Algorithms, Community Support",
+               location: "United States", salary_range: "$151,000-$175,000 USD", employment_type: null,
+               work_mode: Remote, seniority: null, experience_required: "2+ years",
+               skills: [Python, SQL]}
+    relevant_skills: [Python, SQL, Machine Learning, Large Language Models, Data Science, PyTorch,
+                      Scikit-learn, Pandas, Deep Learning]
+
+  discord-8840756002:
+    summary: Analyzes Discord's client reliability and performance through metrics, dashboards and A/B tests.
+    expected: {company: Discord, title: "Data Scientist - Client Platform",
+               location: "San Francisco Bay Area", salary_range: "$160,000 to $200,000",
+               employment_type: Full-time, work_mode: null, seniority: null,
+               experience_required: "2+ years", skills: [SQL, Tableau]}
+    relevant_skills: [SQL, Data Science, Python, Pandas, Jupyter, Matplotlib, Seaborn]
+
+  stripe-5416444:
+    summary: Builds metrics, data pipelines, dashboards and analyses for teams across Stripe.
+    expected: {company: Stripe, title: Data Analyst, location: Canada, salary_range: "",
+               employment_type: null, work_mode: null, seniority: null, experience_required: null,
+               skills: [SQL]}
+    relevant_skills: [SQL, Python, Pandas, Data Science, dbt, Data Modeling, Jupyter]
+
+  mongodb-8224590:
+    summary: Owns executive revenue and consumption reporting at MongoDB with SQL, Python and BI tools.
+    expected: {company: MongoDB, title: Senior Data Analyst, location: Gurugram, salary_range: "",
+               employment_type: null, work_mode: Hybrid, seniority: Senior,
+               experience_required: "4+ years", skills: [SQL, Python, Tableau]}
+    relevant_skills: [SQL, Python, dbt, Data Modeling, Data Quality Testing, Pandas]
+
+  airbnb-8249633:
+    summary: Designs and builds the data models, metrics, pipelines and dashboards for Airbnb.org.
+    expected: {company: Airbnb, title: "Senior Analytics Engineer, Airbnb.org", location: "United States",
+               salary_range: "$179,000-$210,000 USD", employment_type: null, work_mode: Remote,
+               seniority: Senior, experience_required: "5+ years", skills: [SQL, Python, Airflow]}
+    relevant_skills: [SQL, Python, dbt, Data Modeling, Data Quality Testing, Pandas]
+
+  duolingo-8784381002:
+    summary: Improves the reliability of Duolingo's distributed systems and production infrastructure, including containers and incident response.
+    expected: {company: Duolingo, title: Senior Site Reliability Engineer,
+               location: "New York, NY; Pittsburgh, PA", salary_range: "$182,800-$247,300 USD",
+               employment_type: null, work_mode: null, seniority: Senior, experience_required: null,
+               skills: [Kubernetes, Docker]}
+    relevant_skills: [Kubernetes, Docker, Go, Python, Prometheus, Monitoring, PostgreSQL, Linux]
+
+  pinterest-7782538:
+    summary: Operates and scales an AWS and Kubernetes platform with GitOps, Terraform and CI/CD automation.
+    expected: {company: Pinterest, title: "Site Reliability Engineer II, tvScientific", location: null,
+               salary_range: "$114,297-$235,319 USD", employment_type: null, work_mode: Remote,
+               seniority: null, experience_required: "4+ years",
+               skills: [AWS, Kubernetes, Argo CD, Helm, Terraform, GitHub Actions]}
+    relevant_skills: [AWS, Kubernetes, Terraform, Docker, Prometheus, Monitoring, Linux,
+                      Continuous Integration, GitHub Actions, Python]
+
+  airbnb-8257909:
+    summary: Builds and operates Airbnb's Kubernetes-based cloud infrastructure platform on public cloud.
+    expected: {company: Airbnb, title: "Staff Software Engineer, Cloud Infrastructure",
+               location: "United States", salary_range: "$212,000-$265,000 USD", employment_type: null,
+               work_mode: Remote, seniority: Staff, experience_required: "10+ years",
+               skills: [Kubernetes, AWS, Docker]}
+    relevant_skills: [Kubernetes, AWS, Docker, Terraform, Cloud Networking]
+
+  stripe-8040825:
+    summary: Develops embedded C firmware for Stripe's point-of-sale payment hardware.
+    expected: {company: Stripe, title: Firmware Engineer, location: Taipei, salary_range: "",
+               employment_type: null, work_mode: null, seniority: null, experience_required: "2+ years",
+               skills: [C]}
+    relevant_skills: [C, Embedded Systems, Embedded Rust, Rust, Microcontrollers, STM32]
+
+  samsara-8226602:
+    summary: Intern developing C firmware for battery-powered IoT sensors and gateways on microcontrollers and RTOSes.
+    expected: {company: Samsara, title: Firmware Engineer Co-Op, location: "San Francisco, CA",
+               salary_range: "$38-$58 USD", employment_type: Internship, work_mode: Hybrid,
+               seniority: null, experience_required: null, skills: [C, FreeRTOS, Zephyr]}
+    relevant_skills: [C, Embedded Systems, Microcontrollers, STM32, Embedded Rust, Rust]
+
+  airbnb-7532824:
+    summary: Leads a team of engineers building Airbnb's hosting and co-hosting services.
+    expected: {company: Airbnb, title: "Engineering Manager, Guest & Host",
+               location: "London, United Kingdom", salary_range: "£120,000-£150,000 GBP",
+               employment_type: null, work_mode: null, seniority: Manager, experience_required: null,
+               skills: []}
+    relevant_skills: [REST APIs, Microservices, Data Modeling]
+
+  figma-6178851004:
+    summary: Intern building, testing and documenting data pipelines into Figma's data warehouse.
+    expected: {company: Figma, title: Data Engineer Intern (2027),
+               location: "San Francisco, CA; New York, NY", salary_range: "$46 USD",
+               employment_type: Internship, work_mode: On-site, seniority: null,
+               experience_required: null, skills: [Python, SQL]}
+    relevant_skills: [Python, SQL, dbt, Data Modeling, Data Quality Testing, Pandas]
+
+  discord-8299493002:
+    summary: Designs ads data models and builds batch and near real-time pipelines for Discord's ads and ML.
+    expected: {company: Discord, title: "Senior Data Engineer, Ads", location: "United States",
+               salary_range: "$220,500 to $245,000", employment_type: Full-time, work_mode: Remote,
+               seniority: Senior, experience_required: "5+ years", skills: [SQL, Python, dbt]}
+    relevant_skills: [SQL, Python, dbt, Data Modeling, Data Quality Testing, Machine Learning]
+
+  stripe-8194287:
+    summary: Intern analyzing data, running experiments and building metrics and dashboards at Stripe.
+    expected: {company: Stripe, title: "Data Analyst, Intern", location: Toronto, salary_range: "",
+               employment_type: Internship, work_mode: null, seniority: null, experience_required: null,
+               skills: [SQL]}
+    relevant_skills: [SQL, Python, Data Science, Pandas, Jupyter, dbt]
+
+  brex-8502529002:
+    summary: Sells Brex's embedded finance product to enterprises through partner channels.
+    expected: {company: Brex, title: "Enterprise Account Executive, Embedded Finance",
+               location: "New York, NY", salary_range: null, employment_type: null, work_mode: Hybrid,
+               seniority: null, experience_required: "4+ years", skills: []}
+    relevant_skills: []
+
+  airbnb-8121074:
+    summary: Leads experience design for Airbnb's international expansion.
+    expected: {company: Airbnb, title: "Staff Experience Designer, International", location: Singapore,
+               salary_range: "", employment_type: null, work_mode: null, seniority: Staff,
+               experience_required: "10+ years", skills: []}
+    relevant_skills: []

@@ -48,6 +48,10 @@ _SYSTEM_PROMPT = (
     "directly stated in the evidence or a reasonable, conservative "
     "paraphrase of it. Answer `grounded: false` if the bullet states "
     "anything the evidence doesn't support, even if it sounds plausible. "
+    "Claims about who the work was for or with are concrete claims too: a "
+    "team, a company or client, an organisation, users, customers, or "
+    "production use. Unless the evidence says so, treat the project as one "
+    "person's code with no stated users. "
     "A user note is the account holder's own statement about the project "
     "and counts as evidence."
 )
@@ -75,6 +79,27 @@ def _project_evidence_text(
         return ""
     skills = project_skills(db, account_id, [repo_id]).get(repo_id, [])
     return format_project_evidence(repo.name, repo.description or "", skills, user_note)
+
+
+def judge_bullet(evidence: str, bullet: str, account_id: int | None) -> bool | None:
+    """The judge's verdict on one bullet against its project's evidence:
+    True grounded, False not, None when the reply was not usable JSON.
+    Provider errors (no key, budget, rate limit) propagate to the caller.
+    One function so the eval that validates the judge against human labels
+    (app/evals/llm_evals.py) runs exactly the judge this module uses."""
+    response = complete(
+        "bulk",
+        [
+            system_message(_SYSTEM_PROMPT),
+            user_message(f"Evidence:\n{evidence}\n\nBullet: {bullet}"),
+        ],
+        schema=_SCHEMA,
+        account_id=account_id,
+        purpose="groundedness_eval",
+    )
+    if response.parsed is None:
+        return None
+    return bool(response.parsed.get("grounded", False))
 
 
 def score_groundedness(
@@ -135,16 +160,7 @@ def score_groundedness(
                     if len(outcomes) >= max_checks:
                         break
                     try:
-                        response = complete(
-                            "bulk",
-                            [
-                                system_message(_SYSTEM_PROMPT),
-                                user_message(f"Evidence:\n{evidence}\n\nBullet: {bullet}"),
-                            ],
-                            schema=_SCHEMA,
-                            account_id=account_id,
-                            purpose="groundedness_eval",
-                        )
+                        verdict = judge_bullet(evidence, bullet, account_id)
                     except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError) as e:
                         logger.info("groundedness check stopped early: %s", e)
                         if outcomes:
@@ -154,8 +170,8 @@ def score_groundedness(
                                 skipped_reason=f"stopped early: {e}",
                             )
                         return GroundednessResult(score=None, checked=0, skipped_reason=str(e))
-                    if response.parsed is not None:
-                        outcomes.append(bool(response.parsed.get("grounded", False)))
+                    if verdict is not None:
+                        outcomes.append(verdict)
 
         if not outcomes:
             return GroundednessResult(

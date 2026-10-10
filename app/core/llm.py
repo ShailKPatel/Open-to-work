@@ -152,6 +152,11 @@ def is_out_of_keys(error: Exception) -> bool:
 _RETRY_DELAYS_S = (3.0, 8.0)
 _FALLBACK_RETRY_DELAYS_S = (5.0,)
 _TRANSIENT_STATUS = {500, 502, 503, 504}
+# Per-request timeout. litellm's default is 6000 s, so one connection that
+# never answers held a call for up to 100 minutes before the retries above
+# could run. Generous for the slowest call (resume generation); a timeout
+# counts as transient, so it is retried and then falls back like a 503.
+_REQUEST_TIMEOUT_S = 180.0
 _sleep = time.sleep
 
 
@@ -415,6 +420,7 @@ def complete(
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": _with_prompt_caching(provider, messages),
+        "timeout": _REQUEST_TIMEOUT_S,
     }
 
     if schema is not None:
@@ -822,6 +828,13 @@ def _readable_provider_error(
             f"{label} refused to process this content under its safety rules. ({detail})"
         )
     if isinstance(e, (litellm.BadRequestError, litellm.UnprocessableEntityError)):
+        text = str(e)
+        if "permission_denied" in text.lower() and is_blocked_detail(text):
+            # litellm passes some of Gemini's 403s on as a bad request. One
+            # that says the project or key is shut off is about this key,
+            # not the request, so it is marked blocked and the next key is
+            # tried, the same as the PermissionDeniedError branch above.
+            return _key_blocked(label, detail, key_id)
         return LLMProviderError(f"{label} couldn't process this request with \"{name}\": {detail}")
     return LLMProviderError(f"{label} returned an unexpected error: {detail}")
 

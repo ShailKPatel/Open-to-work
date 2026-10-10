@@ -16,27 +16,35 @@ and are not scored here.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from sqlalchemy import select
 
 from app.core.db import ExperienceSkillEvidence, SkillEvidence, get_db
 from app.evals.golden import GoldenPair
-from app.evals.metrics import SystemScore, mean_system_score, precision_at_k, recall_at_k
+from app.evals.metrics import PairScore, SystemScore, mean_system_score, score_pair
 from app.retrieval.index import experience_evidence_point_id
-
-_PRECISION_K = 5
-_RECALL_K = 10
+from app.retrieval.search import Query
 
 
 def score_candidates(account_id: int, pairs: list[GoldenPair]) -> dict[str, SystemScore]:
-    """Mean precision@5 / recall@10 of candidate skills (by name,
+    """candidate_scores(), averaged."""
+    return {
+        name: mean_system_score(points)
+        for name, points in candidate_scores(account_id, pairs).items()
+    }
+
+
+def candidate_scores(account_id: int, pairs: list[GoldenPair]) -> dict[str, list[PairScore]]:
+    """score_pair's metrics per pair, for candidate skills (by name,
     casefolded) and candidate projects (by repository id) over every
     skill_evidence pair with labels. A pair whose labels name no
     repo-linked evidence counts toward skills only."""
     from app.resume_build.orchestrator import _candidate_projects, _candidate_skills
 
     offset = experience_evidence_point_id(0)
-    skill_points: list[tuple[float, float]] = []
-    project_points: list[tuple[float, float]] = []
+    skill_points: list[PairScore] = []
+    project_points: list[PairScore] = []
     db = get_db()
     try:
         for pair in pairs:
@@ -56,26 +64,16 @@ def score_candidates(account_id: int, pairs: list[GoldenPair]) -> dict[str, Syst
             relevant_skills |= {s.casefold() for s in role_skills}
             relevant_repos = {e.repo_id for e in repo_rows}
 
-            skills = [s.casefold() for s in _candidate_skills(db, account_id, pair.query_text)]
-            skill_points.append(
-                (
-                    precision_at_k(skills, relevant_skills, _PRECISION_K),
-                    recall_at_k(skills, relevant_skills, _RECALL_K),
-                )
+            query = replace(
+                Query.from_posting_text(pair.query_text), posting_text=pair.posting_text
             )
+            skills = [s.casefold() for s in _candidate_skills(db, account_id, query)]
+            skill_points.append(score_pair(skills, relevant_skills))
             if relevant_repos:
                 projects = [
-                    c["repo_id"] for c in _candidate_projects(db, account_id, pair.query_text)
+                    c["repo_id"] for c in _candidate_projects(db, account_id, query)
                 ]
-                project_points.append(
-                    (
-                        precision_at_k(projects, relevant_repos, _PRECISION_K),
-                        recall_at_k(projects, relevant_repos, _RECALL_K),
-                    )
-                )
+                project_points.append(score_pair(projects, relevant_repos))
     finally:
         db.close()
-    return {
-        "skills": mean_system_score(skill_points),
-        "projects": mean_system_score(project_points),
-    }
+    return {"skills": skill_points, "projects": project_points}

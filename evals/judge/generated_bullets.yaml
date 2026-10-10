@@ -1,0 +1,1331 @@
+# Project bullets written by the app's resume writer, recorded before its
+# deterministic grounding filter, with the evidence the writer was shown.
+# Built by scripts/collect_generated_bullets.py; see that script and
+# evals/judge/LABELING.md for how `grounded` is assigned.
+#
+# passed_filter  whether app/resume_build/grounding.py kept the bullet
+# split          dev or test, by posting (app/evals/splits.py)
+# model          the model that wrote it
+#
+# Labels are in generated_labels.yaml, keyed by id.
+
+- id: payments-senior-backend/backend-senior-us#0
+  posting: payments-senior-backend
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Built a double-entry ledger service featuring idempotent posting and reconciliation.
+  passed_filter: true
+- id: payments-senior-backend/backend-senior-us#1
+  posting: payments-senior-backend
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Implemented using FastAPI, SQLAlchemy, PostgreSQL, and Python.
+  passed_filter: true
+- id: payments-senior-backend/backend-senior-us#2
+  posting: payments-senior-backend
+  persona: backend-senior-us
+  repo: ratelimit-go
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  bullet: Developed a token bucket rate limiter backed by Redis with a gRPC API in Go.
+  passed_filter: true
+- id: payments-senior-backend/backend-senior-us#3
+  posting: payments-senior-backend
+  persona: backend-senior-us
+  repo: pg-audit-trail
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='pg-audit-trail' description='Trigger-based audit history for PostgreSQL tables.' skills=PostgreSQL,
+    SQL, PL/pgSQL
+  bullet: Created a trigger-based audit history solution for PostgreSQL tables using PL/pgSQL and SQL.
+  passed_filter: true
+- id: platform-go-remote/backend-senior-us#0
+  posting: platform-go-remote
+  persona: backend-senior-us
+  repo: ratelimit-go
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  bullet: Built a token bucket rate limiter using Go, Gin, and Lua.
+  passed_filter: true
+- id: platform-go-remote/backend-senior-us#1
+  posting: platform-go-remote
+  persona: backend-senior-us
+  repo: ratelimit-go
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  bullet: Integrated Redis and gRPC API support.
+  passed_filter: true
+- id: platform-go-remote/devops-sre-uk#0
+  posting: platform-go-remote
+  persona: devops-sre-uk
+  repo: k8s-slo-exporter
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='k8s-slo-exporter' description='Prometheus exporter that turns Kubernetes ingress logs
+    into SLO burn rates.' skills=Prometheus, Kubernetes, Go
+  bullet: Built a Prometheus exporter in Go that turns Kubernetes ingress logs into SLO burn rates.
+  passed_filter: true
+- id: django-mid-onsite/backend-senior-us#0
+  posting: django-mid-onsite
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Built a double-entry ledger service backed by PostgreSQL, SQLAlchemy, and Celery with Redis.
+  passed_filter: true
+- id: django-mid-onsite/backend-senior-us#1
+  posting: django-mid-onsite
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Ensured data integrity using Pydantic, pytest, and Docker.
+  passed_filter: true
+- id: django-mid-onsite/backend-senior-us#2
+  posting: django-mid-onsite
+  persona: backend-senior-us
+  repo: ratelimit-go
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  bullet: Implemented a token bucket rate limiter backed by Redis and Lua.
+  passed_filter: true
+- id: django-mid-onsite/backend-senior-us#3
+  posting: django-mid-onsite
+  persona: backend-senior-us
+  repo: pg-audit-trail
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='pg-audit-trail' description='Trigger-based audit history for PostgreSQL tables.' skills=PostgreSQL,
+    SQL, PL/pgSQL
+  bullet: Created trigger-based audit history for PostgreSQL tables using PL/pgSQL and SQL.
+  passed_filter: true
+- id: frontend-react-berlin/frontend-mid-eu#0
+  posting: frontend-react-berlin
+  persona: frontend-mid-eu
+  repo: shelf-ui
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='shelf-ui' description='Accessible React component library with Storybook docs.' skills=React,
+    TypeScript, Tailwind CSS, Playwright, Vite, Storybook, Accessibility
+  bullet: Built accessible React components tested with Playwright.
+  passed_filter: true
+- id: frontend-react-berlin/frontend-mid-eu#1
+  posting: frontend-react-berlin
+  persona: frontend-mid-eu
+  repo: shelf-ui
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='shelf-ui' description='Accessible React component library with Storybook docs.' skills=React,
+    TypeScript, Tailwind CSS, Playwright, Vite, Storybook, Accessibility
+  bullet: Documented components using Storybook.
+  passed_filter: true
+- id: frontend-react-berlin/frontend-mid-eu#2
+  posting: frontend-react-berlin
+  persona: frontend-mid-eu
+  repo: route-planner
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='route-planner' description='Bike route planner on Next.js with a map view.' skills=Next.js,
+    React, TanStack Query, TypeScript, Mapbox
+  bullet: Developed a bike route planner using Next.js and TypeScript.
+  passed_filter: true
+- id: frontend-react-berlin/frontend-mid-eu#3
+  posting: frontend-react-berlin
+  persona: frontend-mid-eu
+  repo: route-planner
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='route-planner' description='Bike route planner on Next.js with a map view.' skills=Next.js,
+    React, TanStack Query, TypeScript, Mapbox
+  bullet: Integrated map views with React and Mapbox.
+  passed_filter: true
+- id: frontend-react-berlin/mobile-dev-ca#0
+  posting: frontend-react-berlin
+  persona: mobile-dev-ca
+  repo: recipe-rn
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='recipe-rn' description='React Native recipe app with offline favourites.' skills=React
+    Native, React, TypeScript, Firebase, Jest
+  bullet: Built a React Native recipe app utilizing TypeScript and React.
+  passed_filter: true
+- id: frontend-react-berlin/mobile-dev-ca#1
+  posting: frontend-react-berlin
+  persona: mobile-dev-ca
+  repo: recipe-rn
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='recipe-rn' description='React Native recipe app with offline favourites.' skills=React
+    Native, React, TypeScript, Firebase, Jest
+  bullet: Implemented offline favorites support with Firebase.
+  passed_filter: true
+- id: design-systems-lead/frontend-mid-eu#0
+  posting: design-systems-lead
+  persona: frontend-mid-eu
+  repo: shelf-ui
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='shelf-ui' description='Accessible React component library with Storybook docs.' skills=React,
+    TypeScript, Tailwind CSS, Playwright, Vite, Storybook, Accessibility
+  bullet: Built an accessible React component library featuring Storybook docs.
+  passed_filter: true
+- id: design-systems-lead/frontend-mid-eu#1
+  posting: design-systems-lead
+  persona: frontend-mid-eu
+  repo: shelf-ui
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='shelf-ui' description='Accessible React component library with Storybook docs.' skills=React,
+    TypeScript, Tailwind CSS, Playwright, Vite, Storybook, Accessibility
+  bullet: Utilized TypeScript, Tailwind CSS, Playwright, and Vite for robust component development and
+    testing.
+  passed_filter: true
+- id: vue-contract/frontend-mid-eu#0
+  posting: vue-contract
+  persona: frontend-mid-eu
+  repo: css-houdini-demos
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='css-houdini-demos' description='Small demos of the CSS Paint API.' skills=CSS, JavaScript
+  bullet: Built small demos of the CSS Paint API using JavaScript and CSS.
+  passed_filter: true
+- id: ds-bengaluru-lpa/data-scientist-in#0
+  posting: ds-bengaluru-lpa
+  persona: data-scientist-in
+  repo: churn-model
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='churn-model' description='Telecom churn prediction with gradient boosting and SHAP explanations.'
+    skills=Pandas, NumPy, LightGBM, XGBoost, Optuna, SHAP, Matplotlib, Jupyter, Feature Engineering, Machine
+    Learning
+  bullet: Built churn prediction models using LightGBM and XGBoost.
+  passed_filter: true
+- id: ds-bengaluru-lpa/data-scientist-in#1
+  posting: ds-bengaluru-lpa
+  persona: data-scientist-in
+  repo: sql-practice
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sql-practice' description='Window function and CTE exercises with solutions.' skills=SQL
+  bullet: Practiced SQL window functions and CTEs.
+  passed_filter: true
+- id: analytics-intern-monthly/data-scientist-in#0
+  posting: analytics-intern-monthly
+  persona: data-scientist-in
+  repo: sql-practice
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sql-practice' description='Window function and CTE exercises with solutions.' skills=SQL
+  bullet: Completed window function and CTE exercises with solutions using SQL.
+  passed_filter: true
+- id: analytics-intern-monthly/data-scientist-in#1
+  posting: analytics-intern-monthly
+  persona: data-scientist-in
+  repo: demand-forecast
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='demand-forecast' description='Weekly SKU demand forecasting with hierarchical reconciliation.'
+    skills=Pandas, LightGBM, Statsmodels, Streamlit, Scikit-learn, Time Series Forecasting, Prophet
+  bullet: Forecasted weekly SKU demand with hierarchical reconciliation using Pandas and LightGBM.
+  passed_filter: true
+- id: analytics-intern-monthly/data-scientist-in#2
+  posting: analytics-intern-monthly
+  persona: data-scientist-in
+  repo: churn-model
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='churn-model' description='Telecom churn prediction with gradient boosting and SHAP explanations.'
+    skills=Pandas, NumPy, LightGBM, XGBoost, Optuna, SHAP, Matplotlib, Jupyter, Feature Engineering, Machine
+    Learning
+  bullet: Predicted telecom churn using gradient boosting and Pandas.
+  passed_filter: true
+- id: forecasting-scientist/data-scientist-in#0
+  posting: forecasting-scientist
+  persona: data-scientist-in
+  repo: demand-forecast
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='demand-forecast' description='Weekly SKU demand forecasting with hierarchical reconciliation.'
+    skills=Pandas, LightGBM, Statsmodels, Streamlit, Scikit-learn, Time Series Forecasting, Prophet
+  bullet: Implemented weekly SKU demand forecasting with hierarchical reconciliation.
+  passed_filter: true
+- id: forecasting-scientist/data-scientist-in#1
+  posting: forecasting-scientist
+  persona: data-scientist-in
+  repo: demand-forecast
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='demand-forecast' description='Weekly SKU demand forecasting with hierarchical reconciliation.'
+    skills=Pandas, LightGBM, Statsmodels, Streamlit, Scikit-learn, Time Series Forecasting, Prophet
+  bullet: Applied LightGBM, Prophet, and time series forecasting methods.
+  passed_filter: true
+- id: search-ml-engineer/ml-research-phd#0
+  posting: search-ml-engineer
+  persona: ml-research-phd
+  repo: sparse-retriever
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sparse-retriever' description='Learned sparse retrieval with a BERT encoder, code for
+    a published paper.' skills=PyTorch, Hugging Face Transformers, NumPy, FAISS, pytest, Information Retrieval,
+    Natural Language Processing, Python
+  bullet: Implemented learned sparse retrieval using a BERT encoder and Python.
+  passed_filter: true
+- id: search-ml-engineer/ml-research-phd#1
+  posting: search-ml-engineer
+  persona: ml-research-phd
+  repo: sparse-retriever
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sparse-retriever' description='Learned sparse retrieval with a BERT encoder, code for
+    a published paper.' skills=PyTorch, Hugging Face Transformers, NumPy, FAISS, pytest, Information Retrieval,
+    Natural Language Processing, Python
+  bullet: Applied PyTorch, Hugging Face Transformers, and Information Retrieval techniques.
+  passed_filter: true
+- id: llm-applied-scientist/ml-research-phd#0
+  posting: llm-applied-scientist
+  persona: ml-research-phd
+  repo: rag-eval-kit
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='rag-eval-kit' description='Small library for evaluating retrieval augmented generation
+    pipelines.' skills=Qdrant, Sentence Transformers, OpenAI API, Pandas, Retrieval-Augmented Generation,
+    LLM Evaluation
+  bullet: Built a small library for evaluating retrieval augmented generation pipelines.
+  passed_filter: true
+- id: llm-applied-scientist/ml-research-phd#1
+  posting: llm-applied-scientist
+  persona: ml-research-phd
+  repo: sparse-retriever
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sparse-retriever' description='Learned sparse retrieval with a BERT encoder, code for
+    a published paper.' skills=PyTorch, Hugging Face Transformers, NumPy, FAISS, pytest, Information Retrieval,
+    Natural Language Processing, Python
+  bullet: Implemented learned sparse retrieval with a BERT encoder for a published paper.
+  passed_filter: true
+- id: llm-applied-scientist/data-scientist-in#0
+  posting: llm-applied-scientist
+  persona: data-scientist-in
+  repo: churn-model
+  split: dev
+  model: gemini/gemini-flash-latest
+  evidence: name='churn-model' description='Telecom churn prediction with gradient boosting and SHAP explanations.'
+    skills=Pandas, NumPy, LightGBM, XGBoost, Optuna, SHAP, Matplotlib, Jupyter, Feature Engineering, Machine
+    Learning
+  bullet: Trained gradient boosting models using LightGBM and XGBoost, optimizing hyperparameters with
+    Optuna.
+  passed_filter: true
+- id: llm-applied-scientist/data-scientist-in#1
+  posting: llm-applied-scientist
+  persona: data-scientist-in
+  repo: churn-model
+  split: dev
+  model: gemini/gemini-flash-latest
+  evidence: name='churn-model' description='Telecom churn prediction with gradient boosting and SHAP explanations.'
+    skills=Pandas, NumPy, LightGBM, XGBoost, Optuna, SHAP, Matplotlib, Jupyter, Feature Engineering, Machine
+    Learning
+  bullet: Applied SHAP to provide interpretability for churn predictions following feature engineering
+    in Pandas and NumPy.
+  passed_filter: true
+- id: llm-applied-scientist/data-scientist-in#2
+  posting: llm-applied-scientist
+  persona: data-scientist-in
+  repo: demand-forecast
+  split: dev
+  model: gemini/gemini-flash-latest
+  evidence: name='demand-forecast' description='Weekly SKU demand forecasting with hierarchical reconciliation.'
+    skills=Pandas, LightGBM, Statsmodels, Streamlit, Scikit-learn, Time Series Forecasting, Prophet
+  bullet: Built weekly SKU demand forecasting models utilizing LightGBM, Prophet, and Statsmodels with
+    hierarchical reconciliation.
+  passed_filter: true
+- id: llm-applied-scientist/data-scientist-in#3
+  posting: llm-applied-scientist
+  persona: data-scientist-in
+  repo: demand-forecast
+  split: dev
+  model: gemini/gemini-flash-latest
+  evidence: name='demand-forecast' description='Weekly SKU demand forecasting with hierarchical reconciliation.'
+    skills=Pandas, LightGBM, Statsmodels, Streamlit, Scikit-learn, Time Series Forecasting, Prophet
+  bullet: Engineered data pipelines in Pandas and Scikit-learn, deploying results through an interactive
+    Streamlit application.
+  passed_filter: true
+- id: sre-london/devops-sre-uk#0
+  posting: sre-london
+  persona: devops-sre-uk
+  repo: k8s-slo-exporter
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='k8s-slo-exporter' description='Prometheus exporter that turns Kubernetes ingress logs
+    into SLO burn rates.' skills=Prometheus, Kubernetes, Go
+  bullet: Turns Kubernetes ingress logs into SLO burn rates using Prometheus.
+  passed_filter: true
+- id: sre-london/devops-sre-uk#1
+  posting: sre-london
+  persona: devops-sre-uk
+  repo: tf-aws-baseline
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='tf-aws-baseline' description='Terraform modules for an AWS landing zone with VPC, IAM
+    and GuardDuty.' skills=Terraform, AWS
+  bullet: Provides Terraform modules for an AWS landing zone including VPC, IAM, and GuardDuty.
+  passed_filter: true
+- id: sre-london/devops-sre-uk#2
+  posting: sre-london
+  persona: devops-sre-uk
+  repo: incident-bot
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='incident-bot' description='Slack bot that opens incident channels and keeps a timeline.'
+    skills=AWS, Flask, Python, PagerDuty
+  bullet: Automates incident response by opening Slack channels and keeping a timeline.
+  passed_filter: true
+- id: linux-sysadmin/devops-sre-uk#0
+  posting: linux-sysadmin
+  persona: devops-sre-uk
+  repo: ansible-hardening
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ansible-hardening' description='Ansible roles that apply CIS hardening to Ubuntu servers.'
+    skills=Ansible, Linux
+  bullet: Applied CIS hardening to Ubuntu servers using Ansible roles.
+  passed_filter: true
+- id: analytics-intern-monthly/new-grad-student#0
+  posting: analytics-intern-monthly
+  persona: new-grad-student
+  repo: sudoku-cv
+  split: test
+  model: gemini/gemini-flash-latest
+  evidence: name='sudoku-cv' description='Solves a sudoku from a phone photo.' skills=OpenCV, PyTorch,
+    NumPy, Computer Vision
+  bullet: Developed a pipeline to solve sudoku puzzles directly from phone images using OpenCV and Computer
+    Vision techniques.
+  passed_filter: true
+- id: analytics-intern-monthly/new-grad-student#1
+  posting: analytics-intern-monthly
+  persona: new-grad-student
+  repo: sudoku-cv
+  split: test
+  model: gemini/gemini-flash-latest
+  evidence: name='sudoku-cv' description='Solves a sudoku from a phone photo.' skills=OpenCV, PyTorch,
+    NumPy, Computer Vision
+  bullet: Utilized NumPy and PyTorch to support numerical operations and model inference.
+  passed_filter: true
+- id: analytics-intern-monthly/new-grad-student#2
+  posting: analytics-intern-monthly
+  persona: new-grad-student
+  repo: campus-eats
+  split: test
+  model: gemini/gemini-flash-latest
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  bullet: Constructed an application to match university students with surplus dining hall food.
+  passed_filter: true
+- id: analytics-intern-monthly/new-grad-student#3
+  posting: analytics-intern-monthly
+  persona: new-grad-student
+  repo: campus-eats
+  split: test
+  model: gemini/gemini-flash-latest
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  bullet: Built backend data storage and API services using MongoDB, Express.js, and Node.js.
+  passed_filter: true
+- id: android-toronto/mobile-dev-ca#0
+  posting: android-toronto
+  persona: mobile-dev-ca
+  repo: transit-android
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='transit-android' description='Jetpack Compose app for real time bus arrivals.' skills=JUnit,
+    Kotlin, Jetpack Compose, Android
+  bullet: Built a Jetpack Compose application for real time bus arrivals using Kotlin.
+  passed_filter: true
+- id: ios-swiftui/mobile-dev-ca#0
+  posting: ios-swiftui
+  persona: mobile-dev-ca
+  repo: habit-tracker-ios
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='habit-tracker-ios' description='SwiftUI habit tracker with widgets and iCloud sync.'
+    skills=Swift, SwiftUI, Core Data, CloudKit, XCTest
+  bullet: Built a SwiftUI habit tracker featuring widgets and iCloud sync.
+  passed_filter: true
+- id: ios-swiftui/mobile-dev-ca#1
+  posting: ios-swiftui
+  persona: mobile-dev-ca
+  repo: habit-tracker-ios
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='habit-tracker-ios' description='SwiftUI habit tracker with widgets and iCloud sync.'
+    skills=Swift, SwiftUI, Core Data, CloudKit, XCTest
+  bullet: Utilized Swift, SwiftUI, Core Data, CloudKit, and XCTest.
+  passed_filter: true
+- id: react-native-startup/mobile-dev-ca#0
+  posting: react-native-startup
+  persona: mobile-dev-ca
+  repo: recipe-rn
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='recipe-rn' description='React Native recipe app with offline favourites.' skills=React
+    Native, React, TypeScript, Firebase, Jest
+  bullet: Built a React Native recipe app featuring offline favourites.
+  passed_filter: true
+- id: react-native-startup/mobile-dev-ca#1
+  posting: react-native-startup
+  persona: mobile-dev-ca
+  repo: recipe-rn
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='recipe-rn' description='React Native recipe app with offline favourites.' skills=React
+    Native, React, TypeScript, Firebase, Jest
+  bullet: Utilized TypeScript, React, Firebase, and Jest for testing.
+  passed_filter: true
+- id: react-native-startup/new-grad-student#0
+  posting: react-native-startup
+  persona: new-grad-student
+  repo: campus-eats
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  bullet: Developed a web application using TypeScript and Express.js for backend services.
+  passed_filter: true
+- id: react-native-startup/new-grad-student#1
+  posting: react-native-startup
+  persona: new-grad-student
+  repo: campus-eats
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  bullet: Integrated MongoDB for data storage and managed authentication using JWT.
+  passed_filter: true
+- id: new-grad-swe/new-grad-student#0
+  posting: new-grad-swe
+  persona: new-grad-student
+  repo: tiny-raft
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='tiny-raft' description='Raft consensus implementation for a distributed systems course.'
+    skills=Go, Distributed Systems
+  bullet: Implemented Raft consensus for a distributed systems course using Go.
+  passed_filter: true
+- id: fullstack-junior/new-grad-student#0
+  posting: fullstack-junior
+  persona: new-grad-student
+  repo: campus-eats
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  bullet: Built using React, Node.js, Express.js, and MongoDB with TypeScript and JWT.
+  passed_filter: true
+- id: fullstack-junior/new-grad-student#1
+  posting: fullstack-junior
+  persona: new-grad-student
+  repo: campus-eats
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='campus-eats' description='Hackathon app that matches students with leftover dining hall
+    food.' skills=Express.js, MongoDB, React, TypeScript, JWT, Node.js
+  bullet: Developed a hackathon application matching students with leftover dining hall food.
+  passed_filter: true
+- id: healthcare-data-analyst/career-changer-analyst#0
+  posting: healthcare-data-analyst
+  persona: career-changer-analyst
+  repo: school-attendance
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='school-attendance-analysis' description='Analysis of attendance and test scores across
+    a school district.' skills=Pandas, Seaborn, Matplotlib, Jupyter, SQL, Tableau, Data Visualization
+  bullet: Analyzed attendance and test scores across a school district using SQL and Tableau for data
+    visualization.
+  passed_filter: true
+- id: healthcare-data-analyst/data-scientist-in#0
+  posting: healthcare-data-analyst
+  persona: data-scientist-in
+  repo: sql-practice
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sql-practice' description='Window function and CTE exercises with solutions.' skills=SQL
+  bullet: Completed window function and CTE exercises with solutions.
+  passed_filter: true
+- id: bi-developer/career-changer-analyst#0
+  posting: bi-developer
+  persona: career-changer-analyst
+  repo: school-attendance
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='school-attendance-analysis' description='Analysis of attendance and test scores across
+    a school district.' skills=Pandas, Seaborn, Matplotlib, Jupyter, SQL, Tableau, Data Visualization
+  bullet: Built Tableau visualizations for attendance and test score analysis.
+  passed_filter: true
+- id: bi-developer/career-changer-analyst#1
+  posting: bi-developer
+  persona: career-changer-analyst
+  repo: school-attendance
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='school-attendance-analysis' description='Analysis of attendance and test scores across
+    a school district.' skills=Pandas, Seaborn, Matplotlib, Jupyter, SQL, Tableau, Data Visualization
+  bullet: Wrote SQL queries to support data extraction and analysis.
+  passed_filter: true
+- id: firmware-automotive/embedded-firmware-jp#0
+  posting: firmware-automotive
+  persona: embedded-firmware-jp
+  repo: can-logger
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='can-logger' description='CAN bus logger with SD card storage.' skills=C++, CAN bus,
+    Python
+  bullet: Built a CAN bus logger using C.
+  passed_filter: false
+- id: iot-firmware-rust/embedded-firmware-jp#0
+  posting: iot-firmware-rust
+  persona: embedded-firmware-jp
+  repo: rtos-sensor-hub
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='rtos-sensor-hub' description='FreeRTOS firmware for an STM32 sensor hub with BLE.' skills=C,
+    FreeRTOS, STM32, Bluetooth Low Energy, I2C
+  bullet: Developed FreeRTOS firmware for an STM32 sensor hub.
+  passed_filter: true
+- id: iot-firmware-rust/embedded-firmware-jp#1
+  posting: iot-firmware-rust
+  persona: embedded-firmware-jp
+  repo: rtos-sensor-hub
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='rtos-sensor-hub' description='FreeRTOS firmware for an STM32 sensor hub with BLE.' skills=C,
+    FreeRTOS, STM32, Bluetooth Low Energy, I2C
+  bullet: Integrated Bluetooth Low Energy and I2C interfaces.
+  passed_filter: true
+- id: iot-firmware-rust/embedded-firmware-jp#2
+  posting: iot-firmware-rust
+  persona: embedded-firmware-jp
+  repo: embassy-motor
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='embassy-motor' description='Async brushless motor controller in embedded Rust.' skills=Rust,
+    Embedded Rust
+  bullet: Wrote async brushless motor controller software in embedded Rust.
+  passed_filter: true
+- id: eng-manager-platform/eng-manager-staff#0
+  posting: eng-manager-platform
+  persona: eng-manager-staff
+  repo: eng-ladder
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='eng-ladder' description='An open engineering career ladder with examples per level.'
+    skills=Engineering Management, Career Development
+  bullet: Created an open engineering career ladder with examples per level.
+  passed_filter: true
+- id: eng-manager-platform/devops-sre-uk#0
+  posting: eng-manager-platform
+  persona: devops-sre-uk
+  repo: tf-aws-baseline
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='tf-aws-baseline' description='Terraform modules for an AWS landing zone with VPC, IAM
+    and GuardDuty.' skills=Terraform, AWS
+  bullet: Created Terraform modules for an AWS landing zone with VPC, IAM, and GuardDuty.
+  passed_filter: true
+- id: eng-manager-platform/devops-sre-uk#1
+  posting: eng-manager-platform
+  persona: devops-sre-uk
+  repo: k8s-slo-exporter
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='k8s-slo-exporter' description='Prometheus exporter that turns Kubernetes ingress logs
+    into SLO burn rates.' skills=Prometheus, Kubernetes, Go
+  bullet: Built a Prometheus exporter that turns Kubernetes ingress logs into SLO burn rates using Go.
+  passed_filter: true
+- id: eng-manager-platform/devops-sre-uk#2
+  posting: eng-manager-platform
+  persona: devops-sre-uk
+  repo: incident-bot
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='incident-bot' description='Slack bot that opens incident channels and keeps a timeline.'
+    skills=AWS, Flask, Python, PagerDuty
+  bullet: Developed a Slack bot using Python and Flask that opens incident channels and maintains a timeline.
+  passed_filter: true
+- id: staff-java-kafka/backend-senior-us#0
+  posting: staff-java-kafka
+  persona: backend-senior-us
+  repo: ratelimit-go
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  bullet: Built a rate limiter using Redis and a gRPC API.
+  passed_filter: true
+- id: staff-java-kafka/backend-senior-us#1
+  posting: staff-java-kafka
+  persona: backend-senior-us
+  repo: ratelimit-go
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ratelimit-go' description='Token bucket rate limiter backed by Redis with a gRPC API.'
+    skills=Gin, gRPC, Go, Redis, Lua
+  bullet: Implemented a token bucket algorithm.
+  passed_filter: true
+- id: staff-java-kafka/backend-senior-us#2
+  posting: staff-java-kafka
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Developed a double-entry ledger service with idempotent posting.
+  passed_filter: true
+- id: staff-java-kafka/backend-senior-us#3
+  posting: staff-java-kafka
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Ensured reliability with pytest and Docker.
+  passed_filter: true
+- id: long-boilerplate/backend-senior-us#0
+  posting: long-boilerplate
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Built double-entry ledger service with idempotent posting and reconciliation using Python and
+    FastAPI.
+  passed_filter: true
+- id: long-boilerplate/backend-senior-us#1
+  posting: long-boilerplate
+  persona: backend-senior-us
+  repo: ledger-sync
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='ledger-sync' description='Double-entry ledger service with idempotent posting and reconciliation.'
+    skills=FastAPI, SQLAlchemy, PostgreSQL, Celery, Redis, Pydantic, pytest, Python, Docker
+  bullet: Stored data in PostgreSQL and shipped with Docker.
+  passed_filter: true
+- id: long-boilerplate/backend-senior-us#2
+  posting: long-boilerplate
+  persona: backend-senior-us
+  repo: pg-audit-trail
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='pg-audit-trail' description='Trigger-based audit history for PostgreSQL tables.' skills=PostgreSQL,
+    SQL, PL/pgSQL
+  bullet: Implemented trigger-based audit history for PostgreSQL tables.
+  passed_filter: true
+- id: reddit-8263406/real-portfolio#0
+  posting: reddit-8263406
+  persona: real-portfolio
+  repo: android/nowinandroid
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='nowinandroid' description='A fully functional Android app built entirely with Kotlin
+    and Jetpack Compose' skills=Kotlin, Jetpack Compose, Android, Gradle
+  bullet: Developed a native Android application using Kotlin and Jetpack Compose.
+  passed_filter: true
+- id: reddit-8263406/real-portfolio#1
+  posting: reddit-8263406
+  persona: real-portfolio
+  repo: android/nowinandroid
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='nowinandroid' description='A fully functional Android app built entirely with Kotlin
+    and Jetpack Compose' skills=Kotlin, Jetpack Compose, Android, Gradle
+  bullet: Implemented modern architectural patterns and clean codebase practices for Android.
+  passed_filter: true
+- id: duolingo-8393272002/real-portfolio#0
+  posting: duolingo-8393272002
+  persona: real-portfolio
+  repo: pointfreeco/swift-composable-architecture
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='swift-composable-architecture' description='A library for building applications in a
+    consistent and understandable way, with composition, testing, and ergonomics in mind.' skills=Swift,
+    SwiftUI, iOS, UIKit, State Management, Unit Testing
+  bullet: Built applications focusing on composition, testing, and state management in Swift.
+  passed_filter: true
+- id: duolingo-8393272002/real-portfolio#1
+  posting: duolingo-8393272002
+  persona: real-portfolio
+  repo: pointfreeco/swift-composable-architecture
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='swift-composable-architecture' description='A library for building applications in a
+    consistent and understandable way, with composition, testing, and ergonomics in mind.' skills=Swift,
+    SwiftUI, iOS, UIKit, State Management, Unit Testing
+  bullet: Utilized Swift and SwiftUI for modern iOS application development.
+  passed_filter: true
+- id: robinhood-8246088/real-portfolio#0
+  posting: robinhood-8246088
+  persona: real-portfolio
+  repo: pointfreeco/swift-composable-architecture
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='swift-composable-architecture' description='A library for building applications in a
+    consistent and understandable way, with composition, testing, and ergonomics in mind.' skills=Swift,
+    SwiftUI, iOS, UIKit, State Management, Unit Testing
+  bullet: Built application features with composition, testing, and ergonomics in mind.
+  passed_filter: true
+- id: robinhood-8246088/real-portfolio#1
+  posting: robinhood-8246088
+  persona: real-portfolio
+  repo: pointfreeco/swift-composable-architecture
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='swift-composable-architecture' description='A library for building applications in a
+    consistent and understandable way, with composition, testing, and ergonomics in mind.' skills=Swift,
+    SwiftUI, iOS, UIKit, State Management, Unit Testing
+  bullet: Applied modern architecture patterns supporting unit testing and state management.
+  passed_filter: true
+- id: stripe-8194604/real-portfolio#0
+  posting: stripe-8194604
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Built an open source application using Next.js and React with TypeScript, Tailwind CSS, and
+    Stripe integration.
+  passed_filter: true
+- id: stripe-8194604/real-portfolio#1
+  posting: stripe-8194604
+  persona: real-portfolio
+  repo: obytes/react-native-template-obytes
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''react-native-template-obytes'' description=''A template for your next React Native
+    project: Expo, PNPM, TypeScript, TailwindCSS, Husky, EAS, GitHub Actions, Env Vars, expo-router, react-query,
+    react-hook-form.'' skills=TanStack Query, React, Jest, React Native, Tailwind CSS, TypeScript, Expo,
+    GitHub Actions, Mobile Development'
+  bullet: Developed a template featuring React, TypeScript, Tailwind CSS, and TanStack Query.
+  passed_filter: true
+- id: reddit-8194576/real-portfolio#0
+  posting: reddit-8194576
+  persona: real-portfolio
+  repo: obytes/react-native-template-obytes
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''react-native-template-obytes'' description=''A template for your next React Native
+    project: Expo, PNPM, TypeScript, TailwindCSS, Husky, EAS, GitHub Actions, Env Vars, expo-router, react-query,
+    react-hook-form.'' skills=TanStack Query, React, Jest, React Native, Tailwind CSS, TypeScript, Expo,
+    GitHub Actions, Mobile Development'
+  bullet: Built an application template utilizing TypeScript and React.
+  passed_filter: true
+- id: reddit-8194576/real-portfolio#1
+  posting: reddit-8194576
+  persona: real-portfolio
+  repo: obytes/react-native-template-obytes
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''react-native-template-obytes'' description=''A template for your next React Native
+    project: Expo, PNPM, TypeScript, TailwindCSS, Husky, EAS, GitHub Actions, Env Vars, expo-router, react-query,
+    react-hook-form.'' skills=TanStack Query, React, Jest, React Native, Tailwind CSS, TypeScript, Expo,
+    GitHub Actions, Mobile Development'
+  bullet: Implemented automated testing setups using Jest.
+  passed_filter: true
+- id: reddit-8194576/real-portfolio#2
+  posting: reddit-8194576
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Developed an open source application using Next.js, React, and TypeScript.
+  passed_filter: true
+- id: databricks-8230883002/real-portfolio#0
+  posting: databricks-8230883002
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Built a modern web application utilizing React, Next.js, and TypeScript.
+  passed_filter: true
+- id: databricks-8230883002/real-portfolio#1
+  posting: databricks-8230883002
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Implemented scalable user interfaces with Tailwind CSS and Radix UI.
+  passed_filter: true
+- id: reddit-8189317/real-portfolio#0
+  posting: reddit-8189317
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Built microservices and REST APIs using Go.
+  passed_filter: true
+- id: reddit-8189317/real-portfolio#1
+  posting: reddit-8189317
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Utilized HTTP middleware for high-performance web applications.
+  passed_filter: true
+- id: reddit-8189317/real-portfolio#2
+  posting: reddit-8189317
+  persona: real-portfolio
+  repo: kubernetes-sigs/kind
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='kind' description='Kubernetes IN Docker - local clusters for testing Kubernetes' skills=Kubernetes,
+    Docker, Go, Continuous Integration
+  bullet: Developed local clusters for testing Kubernetes using Go and Docker.
+  passed_filter: true
+- id: reddit-8189317/real-portfolio#3
+  posting: reddit-8189317
+  persona: real-portfolio
+  repo: terraform-aws-modules/terraform-aws-vpc
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='terraform-aws-vpc' description='Terraform module to create AWS VPC resources' skills=Terraform,
+    AWS, HCL, Cloud Networking
+  bullet: Created AWS VPC resources using Terraform.
+  passed_filter: true
+- id: stripe-7369543/real-portfolio#0
+  posting: stripe-7369543
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Built for building REST APIs, web applications, and microservices.
+  passed_filter: true
+- id: stripe-7369543/real-portfolio#1
+  posting: stripe-7369543
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Provided significantly better performance through httprouter.
+  passed_filter: true
+- id: stripe-7369543/real-portfolio#2
+  posting: stripe-7369543
+  persona: real-portfolio
+  repo: kubernetes-sigs/kind
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='kind' description='Kubernetes IN Docker - local clusters for testing Kubernetes' skills=Kubernetes,
+    Docker, Go, Continuous Integration
+  bullet: Enabled local clusters for testing Kubernetes using Docker.
+  passed_filter: true
+- id: stripe-7369543/real-portfolio#3
+  posting: stripe-7369543
+  persona: real-portfolio
+  repo: terraform-aws-modules/terraform-aws-vpc
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='terraform-aws-vpc' description='Terraform module to create AWS VPC resources' skills=Terraform,
+    AWS, HCL, Cloud Networking
+  bullet: Created AWS VPC resources using Terraform and cloud networking.
+  passed_filter: true
+- id: robinhood-5319465/real-portfolio#0
+  posting: robinhood-5319465
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Built for high performance with significantly better performance compared to Martini-like APIs.
+  passed_filter: true
+- id: robinhood-5319465/real-portfolio#1
+  posting: robinhood-5319465
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Designed for building REST APIs, web applications, and microservices.
+  passed_filter: true
+- id: robinhood-5319465/real-portfolio#2
+  posting: robinhood-5319465
+  persona: real-portfolio
+  repo: tokio-rs/axum
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='axum' description='HTTP routing and request-handling library for Rust that focuses on
+    ergonomics and modularity' skills=Rust, Tokio, HTTP, REST APIs
+  bullet: Provided robust routing and request-handling capabilities for HTTP systems.
+  passed_filter: true
+- id: robinhood-5319465/real-portfolio#3
+  posting: robinhood-5319465
+  persona: real-portfolio
+  repo: pgvector/pgvector
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='pgvector' description='Open-source vector similarity search for Postgres' skills=PostgreSQL,
+    C, Vector Search
+  bullet: Implemented vector similarity search capabilities for PostgreSQL databases.
+  passed_filter: true
+- id: stripe-6786324/real-portfolio#0
+  posting: stripe-6786324
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Built for building REST APIs, web applications, and microservices with significantly better
+    performance.
+  passed_filter: true
+- id: stripe-6786324/real-portfolio#1
+  posting: stripe-6786324
+  persona: real-portfolio
+  repo: gin-gonic/gin
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='gin' description='Gin is a high-performance HTTP web framework written in Go. It provides
+    a Martini-like API but with significantly better performanceup to 40 times fasterthanks to httprouter.
+    Gin is designed for building REST APIs, web applications, and microservices.' skills=Go, REST APIs,
+    Microservices, HTTP Middleware
+  bullet: Provided a Martini-like API utilizing httprouter for enhanced speed.
+  passed_filter: true
+- id: stripe-6786324/real-portfolio#2
+  posting: stripe-6786324
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Built using the new router, server components, and modern Next.js 13 features.
+  passed_filter: true
+- id: stripe-6786324/real-portfolio#3
+  posting: stripe-6786324
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: dev
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Integrated Stripe for payment functionality within a full stack application.
+  passed_filter: true
+- id: discord-8659978002/real-portfolio#0
+  posting: discord-8659978002
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Contributed to an open-source application built using React, Next.js, and TypeScript.
+  passed_filter: true
+- id: discord-8659978002/real-portfolio#1
+  posting: discord-8659978002
+  persona: real-portfolio
+  repo: shadcn-ui/taxonomy
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='taxonomy' description='An open source application built using the new router, server
+    components and everything new in Next.js 13.' skills=Prisma, React, Next.js, Stripe, Tailwind CSS,
+    TypeScript, NextAuth.js, Zod, MDX, Radix UI
+  bullet: Implemented robust validation and UI components using Tailwind CSS and Prisma.
+  passed_filter: true
+- id: discord-8659978002/real-portfolio#2
+  posting: discord-8659978002
+  persona: real-portfolio
+  repo: obytes/react-native-template-obytes
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''react-native-template-obytes'' description=''A template for your next React Native
+    project: Expo, PNPM, TypeScript, TailwindCSS, Husky, EAS, GitHub Actions, Env Vars, expo-router, react-query,
+    react-hook-form.'' skills=TanStack Query, React, Jest, React Native, Tailwind CSS, TypeScript, Expo,
+    GitHub Actions, Mobile Development'
+  bullet: Developed a React Native mobile application template utilizing TypeScript and Expo.
+  passed_filter: true
+- id: discord-8659978002/real-portfolio#3
+  posting: discord-8659978002
+  persona: real-portfolio
+  repo: obytes/react-native-template-obytes
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''react-native-template-obytes'' description=''A template for your next React Native
+    project: Expo, PNPM, TypeScript, TailwindCSS, Husky, EAS, GitHub Actions, Env Vars, expo-router, react-query,
+    react-hook-form.'' skills=TanStack Query, React, Jest, React Native, Tailwind CSS, TypeScript, Expo,
+    GitHub Actions, Mobile Development'
+  bullet: Integrated mobile testing tools and workflows including Jest and GitHub Actions.
+  passed_filter: true
+- id: discord-8659978002/real-portfolio#4
+  posting: discord-8659978002
+  persona: real-portfolio
+  repo: encode/httpx
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='httpx' description='A next generation HTTP client for Python.' skills=pytest, Python,
+    HTTP, HTTP/2, Async Programming, Command Line Interface
+  bullet: Built robust HTTP client functionality using Python and async programming principles.
+  passed_filter: true
+- id: discord-8659978002/real-portfolio#5
+  posting: discord-8659978002
+  persona: real-portfolio
+  repo: encode/httpx
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='httpx' description='A next generation HTTP client for Python.' skills=pytest, Python,
+    HTTP, HTTP/2, Async Programming, Command Line Interface
+  bullet: Tested asynchronous features and protocol support using pytest.
+  passed_filter: true
+- id: cloudflare-8043974/real-portfolio#0
+  posting: cloudflare-8043974
+  persona: real-portfolio
+  repo: karpathy/nanoGPT
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='nanoGPT' description='The simplest, fastest repository for training/finetuning medium-sized
+    GPTs.' skills=Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers
+  bullet: Built and optimized repositories for training and finetuning medium-sized GPT models.
+  passed_filter: true
+- id: cloudflare-8043974/real-portfolio#1
+  posting: cloudflare-8043974
+  persona: real-portfolio
+  repo: karpathy/nanoGPT
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='nanoGPT' description='The simplest, fastest repository for training/finetuning medium-sized
+    GPTs.' skills=Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers
+  bullet: Applied Python and PyTorch to advance large language model workflows and deep learning capabilities.
+  passed_filter: true
+- id: cloudflare-8043974/real-portfolio#2
+  posting: cloudflare-8043974
+  persona: real-portfolio
+  repo: jakevdp/PythonDataScienceHandbook
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''PythonDataScienceHandbook'' description=''Python Data Science Handbook: full text
+    in Jupyter Notebooks'' skills=Jupyter, Matplotlib, NumPy, Pandas, Scikit-learn, SciPy, Seaborn, Python,
+    Data Science, Machine Learning, IPython'
+  bullet: Implemented data science and machine learning workflows utilizing Python and core libraries.
+  passed_filter: true
+- id: cloudflare-8043974/real-portfolio#3
+  posting: cloudflare-8043974
+  persona: real-portfolio
+  repo: jakevdp/PythonDataScienceHandbook
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''PythonDataScienceHandbook'' description=''Python Data Science Handbook: full text
+    in Jupyter Notebooks'' skills=Jupyter, Matplotlib, NumPy, Pandas, Scikit-learn, SciPy, Seaborn, Python,
+    Data Science, Machine Learning, IPython'
+  bullet: Created reproducible data science notebooks and analysis tools.
+  passed_filter: true
+- id: cloudflare-8043974/real-portfolio#4
+  posting: cloudflare-8043974
+  persona: real-portfolio
+  repo: scikit-learn-contrib/imbalanced-learn
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='imbalanced-learn' description='A Python Package to Tackle the Curse of Imbalanced Datasets
+    in Machine Learning' skills=NumPy, Scikit-learn, SciPy, Python, Machine Learning, Imbalanced Classification
+  bullet: Developed machine learning utilities in Python to address imbalanced classification challenges.
+  passed_filter: true
+- id: cloudflare-8043974/real-portfolio#5
+  posting: cloudflare-8043974
+  persona: real-portfolio
+  repo: scikit-learn-contrib/imbalanced-learn
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='imbalanced-learn' description='A Python Package to Tackle the Curse of Imbalanced Datasets
+    in Machine Learning' skills=NumPy, Scikit-learn, SciPy, Python, Machine Learning, Imbalanced Classification
+  bullet: Utilized NumPy and Scikit-learn for data manipulation and model evaluation.
+  passed_filter: true
+- id: airbnb-8031901/real-portfolio#0
+  posting: airbnb-8031901
+  persona: real-portfolio
+  repo: karpathy/nanoGPT
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='nanoGPT' description='The simplest, fastest repository for training/finetuning medium-sized
+    GPTs.' skills=Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers
+  bullet: Focused on training and finetuning medium-sized GPTs using PyTorch and Large Language Models.
+  passed_filter: true
+- id: airbnb-8031901/real-portfolio#1
+  posting: airbnb-8031901
+  persona: real-portfolio
+  repo: karpathy/nanoGPT
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='nanoGPT' description='The simplest, fastest repository for training/finetuning medium-sized
+    GPTs.' skills=Python, PyTorch, Large Language Models, Deep Learning, Hugging Face Transformers
+  bullet: Utilized Python and Hugging Face Transformers for deep learning applications.
+  passed_filter: true
+- id: airbnb-8031901/real-portfolio#2
+  posting: airbnb-8031901
+  persona: real-portfolio
+  repo: jakevdp/PythonDataScienceHandbook
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''PythonDataScienceHandbook'' description=''Python Data Science Handbook: full text
+    in Jupyter Notebooks'' skills=Jupyter, Matplotlib, NumPy, Pandas, Scikit-learn, SciPy, Seaborn, Python,
+    Data Science, Machine Learning, IPython'
+  bullet: Applied Scikit-learn, NumPy, and Pandas for data science and machine learning workflows.
+  passed_filter: true
+- id: airbnb-8031901/real-portfolio#3
+  posting: airbnb-8031901
+  persona: real-portfolio
+  repo: jakevdp/PythonDataScienceHandbook
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''PythonDataScienceHandbook'' description=''Python Data Science Handbook: full text
+    in Jupyter Notebooks'' skills=Jupyter, Matplotlib, NumPy, Pandas, Scikit-learn, SciPy, Seaborn, Python,
+    Data Science, Machine Learning, IPython'
+  bullet: Conducted data analysis using Jupyter notebooks.
+  passed_filter: true
+- id: airbnb-8031901/real-portfolio#4
+  posting: airbnb-8031901
+  persona: real-portfolio
+  repo: pgvector/pgvector
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='pgvector' description='Open-source vector similarity search for Postgres' skills=PostgreSQL,
+    C, Vector Search
+  bullet: Implemented vector similarity search capabilities using PostgreSQL.
+  passed_filter: true
+- id: discord-8840756002/real-portfolio#0
+  posting: discord-8840756002
+  persona: real-portfolio
+  repo: dbt-labs/dbt-utils
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='dbt-utils' description='Utility functions for dbt projects.' skills=dbt, SQL, Data Modeling,
+    Data Quality Testing
+  bullet: Built and maintained utility functions for dbt projects to support data modeling and quality
+    testing.
+  passed_filter: true
+- id: discord-8840756002/real-portfolio#1
+  posting: discord-8840756002
+  persona: real-portfolio
+  repo: dbt-labs/dbt-utils
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='dbt-utils' description='Utility functions for dbt projects.' skills=dbt, SQL, Data Modeling,
+    Data Quality Testing
+  bullet: Leveraged SQL and data modeling best practices to improve analytics workflows.
+  passed_filter: true
+- id: discord-8840756002/real-portfolio#2
+  posting: discord-8840756002
+  persona: real-portfolio
+  repo: jakevdp/PythonDataScienceHandbook
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''PythonDataScienceHandbook'' description=''Python Data Science Handbook: full text
+    in Jupyter Notebooks'' skills=Jupyter, Matplotlib, NumPy, Pandas, Scikit-learn, SciPy, Seaborn, Python,
+    Data Science, Machine Learning, IPython'
+  bullet: Applied Python, Pandas, NumPy, and Scikit-learn for exploratory data science and machine learning
+    workflows.
+  passed_filter: true
+- id: discord-8840756002/real-portfolio#3
+  posting: discord-8840756002
+  persona: real-portfolio
+  repo: jakevdp/PythonDataScienceHandbook
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: 'name=''PythonDataScienceHandbook'' description=''Python Data Science Handbook: full text
+    in Jupyter Notebooks'' skills=Jupyter, Matplotlib, NumPy, Pandas, Scikit-learn, SciPy, Seaborn, Python,
+    Data Science, Machine Learning, IPython'
+  bullet: Utilized Jupyter notebooks for data analysis and visualization.
+  passed_filter: true
+- id: stripe-5416444/real-portfolio#0
+  posting: stripe-5416444
+  persona: real-portfolio
+  repo: dbt-labs/dbt-utils
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='dbt-utils' description='Utility functions for dbt projects.' skills=dbt, SQL, Data Modeling,
+    Data Quality Testing
+  bullet: Provided utility functions for dbt projects using SQL and data modeling.
+  passed_filter: true
+- id: stripe-5416444/real-portfolio#1
+  posting: stripe-5416444
+  persona: real-portfolio
+  repo: dbt-labs/dbt-utils
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='dbt-utils' description='Utility functions for dbt projects.' skills=dbt, SQL, Data Modeling,
+    Data Quality Testing
+  bullet: Ensured data quality and reliability through structured testing.
+  passed_filter: true
+- id: stripe-5416444/real-portfolio#2
+  posting: stripe-5416444
+  persona: real-portfolio
+  repo: fastapi/sqlmodel
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sqlmodel' description='SQL databases in Python, designed for simplicity, compatibility,
+    and robustness.' skills=Pydantic, SQLAlchemy, Python, SQL, FastAPI, ORM
+  bullet: Designed and implemented Python solutions interacting with SQL databases.
+  passed_filter: true
+- id: stripe-5416444/real-portfolio#3
+  posting: stripe-5416444
+  persona: real-portfolio
+  repo: fastapi/sqlmodel
+  split: test
+  model: gemini/gemini-flash-lite-latest
+  evidence: name='sqlmodel' description='SQL databases in Python, designed for simplicity, compatibility,
+    and robustness.' skills=Pydantic, SQLAlchemy, Python, SQL, FastAPI, ORM
+  bullet: Utilized SQLAlchemy and Pydantic for robust data handling.
+  passed_filter: true

@@ -697,7 +697,7 @@ def test_edit_adopts_plain_upload_then_applies_edit(tmp_path, monkeypatch):
     fake_edited = {**fake_seeded, "summary": "Now emphasizes Python and APIs."}
     monkeypatch.setattr(
         "app.api.resume.edit_resume_content",
-        lambda account_id, job_text, current, message, template: (
+        lambda account_id, job_text, current, message, template, retrieval_query=None: (
             edit_calls.append((current, message)),
             fake_edited,
         )[1],

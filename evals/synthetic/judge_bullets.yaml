@@ -1,0 +1,114 @@
+# Hand-labeled resume bullets for validating the groundedness judge
+# (app/evals/groundedness.py). Each bullet names a synthetic persona and one
+# of its repos; the judge is shown that repo's evidence exactly as the
+# resume writer would be (name, description, skills, see
+# format_project_evidence), never the README.
+#
+# `grounded` is the human label. `kind` says how an ungrounded bullet was
+# made, so judge errors can be broken down by failure type:
+#   faithful          restates the evidence, should pass
+#   paraphrase        same facts, different words, should pass
+#   wrong_tech        names a technology the evidence does not show
+#   invented_metric   adds a number the evidence does not state
+#   invented_feature  claims functionality the evidence does not describe
+#   inflated_scope    turns a personal project into production or team scale
+
+- {persona: backend-senior-us, repo: ledger-sync, grounded: true, kind: faithful,
+   bullet: "Built a double-entry ledger service in FastAPI and PostgreSQL with idempotent posting and reconciliation."}
+- {persona: backend-senior-us, repo: ledger-sync, grounded: true, kind: paraphrase,
+   bullet: "Wrote a Python accounting ledger that reconciles balances and safely ignores duplicate posting requests."}
+- {persona: backend-senior-us, repo: ledger-sync, grounded: false, kind: wrong_tech,
+   bullet: "Built a double-entry ledger service in Spring Boot backed by Oracle."}
+- {persona: backend-senior-us, repo: ledger-sync, grounded: false, kind: inflated_scope,
+   bullet: "Ledger platform processing 9 billion dollars a year for 4,000 enterprise banks."}
+- {persona: backend-senior-us, repo: ratelimit-go, grounded: true, kind: faithful,
+   bullet: "Implemented a Redis-backed token bucket rate limiter in Go exposed over gRPC."}
+- {persona: backend-senior-us, repo: ratelimit-go, grounded: false, kind: invented_feature,
+   bullet: "Implemented a Go rate limiter with a machine learning model that predicts abusive clients."}
+- {persona: backend-senior-us, repo: pg-audit-trail, grounded: true, kind: paraphrase,
+   bullet: "Added trigger-based change history to PostgreSQL tables using PL/pgSQL."}
+- {persona: backend-senior-us, repo: pg-audit-trail, grounded: false, kind: invented_metric,
+   bullet: "Added trigger-based audit history to PostgreSQL, cutting compliance review time by 70 percent."}
+
+- {persona: frontend-mid-eu, repo: shelf-ui, grounded: true, kind: faithful,
+   bullet: "Created an accessible React component library in TypeScript, documented in Storybook."}
+- {persona: frontend-mid-eu, repo: shelf-ui, grounded: false, kind: wrong_tech,
+   bullet: "Created an accessible Angular component library documented in Storybook."}
+- {persona: frontend-mid-eu, repo: shelf-ui, grounded: false, kind: inflated_scope,
+   bullet: "Shipped the design system used by 200 engineers across a Fortune 500 company."}
+- {persona: frontend-mid-eu, repo: route-planner, grounded: true, kind: paraphrase,
+   bullet: "Built a Next.js bike route planner with a map view and TanStack Query data fetching."}
+- {persona: frontend-mid-eu, repo: route-planner, grounded: false, kind: invented_feature,
+   bullet: "Built a Next.js route planner with turn-by-turn voice navigation and offline maps."}
+
+- {persona: data-scientist-in, repo: churn-model, grounded: true, kind: faithful,
+   bullet: "Predicted telecom churn with gradient boosting and explained predictions with SHAP."}
+- {persona: data-scientist-in, repo: churn-model, grounded: true, kind: paraphrase,
+   bullet: "Trained LightGBM and XGBoost churn models tuned with Optuna, with SHAP explanations."}
+- {persona: data-scientist-in, repo: churn-model, grounded: false, kind: invented_metric,
+   bullet: "Predicted telecom churn with gradient boosting, saving the client 3 million dollars in retention spend."}
+- {persona: data-scientist-in, repo: churn-model, grounded: false, kind: wrong_tech,
+   bullet: "Predicted telecom churn with a transformer model fine-tuned in TensorFlow."}
+- {persona: data-scientist-in, repo: demand-forecast, grounded: true, kind: faithful,
+   bullet: "Forecast weekly SKU demand with hierarchical reconciliation, served in a Streamlit dashboard."}
+- {persona: data-scientist-in, repo: demand-forecast, grounded: false, kind: inflated_scope,
+   bullet: "Deployed the demand forecast to 1,200 stores, now the retailer's official replenishment system."}
+
+- {persona: ml-research-phd, repo: sparse-retriever, grounded: true, kind: faithful,
+   bullet: "Released the training and evaluation code for a learned sparse retrieval model with a BERT encoder."}
+- {persona: ml-research-phd, repo: sparse-retriever, grounded: false, kind: invented_metric,
+   bullet: "Released a learned sparse retriever that beats every dense model by 15 nDCG points."}
+- {persona: ml-research-phd, repo: rag-eval-kit, grounded: true, kind: paraphrase,
+   bullet: "Wrote a library for evaluating retrieval augmented generation pipelines, using Qdrant for vector search."}
+- {persona: ml-research-phd, repo: rag-eval-kit, grounded: false, kind: invented_feature,
+   bullet: "Wrote a RAG evaluation library with a hosted dashboard and team billing."}
+
+- {persona: devops-sre-uk, repo: tf-aws-baseline, grounded: true, kind: faithful,
+   bullet: "Wrote Terraform modules for an AWS landing zone covering VPC, IAM and GuardDuty."}
+- {persona: devops-sre-uk, repo: tf-aws-baseline, grounded: false, kind: wrong_tech,
+   bullet: "Wrote Pulumi programs for an Azure landing zone."}
+- {persona: devops-sre-uk, repo: k8s-slo-exporter, grounded: true, kind: paraphrase,
+   bullet: "Built a Prometheus exporter in Go that computes SLO burn rates from Kubernetes ingress logs."}
+- {persona: devops-sre-uk, repo: k8s-slo-exporter, grounded: false, kind: inflated_scope,
+   bullet: "Built the SLO exporter adopted as the CNCF standard for burn rate alerting."}
+- {persona: devops-sre-uk, repo: ansible-hardening, grounded: true, kind: faithful,
+   bullet: "Automated CIS hardening of Ubuntu servers with Ansible roles."}
+
+- {persona: mobile-dev-ca, repo: habit-tracker-ios, grounded: true, kind: faithful,
+   bullet: "Built a SwiftUI habit tracker with home screen widgets and iCloud sync."}
+- {persona: mobile-dev-ca, repo: habit-tracker-ios, grounded: false, kind: invented_metric,
+   bullet: "Built a SwiftUI habit tracker with 250,000 downloads and a 4.9 star rating."}
+- {persona: mobile-dev-ca, repo: transit-android, grounded: true, kind: paraphrase,
+   bullet: "Wrote an Android app in Jetpack Compose that shows real time bus arrivals."}
+- {persona: mobile-dev-ca, repo: transit-android, grounded: false, kind: wrong_tech,
+   bullet: "Wrote a Flutter app that shows real time bus arrivals."}
+
+- {persona: new-grad-student, repo: campus-eats, grounded: true, kind: faithful,
+   bullet: "Built a hackathon app that matches students with leftover dining hall food using React and MongoDB."}
+- {persona: new-grad-student, repo: campus-eats, grounded: false, kind: inflated_scope,
+   bullet: "Founded a food rescue startup serving 30 universities."}
+- {persona: new-grad-student, repo: tiny-raft, grounded: true, kind: paraphrase,
+   bullet: "Implemented the Raft consensus algorithm in Go for a distributed systems course."}
+- {persona: new-grad-student, repo: tiny-raft, grounded: false, kind: invented_feature,
+   bullet: "Implemented Raft in Go with Byzantine fault tolerance and a web admin console."}
+
+- {persona: career-changer-analyst, repo: school-attendance, grounded: true, kind: faithful,
+   bullet: "Analysed attendance and test scores across a school district."}
+- {persona: career-changer-analyst, repo: school-attendance, grounded: false, kind: invented_metric,
+   bullet: "Analysed district attendance data and found a 22 percent score gap that led to a policy change."}
+
+- {persona: embedded-firmware-jp, repo: rtos-sensor-hub, grounded: true, kind: faithful,
+   bullet: "Wrote FreeRTOS firmware for an STM32 sensor hub that streams data over BLE."}
+- {persona: embedded-firmware-jp, repo: rtos-sensor-hub, grounded: false, kind: wrong_tech,
+   bullet: "Wrote Zephyr firmware for a Nordic nRF52 sensor hub."}
+- {persona: embedded-firmware-jp, repo: embassy-motor, grounded: true, kind: paraphrase,
+   bullet: "Built an async brushless motor controller in embedded Rust."}
+- {persona: embedded-firmware-jp, repo: can-logger, grounded: false, kind: inflated_scope,
+   bullet: "Built the CAN logger fitted to every vehicle in a 10,000 truck fleet."}
+
+- {persona: eng-manager-staff, repo: eng-ladder, grounded: true, kind: faithful,
+   bullet: "Published an open engineering career ladder with examples for each level."}
+- {persona: eng-manager-staff, repo: oncall-calc, grounded: true, kind: paraphrase,
+   bullet: "Wrote a Python tool that estimates on-call load from PagerDuty exports."}
+- {persona: eng-manager-staff, repo: oncall-calc, grounded: false, kind: invented_metric,
+   bullet: "Wrote an on-call analysis tool that reduced pages by 60 percent across 30 teams."}

@@ -902,6 +902,50 @@ def test_a_suspended_key_is_marked_blocked_not_just_invalid(tmp_path, monkeypatc
     assert _key_status(key_id) == "blocked"
 
 
+def test_a_shut_off_project_reported_as_a_bad_request_is_marked_blocked(tmp_path, monkeypatch):
+    """litellm passes Gemini's 403 "project has been denied access" on as a
+    BadRequestError. It is about the key, so the key is marked blocked
+    (and the next one tried) instead of the request failing outright."""
+    import litellm
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def denied(**kwargs):
+        raise litellm.BadRequestError(
+            message='{"error": {"code": 403, "message": "Your project has been denied access. '
+            'Please contact support.", "status": "PERMISSION_DENIED"}}',
+            llm_provider="openai",
+            model="gpt-4o-mini",
+        )
+
+    monkeypatch.setattr("litellm.completion", denied, raising=False)
+
+    with pytest.raises(LLMProviderError, match="has blocked this key"):
+        complete("bulk", [user_message("hi")])
+
+    assert _key_status(key_id) == "blocked"
+
+
+def test_an_ordinary_bad_request_leaves_the_key_alone(tmp_path, monkeypatch):
+    import litellm
+
+    _real_dispatch_env(tmp_path, monkeypatch)
+    key_id = _add_openai_key()
+
+    def bad(**kwargs):
+        raise litellm.BadRequestError(
+            message="Invalid value for 'temperature'", llm_provider="openai", model="gpt-4o-mini"
+        )
+
+    monkeypatch.setattr("litellm.completion", bad, raising=False)
+
+    with pytest.raises(LLMProviderError, match="couldn't process this request"):
+        complete("bulk", [user_message("hi")])
+
+    assert _key_status(key_id) == "valid"
+
+
 def test_a_model_this_key_may_not_use_leaves_the_key_alone(tmp_path, monkeypatch):
     """The other side of the same error class: the key is healthy, it just
     isn't allowed near that model, so its status must not be touched."""
@@ -1325,3 +1369,21 @@ def test_is_out_of_keys_tells_batches_when_to_stop(tmp_path, monkeypatch):
     assert not is_out_of_keys(LLMUnavailableError("provider down"))
     assert not is_out_of_keys(LLMDispatchError("something else"))
     assert not is_out_of_keys(ValueError("not an LLM problem at all"))
+
+
+def test_every_call_carries_a_request_timeout(tmp_path, monkeypatch):
+    """litellm's own default is 6000 s; a hung connection must not hold a
+    call that long before the transient-error retries can run."""
+    from app.core.llm import _REQUEST_TIMEOUT_S
+
+    _reset_db(tmp_path)
+    monkeypatch.setattr("litellm.completion_cost", lambda completion_response: 0.0, raising=False)
+    calls: list = []
+    complete(
+        "bulk",
+        [{"role": "user", "content": "hello"}],
+        _completion_fn=_fake_completion_fn("hi", calls=calls),
+    )
+
+    assert calls[0]["timeout"] == _REQUEST_TIMEOUT_S
+    assert _REQUEST_TIMEOUT_S <= 300

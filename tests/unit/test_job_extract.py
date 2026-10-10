@@ -2,7 +2,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from app.profile.job_extract import JobExtractionError, extract_job_posting
+from app.profile.job_extract import (
+    JobExtractionError,
+    extract_job_posting,
+    stated_employment_type,
+)
 
 
 def test_extracts_structured_fields(monkeypatch):
@@ -100,3 +104,35 @@ def test_parse_skills_required_collapses_duplicates():
         {"skill": "Python", "level": "senior"},
         {"skill": "SQL", "level": "mid"},
     ]
+
+
+@pytest.mark.parametrize(
+    "value, text, kept",
+    [
+        ("Full-time", "Full-time, permanent role.", "Full-time"),
+        ("Full-time", "This is a full time position.", "Full-time"),
+        ("Full-time", "Backend role, remote. 5+ years.", ""),
+        ("Internship", "Analytics Intern (6 months)", "Internship"),
+        ("Internship", "Firmware Engineer Co-Op", "Internship"),
+        ("Contract", "CONTRACT: Vue.js developer, 6 months", "Contract"),
+        ("Part-time", "GBP 18.50 per hour, part-time (24 hrs/week)", "Part-time"),
+        ("Freelance", "Looking for a freelancer to fix our site", "Freelance"),
+        ("", "Full-time role", ""),
+        ("Seasonal", "Summer seasonal work", "Seasonal"),
+    ],
+)
+def test_stated_employment_type(value, text, kept):
+    assert stated_employment_type(value, text) == kept
+
+
+def test_extraction_drops_an_employment_type_the_posting_never_states(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.profile.job_extract import extract_job_posting
+
+    monkeypatch.setattr(
+        "app.profile.job_extract.complete",
+        lambda *a, **k: SimpleNamespace(parsed={"employment_type": "Full-time"}),
+    )
+    assert extract_job_posting("Backend engineer, remote.").employment_type == ""
+    assert extract_job_posting("Backend engineer, full-time.").employment_type == "Full-time"

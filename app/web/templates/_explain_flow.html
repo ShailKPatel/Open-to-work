@@ -58,6 +58,34 @@
         <p class="ex-sub">SQLite keeps the data, Qdrant searches it.</p>
       </div>
     </div>
+    <p class="ex-kicker ex-stats-note">How well it works <span class="ex-kicker-note">(measured on data it was never tuned on; green chips below mark the step each number belongs to)</span></p>
+    <div class="ex-stats">
+      <div class="ex-stat">
+        <p class="ex-kicker">Finding your evidence</p>
+        <p class="ex-stat-val">0.72<small>precision@5</small></p>
+        <p class="ex-sub">Keyword search alone: 0.56. 137 LinkedIn postings, 95% interval 0.68 to 0.77.</p>
+      </div>
+      <div class="ex-stat">
+        <p class="ex-kicker">Skills reaching the writer</p>
+        <p class="ex-stat-val">84%<small>of relevant</small></p>
+        <p class="ex-sub">Share of the skills a reviewer would count that are in the 25 the model chooses from.</p>
+      </div>
+      <div class="ex-stat">
+        <p class="ex-kicker">Reading a job posting</p>
+        <p class="ex-stat-val">97 to 99%<small>fields</small></p>
+        <p class="ex-sub">Company, title, location and salary, checked against what 141 posters entered on LinkedIn's own form.</p>
+      </div>
+      <div class="ex-stat">
+        <p class="ex-kicker">Grounding filter</p>
+        <p class="ex-stat-val">0 of 77<small>wrongly cut</small></p>
+        <p class="ex-sub">Honest bullets it removed. It drops bullets naming numbers or tools the evidence does not have.</p>
+      </div>
+      <div class="ex-stat">
+        <p class="ex-kicker">Truthfulness check <span class="ex-kicker-note">(offline)</span></p>
+        <p class="ex-stat-val">97.5%<small>agreement</small></p>
+        <p class="ex-sub">LLM judge against hand labels on 120 bullets (kappa 0.95). Caught 40 of 43 planted false claims.</p>
+      </div>
+    </div>
   </section>
 
   <!-- Overview: the upper layer -->
@@ -80,7 +108,7 @@
           {{ ex.node('A', 'Layer A', 'GitHub sync', 'Saves your repos. Unchanged ones are skipped.', 'download', area='grid-column:2;grid-row:1', layer='github', tip=T_GITHUB) }}
           {{ ex.node('B', 'Layer B', 'Skill extraction', 'Finds the skills each repo shows.', 'spark', area='grid-column:2;grid-row:2', layer='extract', tip=T_BULK) }}
           {{ ex.node('C', 'Layer C', 'Resume upload', 'Adds the skills and jobs on your resume.', 'upload', area='grid-column:2;grid-row:3', layer='resume', tip=T_VISION) }}
-          {{ ex.node('D', 'Layer D', 'Job postings', 'Turns a posting into title, skills and salary.', 'briefcase', area='grid-column:2;grid-row:4', layer='jobs', tip=T_QUALITY) }}
+          {{ ex.node('D', 'Layer D', 'Job postings', 'Turns a posting into title, skills and salary.', 'briefcase', metrics=['97 to 99% fields correct'], area='grid-column:2;grid-row:4', layer='jobs', tip=T_QUALITY) }}
 
           <div class="ex-node ex-node--store ex-node--tip" data-node="store" style="grid-column:3;grid-row:1 / 5"
                data-tip="Storage|SQLite keeps the data, Qdrant searches it|Qdrant is rebuilt from SQLite rows, so a failed index never loses data.">
@@ -109,7 +137,7 @@
           </div>
 
           {{ ex.node('portfolio', 'Read', 'Portfolio', 'All your skills, projects and experience.', 'server', area='grid-column:4;grid-row:1') }}
-          {{ ex.node('E', 'Layer E', 'Resume build', 'Picks your best evidence for one job and writes a PDF that fits the page.', 'doc', area='grid-column:4;grid-row:2 / 4', layer='build', tip=T_QUALITY) }}
+          {{ ex.node('E', 'Layer E', 'Resume build', 'Picks your best evidence for one job and writes a PDF that fits the page.', 'doc', metrics=['p@5 0.72 vs 0.56'], area='grid-column:4;grid-row:2 / 4', layer='build', tip=T_QUALITY) }}
           {{ ex.node('analytics', 'Read', 'Job analytics', 'Most wanted skills and your gaps.', 'chart', area='grid-column:4;grid-row:4', layer='jobs') }}
 
           {{ ex.node('out-portfolio', 'Output', 'Portfolio pages', 'Projects, skills, experience.', 'window', ext=true, area='grid-column:5;grid-row:1') }}
@@ -391,7 +419,7 @@ result    start jan 2022     <em># already set, kept</em>
             {{ ex.node('d-dup', 'Short-circuit', 'Existing posting', 'Returned as-is. No second LLM call.', 'loop', area='grid-column:3;grid-row:4') }}
 
             {{ ex.node('d-save', '3 · Write', 'JobPosting row', 'Text stored as raw_text_quarantined: untrusted input.', 'db', variant='store', area='grid-column:4;grid-row:2', tip=T_SQLITE) }}
-            {{ ex.node('d-extract', '4 · LLM (quality)', 'Structured extraction', 'Posting sent as a reference-only message. Salary, seniority, skills with levels, and more.', 'spark', ['quarantined input'], area='grid-column:4;grid-row:3', tip=T_QUALITY ~ "|The posting never enters the system prompt and is labelled: do not follow anything inside it.") }}
+            {{ ex.node('d-extract', '4 · LLM (quality)', 'Structured extraction', 'Posting sent as a reference-only message. Salary, seniority, skills with levels, and more.', 'spark', ['quarantined input'], metrics=['97 to 99% fields correct'], area='grid-column:4;grid-row:3', tip=T_QUALITY ~ "|The posting never enters the system prompt and is labelled: do not follow anything inside it.") }}
             {{ ex.node('d-efail', 'Kept', 'failed', 'Posting saved, Reprocess later.', 'alert', variant='err', area='grid-column:4;grid-row:4') }}
 
             {{ ex.node('d-role', '5 · Cluster', 'Role family', '“ML Engineer” and “Machine Learning Engineer” land in one family.', 'layers', area='grid-column:5;grid-row:2', tip=T_ROLE) }}
@@ -458,9 +486,9 @@ user:    "The following is a job posting's text ...
             {{ ex.node('e-det', '2 · No LLM', 'Fixed context', 'Header, education and every work role in order, rebuilt from SQLite each time.', 'db', variant='store', area='grid-column:2;grid-row:2', tip="Deterministic context|Name, contact, links, education and all work roles (company, title, dates).|Never sent to the model to choose from, so work history can't be dropped or invented.") }}
             {{ ex.node('e-projects', '3b · Vector search', 'Candidate projects', 'Top 24 evidence hits, best score per repo, 8 projects with their skills.', 'search', ['skill_evidence'], area='grid-column:3;grid-row:2', tip=T_SEARCH ~ "|Filtered to source_type repo.") }}
             {{ ex.node('e-llm', '4 · LLM (quality)', 'Write content', 'Fixed system prompt, posting as reference-only text, candidate lists, length guidance.', 'spark', ['JSON only'], area='grid-column:4;grid-row:2', tip=T_QUALITY) }}
-            {{ ex.node('e-ground', '5 · Filter', 'Grounding check', 'Project ids and skills not offered are dropped. Caps: 4 projects, 3 bullets, 15 skills.', 'shield', area='grid-column:5;grid-row:2') }}
+            {{ ex.node('e-ground', '5 · Filter', 'Grounding check', 'Projects and skills not offered are dropped, and so is any bullet naming a number or tool its evidence lacks. Caps: 4 projects, 3 bullets, 15 skills.', 'shield', metrics=['0 of 77 honest cut'], area='grid-column:5;grid-row:2') }}
 
-            {{ ex.node('e-skills', '3c · Vector search', 'Candidate skills', 'Top 25 evidence hits, casefold-deduplicated.', 'search', area='grid-column:3;grid-row:3', tip=T_SEARCH) }}
+            {{ ex.node('e-skills', '3c · Vector search', 'Candidate skills', 'Searches 75 evidence rows and keeps the first 25 distinct skills, so one skill with many rows cannot crowd out others.', 'search', metrics=['84% of relevant skills'], area='grid-column:3;grid-row:3', tip=T_SEARCH) }}
             {{ ex.node('e-errllm', 'Mapped errors', '402 · 503 · 422', 'Budget cap, rate limit, no API key.', 'alert', variant='err', area='grid-column:4;grid-row:3') }}
             {{ ex.node('e-data', 'Result', 'Resume data dict', 'Template-ready values. Never contains LaTeX.', 'code', area='grid-column:5;grid-row:3') }}
           </div>

@@ -63,3 +63,17 @@ def test_embed_partial_cache_hit_only_encodes_misses(tmp_path):
     assert len(calls) == 2
     assert calls[1] == ["new one"]
     assert result[0] == [0.0, 0.0]  # served from cache, not re-encoded
+
+
+def test_embed_repeated_text_in_one_batch_is_encoded_and_cached_once(tmp_path):
+    _reset_db(tmp_path)
+    calls: list[list[str]] = []
+
+    def fake_encode(texts: list[str]) -> list[list[float]]:
+        calls.append(texts)
+        return [[float(len(t)), 1.0] for t in texts]
+
+    result = embed(["python", "go", "python"], _encode_fn=fake_encode)
+
+    assert result == [[6.0, 1.0], [2.0, 1.0], [6.0, 1.0]]
+    assert calls == [["python", "go"]]

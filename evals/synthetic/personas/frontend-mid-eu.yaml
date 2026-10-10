@@ -1,0 +1,95 @@
+key: frontend-mid-eu
+account_id: 9102
+first_name: Lena
+last_name: Vogtmann
+github_username: demo-lvogtmann
+headline: Frontend Engineer
+location: Berlin, Germany
+email: lena.vogtmann@example.org
+phone: "+49 30 5550 1987"
+links:
+  - {platform: github, url: "https://github.com/demo-lvogtmann"}
+  - {platform: other, url: "https://lena-vogtmann.example.dev", label: Portfolio}
+resume_style: skills_first
+date_style: numeric
+covers: [mid, europe, frontend, react, typescript, accessibility, numeric-dates]
+
+repos:
+  - key: shelf-ui
+    name: shelf-ui
+    language: TypeScript
+    stars: 342
+    description: Accessible React component library with Storybook docs.
+    readme: |
+      # shelf-ui
+      A React and TypeScript component library built for WCAG 2.2 AA from the
+      start. Every component ships with Storybook stories, keyboard tests in
+      Playwright and visual snapshots. Styled with Tailwind CSS tokens.
+    manifests:
+      package.json: [react, react-dom, typescript, tailwindcss, "@playwright/test", vite]
+    readme_skills: [Storybook, Accessibility]
+  - key: route-planner
+    name: route-planner
+    language: TypeScript
+    stars: 57
+    description: Bike route planner on Next.js with a map view.
+    readme: |
+      # route-planner
+      Plan cycling routes with elevation profiles. Next.js app router, server
+      components for the route list, and a Mapbox GL map. State is kept in
+      TanStack Query with optimistic updates.
+    manifests:
+      package.json: [next, react, "@tanstack/react-query", typescript]
+    readme_skills: [Mapbox]
+  - key: css-houdini-demos
+    name: css-houdini-demos
+    language: JavaScript
+    stars: 19
+    description: Small demos of the CSS Paint API.
+    readme: |
+      # css-houdini-demos
+      Experiments with CSS Houdini paint worklets: animated borders, noise
+      backgrounds and a squircle mask. Plain JavaScript, no build step.
+    manifests: {}
+    readme_skills: [CSS, JavaScript]
+
+roles:
+  - key: marketplace
+    company: Kiezmarkt GmbH
+    title: Frontend Engineer
+    location: Berlin, Germany
+    start: apr 2022
+    end: null
+    skills: [React, TypeScript, Next.js, GraphQL, Accessibility]
+    points:
+      - text: Rebuilt the seller dashboard in Next.js and TypeScript, cutting largest contentful paint from 4.1s to 1.6s.
+        skills: [Next.js, TypeScript]
+      - text: Introduced an accessibility checklist and automated axe checks, bringing checkout to WCAG 2.2 AA.
+        skills: [Accessibility]
+      - text: Replaced REST polling with GraphQL subscriptions for live order status.
+        skills: [GraphQL]
+      - text: Built the shared design system used by three product teams, 60 components in Storybook.
+        skills: [React, Storybook]
+  - key: agency
+    company: Nordlicht Digital
+    title: Junior Frontend Developer
+    location: Hamburg, Germany
+    start: sep 2019
+    end: mar 2022
+    skills: [Vue.js, JavaScript, CSS, Jest]
+    points:
+      - text: Shipped 15 marketing sites in Vue.js with a shared component kit.
+        skills: [Vue.js]
+      - text: Raised unit test coverage of the kit from 20 to 85 percent with Jest.
+        skills: [Jest]
+      - text: Ported legacy jQuery widgets to native CSS and JavaScript, dropping 90KB from every page.
+        skills: [CSS, JavaScript]
+
+education:
+  - institution: Hochschule fur Technik und Wirtschaft Berlin
+    degree: B.Sc. Applied Computer Science
+    location: Berlin, Germany
+    start: oct 2016
+    end: aug 2019
+    grade: "Grade 1.7"
+    details: ["Thesis: Measuring perceived performance of single page applications"]

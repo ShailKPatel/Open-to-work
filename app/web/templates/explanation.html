@@ -377,6 +377,11 @@
     --ex-err: #c03a3a;
     --ex-err-line: rgba(214, 69, 69, 0.5);
     --ex-err-soft: #fdf3f3;
+    /* Measured results only: the one colour on the page that is not ink
+       or error, so a number from an eval is recognisable at a glance. */
+    --ex-ok: #1f7a4d;
+    --ex-ok-line: rgba(31, 122, 77, 0.45);
+    --ex-ok-soft: #f1f8f4;
   }
   body { background: var(--paper); }
   .otw-bg { display: none; }
@@ -731,6 +736,19 @@
   .ex-node--tip { cursor: help; }
   .ex-node--link.ex-node--tip { cursor: pointer; }
   .ex-chips .ex-chip-err { color: var(--ex-err); border-color: var(--ex-err-line); background: var(--ex-err-soft); }
+  .ex-chips .ex-chip-metric { color: var(--ex-ok); border-color: var(--ex-ok-line); background: var(--ex-ok-soft); font-weight: 500; white-space: normal; }
+
+  /* Measured results strip (Data flow tab, section 00) */
+  .ex-stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.8rem; margin-top: 0.8rem; }
+  @media (max-width: 1100px) { .ex-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 700px) { .ex-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 460px) { .ex-stats { grid-template-columns: minmax(0, 1fr); } }
+  .ex-stat { padding: 0.9rem 1rem 1rem; border: 1px solid var(--ex-ok-line); border-radius: 12px; background: var(--ex-ok-soft); }
+  .ex-stat .ex-kicker { color: var(--ex-ok); }
+  .ex-stat-val { margin-top: 0.35rem; font-family: 'Fraunces', Georgia, serif; font-size: 1.9rem; line-height: 1.05; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .ex-stat-val small { font-family: Inter, system-ui, sans-serif; font-size: 0.78rem; color: var(--ex-body); margin-left: 0.25rem; }
+  .ex-stat .ex-sub { margin-top: 0.4rem; }
+  .ex-stats-note { margin-top: 1.6rem; }
 
   /* Wire kinds */
   .ex-wire.ex-wire--err { stroke: var(--ex-err-line); stroke-dasharray: 5 5; marker-end: url(#ex-head-err); }

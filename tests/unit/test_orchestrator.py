@@ -1137,3 +1137,72 @@ def test_selected_skills_and_reserve_are_ordered_by_evidence_strength(tmp_path, 
     # Relevance order is api-server, then cool-project; cool-project's
     # evidence (0.95) is stronger than api-server's best (0.9).
     assert [p["name"] for p in data["reserve"]["projects"]] == ["cool-project", "api-server"]
+
+
+def test_build_searches_with_the_extracted_posting_not_its_raw_text(tmp_path, monkeypatch):
+    """The raw posting goes to the model; retrieval gets the extracted
+    title, summary and skills, since the embedding model would read only
+    the opening of a long raw posting."""
+    from app.resume_build.orchestrator import build_resume_data
+    from app.retrieval.search import Query
+
+    account_id, posting_id = _seed(tmp_path)
+    db = get_db()
+    posting = db.get(JobPosting, posting_id)
+    posting.extracted_json = {
+        "role_summary": "Builds Python APIs.",
+        "skills_required": [{"skill": "Python", "level": ""}, {"skill": "Go", "level": ""}],
+    }
+    db.commit()
+    db.close()
+
+    seen: list[object] = []
+
+    def _record(query, account_id, top_k=10, source_type=None, **kwargs):
+        seen.append(query)
+        return []
+
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", _record)
+    monkeypatch.setattr(
+        "app.retrieval.search.search_experience_points",
+        lambda query, *a, **k: seen.append(query) or [],
+    )
+    fake = MagicMock()
+    fake.parsed = {"summary": "s", "projects": [], "skills": []}
+    monkeypatch.setattr("app.resume_build.orchestrator.complete", MagicMock(return_value=fake))
+
+    build_resume_data(account_id, posting_id)
+
+    assert seen
+    for query in seen:
+        assert isinstance(query, Query)
+        assert query.skills == ("Python", "Go")
+        assert "We need a Python backend engineer." not in query.text
+
+
+def test_candidate_skills_fill_every_slot_when_skills_repeat(tmp_path, monkeypatch):
+    """Two evidence rows per skill: 25 rows would be only 13 skills, so the
+    search is asked for more rows and the list is cut at 25 distinct skills."""
+    from app.resume_build.orchestrator import _MAX_CANDIDATE_SKILLS, _candidate_skills
+    from app.retrieval.search import Hit
+
+    account_id, _ = _seed(tmp_path)
+    db = get_db()
+    rows = [
+        Hit(id=i, score=1.0 - i / 100, payload={"repo_id": 1, "skill": f"Skill {i // 2}"})
+        for i in range(80)
+    ]
+    asked: list[int] = []
+
+    def search(query_text, account_id, top_k=10, source_type=None):
+        asked.append(top_k)
+        return rows[:top_k]
+
+    monkeypatch.setattr("app.retrieval.search.search_skill_evidence", search)
+    monkeypatch.setattr("app.resume_build.orchestrator._live_hits", lambda db, hits: hits)
+
+    skills = _candidate_skills(db, account_id, "Python")
+    db.close()
+
+    assert asked[0] > _MAX_CANDIDATE_SKILLS
+    assert skills == [f"Skill {i}" for i in range(_MAX_CANDIDATE_SKILLS)]

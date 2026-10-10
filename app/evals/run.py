@@ -11,7 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from sqlalchemy import select
@@ -27,16 +27,27 @@ from app.core.db import (
 )
 from app.core.settings import get_settings
 from app.evals.bm25 import Bm25Corpus
-from app.evals.candidates import score_candidates
+from app.evals.candidates import candidate_scores
 from app.evals.golden import GoldenPair, load_golden_set
 from app.evals.groundedness import score_groundedness
-from app.evals.metrics import SystemScore, mean_system_score, precision_at_k, recall_at_k
+from app.evals.metrics import (
+    PairScore,
+    SystemScore,
+    mean_system_score,
+    paired_difference,
+    precision_at_k,
+    score_pair,
+)
 from app.retrieval.index import evidence_text, experience_evidence_point_id
-from app.retrieval.search import search_experience_points, search_skill_evidence
+from app.retrieval.search import (
+    Query,
+    SearchMode,
+    search_experience_points,
+    search_skill_evidence,
+)
 
 logger = logging.getLogger(__name__)
 
-_PRECISION_K = 5
 _RECALL_K = 10
 
 
@@ -46,9 +57,13 @@ class MetricsReport:
     account_id: int
     golden_set_size: int
     pairs_scored: int
+    # The app's retrieval as it runs (hybrid, app/retrieval/search.py), its
+    # dense run alone, and the keyword baseline. The single-vector dense
+    # search the hybrid replaced is `dense_single`, below.
+    retrieval: dict
     dense: dict
     bm25: dict
-    dense_beats_bm25: bool | None
+    retrieval_beats_bm25: bool | None
     precision_at_10: float | None
     groundedness: float | None
     groundedness_checked: int
@@ -58,8 +73,18 @@ class MetricsReport:
     notes: list[str]
     # What the resume builder hands the model, scored against the same
     # pairs (app/evals/candidates.py): {"skills": ..., "projects": ...},
-    # each shaped like `dense`.
+    # each shaped like `retrieval`.
     candidates: dict = field(default_factory=dict)
+    # Paired differences per metric over the same pairs, keyed
+    # "retrieval - bm25" and "retrieval - dense", each metric
+    # {"mean": ..., "ci95": [low, high]}: an interval spanning zero means
+    # these pairs do not separate the two systems.
+    differences: dict = field(default_factory=dict)
+    # Every pair's scores per system, {"retrieval": [PairScore as dict, ...]},
+    # in the same pair order for each system, so results across several
+    # profiles can be pooled and bootstrapped as one sample.
+    per_pair: dict = field(default_factory=dict)
+    dense_single: dict = field(default_factory=dict)
 
 
 def _corpus_for(collection: str, account_id: int) -> list[tuple[int, str]]:
@@ -114,14 +139,17 @@ def _corpus_for(collection: str, account_id: int) -> list[tuple[int, str]]:
         db.close()
 
 
-def _dense_hits(pair: GoldenPair, account_id: int) -> list[int] | None:
+def _search_hits(pair: GoldenPair, account_id: int, mode: SearchMode) -> list[int]:
+    """The ranked ids the app's search returns for a pair. A golden query
+    is posting text in job_posting_text's shape, so its "Skills:" line
+    becomes the query's skills, the same ones the app reads from an
+    extracted posting (search.py's query_for_posting)."""
+    query = replace(Query.from_posting_text(pair.query_text), posting_text=pair.posting_text)
     if pair.collection == "skill_evidence":
-        return [h.id for h in search_skill_evidence(pair.query_text, account_id, top_k=_RECALL_K)]
-    if pair.collection == "experience_points":
-        return [
-            h.id for h in search_experience_points(pair.query_text, account_id, top_k=_RECALL_K)
-        ]
-    return None
+        hits = search_skill_evidence(query, account_id, top_k=_RECALL_K, mode=mode)
+    else:
+        hits = search_experience_points(query, account_id, top_k=_RECALL_K, mode=mode)
+    return [h.id for h in hits]
 
 
 def _cost_and_latency_since(account_id: int, since: dt.datetime) -> tuple[float, float, int]:
@@ -159,8 +187,11 @@ def run_eval(
     pairs = [p for p in all_pairs if p.account_id == account_id]
 
     notes: list[str] = []
-    dense_points: list[tuple[float, float]] = []
-    bm25_points: list[tuple[float, float]] = []
+    partial_pairs: list[str] = []
+    retrieval_points: list[PairScore] = []
+    dense_points: list[PairScore] = []
+    dense_single_points: list[PairScore] = []
+    bm25_points: list[PairScore] = []
     precision_at_10_points: list[float] = []
     corpora: dict[str, Bm25Corpus] = {}
 
@@ -172,39 +203,63 @@ def run_eval(
         if pair.collection not in ("skill_evidence", "experience_points"):
             notes.append(f"pair {pair.id!r} has unknown collection {pair.collection!r}, skipped")
             continue
+        if pair.partial:
+            # Excluded rather than scored: in a partly judged pair the
+            # candidates nobody ruled on are indistinguishable from ones ruled
+            # irrelevant, so precision is biased down by an unknown amount and
+            # recall counts relevant evidence that was never offered a label.
+            partial_pairs.append(pair.id)
+            continue
 
-        dense_hits = _dense_hits(pair, account_id) or []
+        retrieval_hits = _search_hits(pair, account_id, "hybrid")
+        dense_hits = _search_hits(pair, account_id, "dense")
+        dense_single_hits = _search_hits(pair, account_id, "dense-single")
         if pair.collection not in corpora:
             corpora[pair.collection] = Bm25Corpus(_corpus_for(pair.collection, account_id))
         bm25_hits = corpora[pair.collection].top_k(pair.query_text, _RECALL_K)
 
-        dense_points.append(
-            (
-                precision_at_k(dense_hits, relevant, _PRECISION_K),
-                recall_at_k(dense_hits, relevant, _RECALL_K),
-            )
-        )
-        bm25_points.append(
-            (
-                precision_at_k(bm25_hits, relevant, _PRECISION_K),
-                recall_at_k(bm25_hits, relevant, _RECALL_K),
-            )
-        )
+        retrieval_points.append(score_pair(retrieval_hits, relevant))
+        dense_points.append(score_pair(dense_hits, relevant))
+        dense_single_points.append(score_pair(dense_single_hits, relevant))
+        bm25_points.append(score_pair(bm25_hits, relevant))
         # Plain precision@10: precision over the full retrieved window a
         # downstream generation step would actually be handed (top-10,
         # not the ranking-quality top-5), scored against real hand-labeled
         # ground truth. Not the rank-weighted RAGAS "context precision".
-        precision_at_10_points.append(precision_at_k(dense_hits, relevant, _RECALL_K))
+        precision_at_10_points.append(precision_at_k(retrieval_hits, relevant, _RECALL_K))
 
+    retrieval_result: SystemScore = mean_system_score(retrieval_points)
     dense_result: SystemScore = mean_system_score(dense_points)
     bm25_result: SystemScore = mean_system_score(bm25_points)
-    scored = dense_result.pairs_scored
+    scored = retrieval_result.pairs_scored
 
-    dense_beats_bm25 = None
+    retrieval_beats_bm25 = None
     if scored > 0:
-        dense_beats_bm25 = (
-            dense_result.precision_at_5 >= bm25_result.precision_at_5
-            and dense_result.recall_at_10 >= bm25_result.recall_at_10
+        retrieval_beats_bm25 = (
+            retrieval_result.precision_at_5 >= bm25_result.precision_at_5
+            and retrieval_result.recall_at_10 >= bm25_result.recall_at_10
+        )
+
+    differences: dict[str, dict[str, dict]] = {}
+    if scored > 1:
+        references = (("retrieval - bm25", bm25_points), ("retrieval - dense", dense_points))
+        for label, other in references:
+            differences[label] = {}
+            for metric in ("precision_at_5", "recall_at_10", "ndcg_at_10"):
+                mean, interval = paired_difference(
+                    [getattr(p, metric) for p in retrieval_points],
+                    [getattr(p, metric) for p in other],
+                )
+                differences[label][metric] = {
+                    "mean": mean,
+                    "ci95": list(interval) if interval is not None else None,
+                }
+
+    if partial_pairs:
+        notes.append(
+            f"{len(partial_pairs)} partly judged pair(s) excluded "
+            f"({', '.join(sorted(partial_pairs))}); finish labeling them with "
+            "scripts/label_golden_set.py and they rejoin the scores"
         )
 
     if scored == 0:
@@ -237,15 +292,18 @@ def run_eval(
         notes.append("groundedness check skipped (include_groundedness=False)")
 
     cost_usd, latency_ms_avg, llm_calls = _cost_and_latency_since(account_id, run_started_at)
+    candidate_points = candidate_scores(account_id, pairs)
 
     return MetricsReport(
         generated_at=dt.datetime.now(dt.UTC).isoformat(),
         account_id=account_id,
         golden_set_size=len(pairs),
         pairs_scored=scored,
+        retrieval=asdict(retrieval_result),
         dense=asdict(dense_result),
+        dense_single=asdict(mean_system_score(dense_single_points)),
         bm25=asdict(bm25_result),
-        dense_beats_bm25=dense_beats_bm25,
+        retrieval_beats_bm25=retrieval_beats_bm25,
         precision_at_10=precision_at_10,
         groundedness=groundedness_score,
         groundedness_checked=groundedness_checked,
@@ -253,8 +311,16 @@ def run_eval(
         latency_ms_avg=latency_ms_avg,
         llm_calls=llm_calls,
         notes=notes,
+        differences=differences,
+        per_pair={
+            "retrieval": [asdict(p) for p in retrieval_points],
+            "dense": [asdict(p) for p in dense_points],
+            "dense_single": [asdict(p) for p in dense_single_points],
+            "bm25": [asdict(p) for p in bm25_points],
+            "candidate_skills": [asdict(p) for p in candidate_points["skills"]],
+        },
         candidates={
-            name: asdict(score) for name, score in score_candidates(account_id, pairs).items()
+            name: asdict(mean_system_score(points)) for name, points in candidate_points.items()
         },
     )
 

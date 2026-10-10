@@ -16,6 +16,10 @@ from app.core.db import EmbeddingCache, get_db
 
 # Changing this invalidates every stored vector (and the Qdrant collection
 # sizes follow it), so it is a code constant rather than a user setting.
+# Six models were compared under the app's hybrid search
+# (evals/results/embedding-retrieval-20261008.md): all landed within about
+# 0.05 precision@5 of each other, and this one tied best on real text, so
+# no switch was worth re-embedding every stored vector.
 EMBEDDING_MODEL = "BAAI/bge-base-en-v1.5"
 
 
@@ -59,7 +63,11 @@ def embed(
         ).scalars().all()
         cache_by_hash = {row.content_hash: row.vector_json for row in cached_rows}
 
-        miss_indices = [i for i, h in enumerate(hashes) if h not in cache_by_hash]
+        # First occurrence of each uncached text only: a batch can repeat a
+        # text (two roles both claiming "Python"), and a second cache row
+        # for the same hash would violate the unique index.
+        first_index = {h: i for i, h in reversed(list(enumerate(hashes)))}
+        miss_indices = sorted(i for h, i in first_index.items() if h not in cache_by_hash)
         if miss_indices:
             miss_texts = [texts[i] for i in miss_indices]
             if _encode_fn is not None:
