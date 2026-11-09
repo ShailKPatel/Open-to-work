@@ -3,7 +3,7 @@
 [![CI](https://github.com/ShailKPatel/Open-to-work/actions/workflows/ci.yml/badge.svg)](https://github.com/ShailKPatel/Open-to-work/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-Open to Work turns your GitHub into resumes built for each job. Every skill on the page is backed by real work: a dependency file, a README, a role you held. It runs on your own machine.
+Open to Work turns your GitHub into resumes built for each job. Every skill on the page is backed by real work: a dependency file, a README, a role you held. Run it on your own machine, or host it as a sign-in demo.
 
 ## Why
 
@@ -31,6 +31,7 @@ A resume should prove what it claims. Here the model picks from your evidence an
 - Tailors to one posting with semantic search.
 - Builds LaTeX, one page or two.
 - Fits the page: tightens the layout first, then cuts one item at a time.
+- A LangGraph pipeline: a judge sends unsupported claims back to the writer for up to two rounds, then you approve the draft or send a plain instruction.
 - Revises from a plain instruction.
 - Keeps every version in a library.
 
@@ -97,12 +98,13 @@ Every model call goes through one client. It caches responses by content hash, c
 | Layer | Tools |
 | --- | --- |
 | Backend | Python 3.12, FastAPI, SQLAlchemy, SQLite |
+| Orchestration | LangGraph with a SQLite checkpointer, LangSmith tracing (optional) |
 | Retrieval | Qdrant, bge-base-en-v1.5 (local embeddings), rank-bm25 |
 | LLM | LiteLLM with Gemini, OpenAI, Anthropic, Mistral, Ollama, Azure OpenAI, AWS Bedrock |
 | Frontend | Jinja2, Tailwind CSS, Alpine.js |
 | Documents | Tectonic (LaTeX), pypdf |
 | Quality | pytest, Ruff, mypy, GitHub Actions |
-| Runtime | Docker Compose |
+| Runtime | Docker Compose; Azure VM (Bicep), Caddy, GHCR for the hosted demo |
 
 ## Configuration
 
@@ -121,9 +123,13 @@ One setting lives in a file, and it is optional: `GITHUB_TOKEN` in `.env` raises
 
 All data lives in `./data`: the SQLite database, uploads, backups, and the encryption key. Each startup snapshots the database and keeps the last 10.
 
+## Hosting
+
+`make start` is all a local install needs. To host a public demo with GitHub sign-in, per-user limits, HTTPS and deploys from GitHub Actions, see [docs/DEPLOY.md](docs/DEPLOY.md).
+
 ## Privacy
 
-Your data and embeddings stay on your machine. Your LLM provider sees only README and description text, job posting text and screenshots, uploaded resumes, and the profile content used to build a resume. The pages load nothing from a CDN except Google Fonts. Tailwind is compiled and the JS libraries are pinned, checksum-verified and served by the app.
+Run locally, your data and embeddings stay on your machine. On a hosted demo they are stored on that server, and `/welcome` says so before sign-in. Your LLM provider sees only README and description text, job posting text and screenshots, uploaded resumes, and the profile content used to build a resume. The pages load nothing from a CDN except Google Fonts. Tailwind is compiled and the JS libraries are pinned, checksum-verified and served by the app.
 
 ## Development
 
@@ -234,9 +240,11 @@ app/
   ingest/github/  GitHub client, sync, manifest parsing, cancellation
   profile/        skill extraction and weighting, resume and job extraction, injection detection
   retrieval/      Qdrant indexing, hybrid search (embeddings + BM25)
-  resume_build/   resume assembly, LaTeX templates, compilation, page fitting
+  resume_build/   LangGraph build, resume assembly, LaTeX templates, compilation, page fitting
   evals/          metrics, eval sets, groundedness judge, LLM and injection evals
   web/templates/  Jinja2 pages
+infra/azure/      Bicep and first-boot setup for the hosted demo
+deploy/           demo Compose stack, Caddy config, deploy scripts
 scripts/          eval runners, retrieval comparison, eval gate, labeling, maintenance
 evals/            synthetic and real-text eval sets, CI fixture and baseline, results
 tests/            unit and live suites

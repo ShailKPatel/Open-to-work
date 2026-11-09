@@ -3,7 +3,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.requests import Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +13,8 @@ from app.api.accounts import router as accounts_router
 from app.api.api_keys import router as api_keys_router
 from app.api.app_settings import router as app_settings_router
 from app.api.contact import router as contact_router
+from app.api.demo import demo_gate, require_valid_demo_settings
+from app.api.demo import router as demo_router
 from app.api.education import router as education_router
 from app.api.experience import router as experience_router
 from app.api.github_profile import router as github_profile_router
@@ -33,7 +35,9 @@ from app.core.app_settings import get_llm_settings
 from app.core.db import init_db
 from app.core.embeddings import EMBEDDING_MODEL
 from app.core.key_refresh import start_key_refresh
+from app.core.llm_providers import provider_of_model
 from app.core.settings import get_settings
+from app.core.tracing import configure_tracing
 from app.ingest.github import background as github_background
 from app.ingest.github.auto_sync import start_auto_sync
 from app.profile.resume_ingest import fail_interrupted_reads as fail_interrupted_resume_reads
@@ -41,6 +45,8 @@ from app.profile.resume_ingest import fail_interrupted_reads as fail_interrupted
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    require_valid_demo_settings(get_settings())
+    configure_tracing()
     init_db()
     # Job posting and resume reads run in memory, so one cut off by the restart would
     # otherwise show as in progress forever.
@@ -70,7 +76,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Open to Work", lifespan=_lifespan)
+app = FastAPI(title="Open to Work", lifespan=_lifespan, dependencies=[Depends(demo_gate)])
 # Host check, cross-site request check and security headers; see
 # app/api/security.py.
 app.add_middleware(SecurityMiddleware)
@@ -81,6 +87,7 @@ app.include_router(accounts_router)
 app.include_router(api_keys_router)
 app.include_router(app_settings_router)
 app.include_router(contact_router)
+app.include_router(demo_router)
 app.include_router(education_router)
 app.include_router(experience_router)
 app.include_router(github_profile_router)
@@ -140,6 +147,18 @@ for _path, _template in (
     app.add_api_route(_path, _page(_template), methods=["GET"], response_class=HTMLResponse)
 
 
+@app.get("/welcome", response_class=HTMLResponse)
+def welcome_page(request: Request) -> HTMLResponse:
+    """The demo's front door: what happens to your data, before sign-in."""
+    if not get_settings().demo_mode:
+        raise HTTPException(status_code=404, detail="Not found.")
+    context = {
+        "provider": provider_of_model(get_llm_settings().quality_model).title(),
+        "tracing": get_settings().tracing_enabled,
+    }
+    return templates.TemplateResponse(request, "welcome.html", context)
+
+
 @app.get("/explanation", response_class=HTMLResponse)
 def explanation_page(request: Request) -> HTMLResponse:
     """Project overview meant to be shown as-is, no account needed. Names
@@ -148,4 +167,5 @@ def explanation_page(request: Request) -> HTMLResponse:
         "embedding": EMBEDDING_MODEL,
         "budget": get_llm_settings().monthly_budget_usd,
     }
-    return templates.TemplateResponse(request, "explanation.html", {"models": models})
+    context = {"models": models, "hosted": get_settings().demo_mode}
+    return templates.TemplateResponse(request, "explanation.html", context)

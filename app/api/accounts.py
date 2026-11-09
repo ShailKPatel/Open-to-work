@@ -12,10 +12,10 @@ import logging
 import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from github import UnknownObjectException
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DbSession
@@ -28,6 +28,7 @@ from app.core.db import (
     ExperienceSkillEvidence,
     GitHubSyncRun,
     JobPosting,
+    LLMCall,
     Repository,
     Resume,
     ResumeProfileLink,
@@ -41,6 +42,8 @@ from app.core.db import (
 from app.core.settings import get_settings
 from app.ingest.github.client import GitHubClient
 from app.profile.resume_ingest import GeneratedResumeError, ingest_resume, is_generated_pdf
+from app.resume_build import background
+from app.resume_build.graph import forget_thread
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -73,8 +76,12 @@ class CreatedAccount(AccountSummary):
 
 
 @router.get("/accounts", response_model=list[AccountSummary])
-def list_accounts(db: DbSession) -> list[AccountSummary]:
+def list_accounts(request: Request, db: DbSession) -> list[AccountSummary]:
     accounts = db.execute(select(Account).order_by(Account.created_at)).scalars().all()
+    # In the public demo a person sees only their own (app/api/demo.py).
+    user = getattr(request.state, "demo_user", None)
+    if user is not None and not user.admin:
+        accounts = [a for a in accounts if a.id == user.account_id]
     return [AccountSummary.from_account(a) for a in accounts]
 
 
@@ -314,6 +321,17 @@ def delete_account(account_id: int, *, db: DbSession) -> dict:
     account = db.get(Account, account_id)
     if account is None:
         raise HTTPException(status_code=404, detail=f"no account with id={account_id}")
+
+    # Copies of this person's content outside the tables deleted below: the
+    # builds in memory, cached model replies, unfinished drafts.
+    background.forget_account(account_id)
+    db.execute(
+        update(LLMCall).where(LLMCall.account_id == account_id).values(response_json=None)
+    )
+    for resume in db.execute(select(Resume).where(Resume.account_id == account_id)).scalars():
+        thread_id = (resume.build_state_json or {}).get("thread_id")
+        if thread_id:
+            forget_thread(thread_id)
 
     repo_ids = list(
         db.execute(

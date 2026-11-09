@@ -10,21 +10,22 @@ vs app/api/accounts.py.
 
 from __future__ import annotations
 
-import copy
 import datetime as dt
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import DbSession
 from app.api.llm_errors import llm_http_error
 from app.api.skills import active_skill_groups
+from app.core import usage
 from app.core.db import JobPosting, Resume, get_db
 from app.core.llm import (
     ApiKeyMissingError,
@@ -36,8 +37,14 @@ from app.core.pipeline import Pipeline
 from app.core.settings import get_settings
 from app.resume_build import background
 from app.resume_build.compile import CompileError, TectonicNotInstalledError
-from app.resume_build.orchestrator import build_resume_data, generate_resume
-from app.resume_build.pagefit import PageFitNotAchievedError, fit_to_page_limit
+from app.resume_build.graph import (
+    TAILOR_STEP,
+    BuildHooks,
+    BuildInputError,
+    draft_preview,
+    run_graph,
+)
+from app.resume_build.orchestrator import generate_resume
 from app.retrieval.search import query_for_posting
 
 router = APIRouter(prefix="/api/resume-build")
@@ -160,6 +167,7 @@ def _save_incomplete_resume(
             "data": checkpoint.get("data"),
             "reworded": bool(checkpoint.get("reworded")),
             "cuts_made": int(checkpoint.get("cuts_made") or 0),
+            "thread_id": checkpoint.get("thread_id"),
             "stopped_at": stopped_at,
             "error": error,
             "error_kind": error_kind,
@@ -187,6 +195,9 @@ def _validate_template(template: str) -> None:
 
 
 _MAX_HEADER_CHARS = 400
+_MAX_INSTRUCTION_CHARS = 2000
+_WAITING_STAGE = "Waiting for your approval"
+_WAITING_NOTE = "The draft is waiting for your approval. Retry to see it."
 
 
 def _header_safe(text: str) -> str:
@@ -476,6 +487,11 @@ class _BuildOutcome:
     match: dict[str, Any]
 
 
+@dataclass
+class _AwaitingApproval:
+    preview: dict[str, Any]
+
+
 def _content_match(job_posting_id: int, skills: list[str]) -> dict[str, Any]:
     """How much of the posting's required skills the finished resume
     lists, scored the same way GET /api/resume/search scores the library
@@ -501,7 +517,8 @@ def _content_match(job_posting_id: int, skills: list[str]) -> dict[str, Any]:
     }
 
 
-_TAILOR_STEP = "tailoring the content to the job"
+def _approval_required() -> bool:
+    return get_settings().resume_approval_required
 
 
 def _run_build(
@@ -509,90 +526,47 @@ def _run_build(
     on_stage: Callable[[str], None] = lambda _: None,
     checkpoint: dict[str, Any] | None = None,
     resume_id: int | None = None,
-) -> _BuildOutcome:
+    require_approval: bool = False,
+    decision: dict[str, Any] | None = None,
+) -> _BuildOutcome | _AwaitingApproval:
     """The whole build, shared by POST /generate (inside the request) and
-    POST /start (in a worker thread). Failures come out as the
-    HTTPException the caller would answer with; on_stage hears each
-    step's name as it starts.
+    POST /start (in a worker thread), run by app/resume_build/graph.py.
+    Failures come out as the HTTPException the caller would answer with;
+    on_stage hears each step's name as it starts.
 
-    checkpoint is updated in place as model calls finish ("data": the
-    tailored content with its reserve, then "reworded"/"cuts_made" from
-    the page fit), so a caller can save it when the build stops. One
-    passed in already holding "data" skips the tailoring call, which is
-    how a retry picks up where the last try stopped. resume_id is the
-    incomplete library row a retry finishes.
+    With require_approval the first run stops at the human-approval step
+    and returns _AwaitingApproval; a later call with the same checkpoint
+    and a `decision` carries on from there.
+
+    checkpoint is updated in place ("thread_id": the graph run; "data" and
+    "reworded"/"cuts_made" from the page fit), so a caller can save it when
+    the build stops. One passed in with a thread_id carries that run on,
+    which is how a retry picks up where the last try stopped. One holding
+    only "data", saved before the graph existed, goes to the page fit.
+    resume_id is the incomplete library row a retry finishes.
     """
     _validate_template(body.template)
     max_pages = body.max_pages or _DEFAULT_MAX_PAGES[body.template]
     checkpoint = checkpoint if checkpoint is not None else {}
+    thread_id = checkpoint.setdefault("thread_id", uuid.uuid4().hex)
 
-    # Two LLM steps, and the second one is worth finishing even if it
-    # cannot: the content step's work is already paid for by the time the
-    # page-fit step runs. Naming the steps means a stop says which one
-    # stopped and what had already finished, instead of one flat message.
+    # Naming the steps means a stop says which one stopped and what had
+    # already finished, instead of one flat message.
     run = Pipeline("The resume build", account_id=body.account_id)
-    fit_note: str | None = None
-
-    if checkpoint.get("data") is not None:
-        data = copy.deepcopy(checkpoint["data"])
-        run.completed.append(_TAILOR_STEP)
-    else:
-        try:
-            on_stage("Tailoring the content to the job")
-            with run.stage(_TAILOR_STEP):
-                data = build_resume_data(
-                    body.account_id,
-                    body.job_posting_id,
-                    template=body.template,
-                    selected_email=body.selected_email,
-                    selected_phone=body.selected_phone,
-                    selected_project_ids=body.selected_project_ids,
-                    project_instructions=body.project_instructions,
-                    selected_skills=body.selected_skills,
-                    selected_experience_ids=body.selected_experience_ids,
-                    selected_education_ids=body.selected_education_ids,
-                    custom_instruction=body.custom_instruction,
-                    points_per_role=body.points_per_role,
-                )
-        except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        except (
-            ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError
-        ) as e:
-            raise _map_llm_error(e) from e
-        checkpoint["data"] = copy.deepcopy(data)
+    if decision is not None or checkpoint.get("data") is not None:
+        run.completed.append(TAILOR_STEP)
 
     try:
-        on_stage("Fitting the resume to the page count")
-        with run.stage("fitting the resume to the page count"):
-            result = fit_to_page_limit(
-                data,
-                body.template,
-                max_pages,
-                account_id=body.account_id,
-                reworded=bool(checkpoint.get("reworded")),
-                cuts_made=int(checkpoint.get("cuts_made") or 0),
-                on_progress=checkpoint.update,
-            )
-        pdf_bytes = result.pdf_bytes
-        page_count = result.page_count
-        achieved = result.fit_exact
-        content = result.data or data
-        if not achieved:
-            logger.warning(
-                "page-fit came up short for account_id=%s: %s page(s) against a target of %s",
-                body.account_id, page_count, max_pages,
-            )
-    except PageFitNotAchievedError as e:
-        # Includes the case where the page-fit step lost every key
-        # partway: the content is written and compiled, so the resume is
-        # saved and returned with the reason attached rather than lost.
-        logger.warning("page-fit did not reach target for account_id=%s: %s", body.account_id, e)
-        pdf_bytes = e.best_pdf_bytes
-        page_count = e.best_page_count
-        achieved = False
-        content = e.best_data or data
-        fit_note = str(e)
+        graph_result = run_graph(
+            body.model_dump(),
+            max_pages,
+            BuildHooks(pipeline=run, on_stage=on_stage, progress=checkpoint),
+            thread_id,
+            require_approval,
+            decision=decision,
+        )
+    except BuildInputError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except TectonicNotInstalledError as e:
         raise HTTPException(status_code=501, detail=str(e)) from e
     except CompileError as e:
@@ -600,10 +574,26 @@ def _run_build(
     except (ApiKeyMissingError, BudgetExceededError, LLMRateLimitedError, LLMProviderError) as e:
         raise _map_llm_error(e) from e
 
+    if graph_result.awaiting_approval:
+        return _AwaitingApproval(preview=draft_preview(graph_result.values))
+
+    fit = graph_result.values["fit"]
+    pdf_bytes = fit["pdf_bytes"]
+    page_count = fit["page_count"]
+    achieved = fit["achieved"]
+    fit_note = fit["note"]
+    content = fit["content"]
+
     # What gets saved is the content that was actually rendered, after
     # the page-fit loop's cuts and additions, not the pre-fit draft: the
     # library row and the PDF beside it have to describe the same resume.
     content.pop("reserve", None)
+    judge = graph_result.values.get("judge_stats") or {}
+    usage.record(
+        body.account_id,
+        usage.RESUME_BUILT,
+        {k: judge.get(k, 0) for k in ("rejected", "saved", "dropped", "rounds")},
+    )
     on_stage("Saving to the resume library")
     resume_id = _save_generated_resume(
         body.account_id,
@@ -647,6 +637,7 @@ def generate(body: GenerateRequest) -> Response:
     produced.
     """
     out = _run_build(body)
+    assert isinstance(out, _BuildOutcome)  # no approval step without require_approval
     return Response(
         content=out.pdf_bytes,
         media_type="application/pdf",
@@ -680,11 +671,18 @@ def _start_in_background(
     what it had done; the failed build names that row as
     incomplete_resume_id so the page can offer to retry it."""
     state: dict[str, Any] = dict(checkpoint or {})
+    row_id: list[int | None] = [retry_of]
+    pending: list[dict[str, Any] | None] = [None]
 
     def run(build: background.Build) -> None:
         try:
             out = _run_build(
-                body, on_stage=build.set_stage, checkpoint=state, resume_id=retry_of
+                body,
+                on_stage=build.set_stage,
+                checkpoint=state,
+                resume_id=row_id[0],
+                require_approval=_approval_required(),
+                decision=pending[0],
             )
         except HTTPException as e:
             detail = str(e.detail)
@@ -694,6 +692,19 @@ def _start_in_background(
             detail = "Internal error, see server logs."
             kind = None
         else:
+            if isinstance(out, _AwaitingApproval):
+                # A row holds its place, so a restart does not lose the
+                # draft: retrying it from the library shows it again.
+                row_id[0] = _save_incomplete_resume(
+                    body, state, _WAITING_STAGE, _WAITING_NOTE, resume_id=row_id[0]
+                )
+
+                def carry_on(decision: dict[str, Any]) -> None:
+                    pending[0] = decision
+                    background.run_again(build, run)
+
+                build.await_approval(out.preview, carry_on, row_id[0])
+                return
             build.finish(
                 out.pdf_bytes,
                 {
@@ -707,7 +718,7 @@ def _start_in_background(
             )
             return
         saved = _save_incomplete_resume(
-            body, state, build.stage, detail, resume_id=retry_of, error_kind=kind
+            body, state, build.stage, detail, resume_id=row_id[0], error_kind=kind
         )
         build.fail(detail, {"incomplete_resume_id": saved, "error_kind": kind})
 
@@ -734,6 +745,7 @@ def start_build(body: GenerateRequest, *, db: DbSession) -> dict[str, Any]:
     posting = db.get(JobPosting, body.job_posting_id)
     if posting is None:
         raise HTTPException(status_code=404, detail=f"no job posting with id={body.job_posting_id}")
+    usage.record(body.account_id, usage.BUILD_STARTED)
     return _start_in_background(body, _build_label(body, posting)).public()
 
 
@@ -761,7 +773,9 @@ def retry_build(resume_id: int, *, db: DbSession) -> dict[str, Any]:
             status_code=404,
             detail="the job posting this resume was built for has been deleted",
         )
-    checkpoint = {k: state[k] for k in ("data", "reworded", "cuts_made") if k in state}
+    checkpoint = {
+        k: state[k] for k in ("data", "reworded", "cuts_made", "thread_id") if state.get(k)
+    }
     label = row.name or _build_label(body, posting)
     return _start_in_background(body, label, checkpoint, retry_of=resume_id).public()
 
@@ -797,6 +811,27 @@ def get_build_pdf(build_id: str) -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": "inline; filename=resume.pdf"},
     )
+
+
+class DecisionRequest(BaseModel):
+    action: Literal["approve", "revise"]
+    instruction: str | None = Field(default=None, max_length=_MAX_INSTRUCTION_CHARS)
+
+
+@router.post("/builds/{build_id}/decision")
+def decide_build(build_id: str, body: DecisionRequest) -> dict[str, Any]:
+    """The account holder's answer to a draft waiting for approval: approve
+    it for the page fit, or send it back with a plain instruction, which is
+    applied and fact-checked before the draft is shown again."""
+    build = _get_build(build_id)
+    instruction = (body.instruction or "").strip()
+    if body.action == "revise" and not instruction:
+        raise HTTPException(status_code=422, detail="say what should change in the draft")
+    carry_on = build.take_continuation()
+    if carry_on is None:
+        raise HTTPException(status_code=409, detail="this build is not waiting for approval")
+    carry_on({"action": body.action, "instruction": instruction or None})
+    return build.public()
 
 
 @router.post("/builds/{build_id}/dismiss")

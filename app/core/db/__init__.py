@@ -59,6 +59,7 @@ from app.core.db.models import (
     SkillVerdict,
     SocialLink,
     SyncSource,
+    UsageEvent,
     is_profile_repo,
 )
 
@@ -79,6 +80,7 @@ __all__ = [
     "LLMCall",
     "ProjectLink",
     "RateLimitEvent",
+    "UsageEvent",
     "Repository",
     "is_profile_repo",
     "Resume",

@@ -1,7 +1,7 @@
 """App settings. No secrets in code.
 
-This app runs locally, so almost nothing here is deployment config. The
-only value read from `.env` is GITHUB_TOKEN. Everything the user picks
+The app runs locally by default, or as a public demo with DEMO_MODE set
+(docs/DEPLOY.md). The only value read from `.env` is GITHUB_TOKEN. Everything the user picks
 (LLM models, the monthly budget, provider keys) lives in the database and
 is edited in the app, see app/core/app_settings.py and the /apis page.
 
@@ -42,6 +42,42 @@ class Settings(BaseSettings):
     # Docker Compose sets this to the qdrant service. ":memory:" runs an
     # in-process Qdrant for tests.
     qdrant_url: str = "http://localhost:6333"
+
+    # LangGraph's own SQLite file (app/resume_build/graph.py): where a resume
+    # build waits for approval and resumes from after a restart. Separate
+    # from database_url so graph writes never hold up the app's database.
+    resume_graph_checkpoint_path: str = "./data/resume_graph.db"
+
+    # Whether a build started from the page stops for approval before the
+    # page fit. POST /generate has nobody to ask, so it never stops.
+    resume_approval_required: bool = True
+
+    # Sends LangGraph and LLM traces, resume content included, to LangSmith
+    # (app/core/tracing.py). Needs LANGSMITH_API_KEY too.
+    tracing_enabled: bool = False
+
+    # Public demo (app/api/demo.py, docs/DEPLOY.md). Off for the local app.
+    demo_mode: bool = False
+    demo_public_host: str = ""
+    demo_github_client_id: str = ""
+    demo_github_client_secret: str = ""
+    demo_session_secret: str = ""
+    demo_admin_github_id: int = 0
+    demo_max_accounts: int = 50
+    demo_daily_resume_builds: int = 5
+    demo_daily_llm_calls: int = 200
+    demo_daily_cost_usd: float = 0.5
+    demo_daily_writes: int = 500
+    demo_daily_intake: int = 30
+    demo_max_sources: int = 5
+    demo_max_running_builds: int = 3
+
+    # Nightly backups to S3-compatible storage (app/core/backup.py). Off
+    # until a bucket is named. Its keys are read from the environment.
+    backup_bucket: str = ""
+    backup_endpoint: str = ""
+    backup_region: str = ""
+    backup_keep: int = 7
 
     # Uploaded resumes, stored on local disk in a per-account subfolder.
     resume_storage_dir: str = "./data/resumes"

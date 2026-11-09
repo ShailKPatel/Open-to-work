@@ -24,9 +24,11 @@ from app.core.db.base import Base, _now
 
 
 class Account(Base):
-    """A local profile on this device, not a login. No password, no
-    server session: the client remembers which account it's using
-    (localStorage) and passes account_id with requests that need it.
+    """Run locally, a profile on this device, not a login: no password, no
+    server session. The client remembers which account it's using
+    (localStorage) and passes account_id with requests that need it. In
+    the public demo each account is one GitHub identity, and
+    app/api/demo.py checks that account_id against the signed-in session.
     Multiple people can share one instance/device by picking their own
     account on the first screen; each account's data is scoped by
     `account_id` on the tables below.
@@ -38,6 +40,8 @@ class Account(Base):
     first_name: Mapped[str] = mapped_column(String)
     last_name: Mapped[str] = mapped_column(String)
     github_username: Mapped[str] = mapped_column(String, index=True)
+    # GitHub's numeric id, set when the account came from demo sign-in.
+    github_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     # The latest uploaded resume's file, mirrored from the resumes table so
     # "has a resume" is a column read. Resume rows are the real record.
     resume_filename: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -678,6 +682,21 @@ class LLMCall(Base):
     # /monitor can show where spend went. Null lands in "unattributed".
     purpose: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class UsageEvent(Base):
+    """Ids and numbers about what ran, app/core/usage.py. Plain account id,
+    no foreign key, so deleting an account leaves the counts readable."""
+
+    __tablename__ = "usage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True)
+    kind: Mapped[str] = mapped_column(String, index=True)
+    data_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True
+    )
 
 
 class RateLimitEvent(Base):

@@ -1,6 +1,30 @@
 # Architecture
 
-One FastAPI process serves the JSON API and the server-rendered pages. SQLite holds the application data. Qdrant holds the vectors. sentence-transformers computes embeddings locally. LiteLLM handles text and multimodal completions. Long work (GitHub sync, skill extraction) runs in background threads and streams progress to the browser over Server-Sent Events.
+One FastAPI process serves the JSON API and the server-rendered pages. SQLite holds the application data. Qdrant holds the vectors. sentence-transformers computes embeddings in the app process. LiteLLM handles text and multimodal completions. Resume builds run as a LangGraph graph. Long work (GitHub sync, skill extraction, builds) runs in background threads and reports progress to the browser.
+
+## Deployment modes
+
+The same image runs two ways. `DEMO_MODE` chooses, and everything specific to the public mode is off without it.
+
+| | Local (`make start`) | Public demo (`DEMO_MODE=true`) |
+| --- | --- | --- |
+| Reached at | `127.0.0.1` | One HTTPS host name, through Caddy |
+| Identity | None; profile picked in the browser | GitHub OAuth, signed session cookie |
+| Authorization | Whoever can reach the port | Deny-by-default route gate with ownership checks (`app/api/demo.py`) |
+| LLM key and budget | Yours, on `/apis` | The owner's; the admin account alone reaches `/apis` |
+| Limits | Monthly budget | Monthly budget, per-user daily calls, spend, builds, uploads and writes, one running build each, a global build cap |
+| Host | Your machine | One VM with a managed data disk (`infra/azure`) |
+
+```text
+Browser -> Caddy (TLS, 12 MB body cap) -> FastAPI app -> Qdrant (internal only)
+                                            |  SQLite and files on /mnt/otw
+                                            |  LLM providers, GitHub, LangSmith (opt-in)
+                                            `-> nightly archive to private S3-compatible bucket
+```
+
+One VM with a block disk, not a managed container platform with shared storage, because SQLite's WAL mode and the graph checkpointer need shared memory, which network file systems (SMB, NFS) do not provide. So the demo is one instance. Background jobs, build records and the embedding model live in that process, so it cannot scale out without moving SQLite and those registries first.
+
+`.github/workflows/release.yml` runs CI and the retrieval eval gate on every merge to main, pushes an image to GHCR, and has the VM run it through the run-command API, signed in with OIDC. No inbound SSH and no stored Azure secret. Setup is in [DEPLOY.md](DEPLOY.md).
 
 ## Modules
 
@@ -96,7 +120,8 @@ The recheck lists models instead of generating text. It proves the credential wo
 ### `app/resume_build`
 
 - `context.py`: header, experience, and education data taken straight from the database.
-- `orchestrator.py`: `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`.
+- `graph.py`: the build as a LangGraph `StateGraph`: `retrieve`, `write`, `judge`, `revise` (back to `write`, at most two rounds), `human_approval` (an interrupt), `page_fit`. `judge` runs the free rule filter, then the LLM judge (`app/evals/groundedness.py`) on what passes. A bullet still failing after the last round is dropped. Nodes only sequence the functions in this package, and every model call goes through `complete()`. State is checkpointed after each node to its own SQLite file (`resume_graph_checkpoint_path`), so a waiting or failed build resumes after a restart. A finished run's checkpoints are deleted. The posting's text is not in the state.
+- `orchestrator.py`: the steps the graph calls (`load_context`, `write_draft`, `revise_bullets`, `finish_draft`), plus `build_resume_data`, `build_resume_data_from_seed`, `edit_resume_content`, and `generate_resume`, which `/preview` and upload seeding use without the graph. The numbered steps below describe writing a draft.
   1. Hybrid search with the posting's extracted query (`query_for_posting`) finds candidate projects and skills. The fused score sets the order. Evidence weight breaks near-ties. Candidate skills search three evidence rows per slot and keep the first 25 distinct names, since one skill often has several rows.
   2. Experience points are picked per role, up to 5 each. If search returns nothing for a role, all its points are used.
   3. One quality-tier call returns JSON with the summary, projects, and skills, following length rules for the chosen template. The rules aim a little long, because page fit trims cheaper than it fills.
@@ -109,8 +134,8 @@ The recheck lists models instead of generating text. It proves the credential wo
 - `compile.py`: runs Tectonic as a subprocess. Raises `TectonicNotInstalledError` when the binary is missing and `CompileError` when compilation fails.
 - `layout.py`: the geometry the templates read (margins, section and bullet spacing, type size, leading) as parameters. `DENSITY_LADDER` has 13 rungs, from tight (9pt on `extarticle`, 0.72 cm margins) to loose (12pt, 1.5 cm). Density 1.0 matches each template's base geometry.
 - `pagefit.py`: renders at exactly the requested page count, one or two. It walks the density ladder for the loosest layout that fits, so the last page does not end half empty. Still over at the tightest rung, it asks a multimodal model for an ordered list of cuts (a skill, then a project bullet, then an experience bullet, never a whole role). It applies them one at a time, recompiling after each, and asks for a new list only when the old one runs out. One look at the PDF covers several cuts. Still short at the loosest rung, it adds back content from the `reserve`: projects the model passed over, experience points search left out, unselected candidate skills. All of it is the account's own material, and adding it costs no LLM call. `PageFitNotAchievedError` (overflow only) carries the best PDF reached. Coming up short returns a `FitResult` with `fit_exact` false.
-- `background.py`: builds started with `POST /api/resume-build/start` run in a worker thread (`app/core/jobs.py`), so closing the tab does not stop them. Each build records its stage, its result (page fit, library resume id, PDF), and `match_pct`, the share of the posting's required skills the resume lists (scored like `GET /api/resume/search`). The build page polls it and picks it up again when reopened. Other pages show a header card, and the browser shows a desktop notification when the build ends. State is held in memory, like `jobs.py`. `POST /generate` runs the same build inside the request.
-- `checkpoint.py`: a background build that stops partway (model busy, Tectonic timeout) is saved to the library as incomplete. `Resume.build_state_json` keeps the request, the tailored content with its reserve once that step is done, and page-fit progress (`reworded`, `cuts_made`, from `fit_to_page_limit`'s `on_progress`). `POST /api/resume-build/retry/{id}` resumes from there, skips model calls already done, and fills the same row on success. The library shows a done/left checklist built from the saved state. `content_json` stays null until the build finishes, so search and evals see only finished content.
+- `background.py`: a build can also wait in `awaiting_approval` until `POST /api/resume-build/builds/{id}/decision` approves it or sends a plain instruction. Builds started with `POST /api/resume-build/start` run in a worker thread (`app/core/jobs.py`), so closing the tab does not stop them. Each build records its stage, its result (page fit, library resume id, PDF), and `match_pct`, the share of the posting's required skills the resume lists (scored like `GET /api/resume/search`). The build page polls it and picks it up again when reopened. Other pages show a header card, and the browser shows a desktop notification when the build ends. State is held in memory, like `jobs.py`. `POST /generate` runs the same graph inside the request with approval off, and is closed in the demo.
+- `checkpoint.py`: the library's checklist for an unfinished build. A background build that stops partway (model busy, Tectonic timeout) or waits for approval is saved to the library as incomplete. `Resume.build_state_json` keeps the request, the graph's `thread_id`, the approved content with its reserve once page fit has started, and page-fit progress (`reworded`, `cuts_made`, from `fit_to_page_limit`'s `on_progress`). `POST /api/resume-build/retry/{id}` resumes from there, skips model calls already done, and fills the same row on success. The library shows a done/left checklist built from the saved state. `content_json` stays null until the build finishes, so search and evals see only finished content.
 - `templates/`: `onepage.tex.j2` and `twopage.tex.j2`. The preamble is adapted from RenderCV (MIT). Both read their geometry from `layout.py` through a `layout` dict, so `render_resume()` can set the same content tighter or looser.
 
 ### `app/evals`
@@ -139,6 +164,7 @@ Routers are thin. JSON endpoints live under `/api/*`, except `/accounts` and `/h
 | `/jobs`, `/jobs/analytics` | Job postings (one form for text and screenshots; links are saved as the apply link) and the insights dashboard |
 | `/monitor`, `/monitor/sync` | Rate limits and LLM usage; GitHub sources, syncs, and skill extraction |
 | `/settings`, `/apis` | Settings; API keys, models, and budget |
+| `/welcome` | Demo only: data notice, sign-in, account deletion |
 
 | API prefix | Router |
 | --- | --- |
@@ -156,6 +182,7 @@ Routers are thin. JSON endpoints live under `/api/*`, except `/accounts` and `/h
 | `/api/api-keys` | `api_keys.py` |
 | `/api/app-settings` | `app_settings.py` |
 | `/api/monitor` | `monitor.py` |
+| `/auth/login`, `/auth/callback`, `/auth/logout` | `demo.py`, demo only |
 
 Templates extend `_base.html`, which holds the theme and loads `/static/app.css` and Alpine.js. Both are built into the image by the Dockerfile's `assets` stage: Tailwind's standalone CLI compiles only the classes the templates use, and the JS libraries are pinned and checksum-verified. Nothing loads from a CDN except Google Fonts. Shared partials: `_header.html` (top navigation) and `_portfolio_subnav.html`. The selected account id is kept in `localStorage`.
 
@@ -163,7 +190,7 @@ Templates extend `_base.html`, which holds the theme and loads `/static/app.css`
 
 | Table | Contents |
 | --- | --- |
-| `accounts` | Local profile: name, GitHub username, contact fields. Not a login. |
+| `accounts` | Profile: name, GitHub username, contact fields. Locally not a login; in the demo one per GitHub identity (`github_user_id`). |
 | `sync_sources` | GitHub users or repos to fetch for an account. |
 | `repositories` | Synced or manually added projects: README, manifests, commit stats, extraction status, a starred flag (up to 3 per account), and an archived flag (`exclude_from_resume`). |
 | `project_links` | Links per project, `manual` or `readme_extracted`. |
@@ -179,6 +206,7 @@ Templates extend `_base.html`, which holds the theme and loads `/static/app.css`
 | `api_keys` | Encrypted provider credentials, masked previews, status, budget, account allow-list. |
 | `app_settings` | One row per setting chosen in the app: bulk model, quality model, monthly budget. No row means the default. |
 | `llm_calls` | Cached responses with cost, tokens, and latency for every call, tagged with its `purpose`. |
+| `usage_events` | Ids and counts only: builds started, resumes built with judge results, demo write and upload counters. Backs the daily limits and `scripts/usage_report.py`. |
 | `rate_limit_events` | Event log: rate limits, budget stops, key swaps and exhaustion, stopped runs. |
 | `embedding_cache` | Embedding vectors by content hash and model. |
 | `skill_map_cache` | One stored skill-map layout per account, with the fingerprint of its input. |
@@ -187,15 +215,34 @@ Saving a job posting returns at once with `extraction_status` "pending". The LLM
 
 Archived projects, roles, education entries, and skills stay on their pages under an Archived section. They are left out of resume building, portfolio counts, the skill map, and job analytics. A skill whose every project and role is archived counts as archived.
 
+LangGraph's checkpoints live in a separate file, `data/resume_graph.db`.
+
+## Observability
+
+`app/core/tracing.py` turns on LangSmith only when `TRACING_ENABLED` and `LANGSMITH_API_KEY` are both set. LangGraph reports its nodes, and `complete()` is traced as an LLM run with tokens and cost. Attachments are replaced by a marker. Traces contain resume content, so `/welcome` discloses it when on. `/monitor` and `make usage-report` work without it.
+
 ## Security
+
+### Public demo
+
+- **Default deny.** `demo_gate` is an app-level dependency on every route. A route is reachable only if it is listed in `_ALLOWED`. API keys, settings, monitoring, `/generate`, `/preview` and FastAPI's docs are closed; the admin account skips the gate.
+- **Ownership.** Every `account_id` and resource id in the path, query, JSON body or form is checked against the session. A child id must belong to the parent beside it. A failure is a 404, so ids cannot be probed.
+- **Sessions.** GitHub OAuth with a `state` check and no scope. Accounts match on GitHub's numeric id, since logins can be reassigned. Cookies are signed, `HttpOnly`, `Secure`, `SameSite=Lax`, seven days. The app refuses to start with incomplete settings.
+- **Limits.** Per-user daily caps sit in `complete()`, so background work is capped too. Requests that change something need a session before their body is read, and bodies over 12 MB are refused.
+- **Isolation.** Tectonic gets a minimal environment with no secrets. The container drops all Linux capabilities. Qdrant has no published port. Only 80 and 443 are open on the VM.
+- **Data.** `/welcome` says where data goes before sign-in. Deleting an account also removes cached model replies, in-memory builds and unfinished drafts. Backups go to a private bucket and exclude `APP_SECRET_KEY`.
+
+Known limit: the container still runs as root, without capabilities, because local Docker Compose bind-mounts `./data` as root.
+
+### Local
 
 The app has no login. It is built for one person on their own machine, and the app's port binds to 127.0.0.1. Qdrant publishes no port at all: it has no login and no Host check, so only the app reaches it, over the compose network (`docker-compose.dev.yml` publishes it for host-side development). `app/api/security.py` stops other web pages from reaching it through that person's browser:
 
 - **Cross-site requests.** POST, PUT, PATCH, and DELETE get a 403 when `Sec-Fetch-Site` is anything but `same-origin` or `none`, or when `Origin` (or `Referer` without `Origin`) is not the app's own origin. A request with none of these headers is not from a web page and is allowed.
-- **DNS rebinding.** Every request must carry a loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`, any port), or it gets a 400.
+- **DNS rebinding.** Every request must carry a loopback `Host` (`localhost`, `127.0.0.1`, `[::1]`, any port), or the demo's own host name in demo mode, or it gets a 400.
 - **Response headers.** `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN`, and a CSP of `frame-ancestors 'self'; base-uri 'self'; form-action 'self'`. Framing allows `'self'` because the resume pages show PDFs in an iframe.
 - **Uploaded files.** Screenshots must be PNG, JPEG, WebP, or GIF by their bytes. Resumes are typed by their bytes and served with that type. Only PDFs and images display inline. Everything else downloads as `application/octet-stream`, so an uploaded page cannot run on the app's origin. Stored file names are cut to their base name and prefixed with an id or hash.
-- **LaTeX.** Every value in a resume template goes through `escape_latex` or `escape_latex_url` (`app/resume_build/latex.py`). Tectonic runs with shell escape off, in untrusted mode.
+- **LaTeX.** Every value in a resume template goes through `escape_latex` or `escape_latex_url` (`app/resume_build/latex.py`). Tectonic runs with shell escape off, in untrusted mode, with only the environment variables it needs.
 - **Secrets.** API keys are encrypted at rest and shown only as masked previews. Provider keys travel in request headers, not URLs.
 - **Outbound requests.** Links in job postings are stored and not opened. The server calls only GitHub, the configured LLM providers, and the embedding model and Tectonic package downloads. The one user-set URL it calls is the `api_base` of an Azure OpenAI or Ollama key.
 - **Build inputs.** Every file the Dockerfile downloads (Tailwind CLI, Tectonic, Alpine.js, marked, DOMPurify) is pinned to a version and checked against its SHA-256 with `ADD --checksum`. The Qdrant image is pinned to a version.

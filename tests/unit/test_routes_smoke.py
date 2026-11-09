@@ -23,6 +23,9 @@ from app.core.settings import get_settings
 # GET endpoints left out of the generic sweep, each covered with fakes in
 # its own test module.
 _SKIP_JSON_GETS = {
+    "/auth/login": "demo only, 404 unless DEMO_MODE is on; see test_demo.py",
+    "/auth/callback": "demo only, 404 unless DEMO_MODE is on; see test_demo.py",
+    "/welcome": "demo only, 404 unless DEMO_MODE is on; see test_demo.py",
     "/api/monitor/status": "calls the live GitHub rate-limit endpoint",
     "/api/resume/search": "loads the local embedding model",
     "/api/projects/process-pending/stream": "long-lived SSE stream",
@@ -38,6 +41,8 @@ def _page_paths() -> list[str]:
             and route.response_class is HTMLResponse
         ):
             paths.add(re.sub(r"\{[^}]+\}", "1", route.path))
+    # Demo only, 404 unless DEMO_MODE is on; rendered in test_demo.py.
+    paths.discard("/welcome")
     return sorted(paths)
 
 

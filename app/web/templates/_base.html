@@ -11,6 +11,12 @@
     href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap"
     rel="stylesheet"
   />
+  {% if request.state.demo_user %}
+  <script>
+    localStorage.setItem('otw_account_id', {{ request.state.demo_user.account_id | tojson }});
+    localStorage.setItem('otw_account_name', {{ request.state.demo_user.first_name | tojson }});
+  </script>
+  {% endif %}
   <script defer src="/static/vendor/alpine.min.js"></script>
   <style>
     :root {

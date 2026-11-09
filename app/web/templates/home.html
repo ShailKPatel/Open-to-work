@@ -222,6 +222,11 @@
 
           // Provider-agnostic: connected when a usable key exists for the
           // provider(s) the configured LiteLLM models dispatch to.
+          {% if request.state.demo_user and not request.state.demo_user.admin %}
+          // The demo's key is the owner's; visitors never manage or see one.
+          this.llmConnected = true;
+          return;
+          {% endif %}
           const defaultProvider = await defaultProviderRes.json();
           const keys = await keysRes.json();
           const usable = (provider) =>

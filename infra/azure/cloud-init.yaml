@@ -1,0 +1,33 @@
+#cloud-config
+# First boot only: Docker, swap, and the data disk mounted at /mnt/otw.
+package_update: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - curl
+
+write_files:
+  - path: /usr/local/sbin/otw-mount-data
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      device=/dev/disk/azure/scsi1/lun0
+      for _ in $(seq 1 60); do [ -e "$device" ] && break; sleep 2; done
+      # Formats only a disk with no filesystem, so a re-attached disk keeps its data.
+      blkid "$device" >/dev/null 2>&1 || mkfs.ext4 -F "$device"
+      mkdir -p /mnt/otw
+      uuid=$(blkid -s UUID -o value "$device")
+      grep -q "$uuid" /etc/fstab || echo "UUID=$uuid /mnt/otw ext4 defaults,nofail 0 2" >> /etc/fstab
+      mount -a
+      mkdir -p /mnt/otw/data /mnt/otw/qdrant /mnt/otw/caddy /mnt/otw/hf
+
+runcmd:
+  - [/usr/local/sbin/otw-mount-data]
+  # The embedding model and a LaTeX compile can briefly exceed 4 GiB together.
+  - fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - systemctl enable --now docker
+  - mkdir -p /opt/otw && chmod 700 /opt/otw
+  # Nightly backup; does nothing until BACKUP_BUCKET is set.
+  - echo '30 20 * * * root cd /opt/otw && docker compose exec -T app python -m app.core.backup >> /var/log/otw-backup.log 2>&1' > /etc/cron.d/otw-backup

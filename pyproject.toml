@@ -22,6 +22,11 @@ dependencies = [
     "pyyaml>=6.0",  # golden-set file format, app/evals/golden.py (imported directly)
     "numpy>=2.5",  # skill map vectors, app/profile/skill_map.py (imported directly)
     "scikit-learn>=1.9",  # PCA and clustering for the skill map, app/profile/skill_map.py
+    "langgraph>=1.2.20",  # resume build graph, app/resume_build/graph.py
+    "langgraph-checkpoint-sqlite>=3.1.3",  # its SQLite checkpointer
+    "langsmith>=0.14.17",  # optional tracing, app/core/tracing.py (imported directly)
+    "boto3>=1.43",  # backups to S3-compatible storage, app/core/backup.py (imported directly)
+    "itsdangerous>=2.2",  # signed session cookie in demo mode, app/api/demo.py
 ]
 
 [project.optional-dependencies]

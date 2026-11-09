@@ -474,13 +474,12 @@ def test_a_screenshot_only_posting_keeps_the_kind(monkeypatch):
 
 
 def test_a_failed_build_keeps_the_kind_on_its_incomplete_resume(monkeypatch):
-    from app.api import resume_build
     from app.resume_build import background
 
     def unavailable(*args, **kwargs):
         raise LLMUnavailableError("Gemini is overloaded right now.")
 
-    monkeypatch.setattr(resume_build, "build_resume_data", unavailable)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", unavailable)
     db = get_db()
     account = Account(first_name="A", last_name="B", github_username="")
     db.add(account)

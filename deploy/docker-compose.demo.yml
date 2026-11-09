@@ -1,0 +1,53 @@
+# The public demo on one VM. /opt/otw/.env holds the image name and the
+# secrets (deploy/set-secrets.sh); data lives on the disk at /mnt/otw.
+services:
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DEMO_PUBLIC_HOST: ${DEMO_PUBLIC_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /mnt/otw/caddy:/data
+    depends_on:
+      - app
+
+  app:
+    image: ${IMAGE}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DEMO_MODE: "true"
+      QDRANT_URL: http://qdrant:6333
+      # Nobody asked for it, and it would spend the shared LLM budget.
+      GITHUB_AUTO_SYNC_ON_START: "false"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /mnt/otw/data:/app/data
+      - /mnt/otw/hf:/root/.cache/huggingface
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  # No published port: Qdrant has no login.
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    restart: unless-stopped
+    volumes:
+      - /mnt/otw/qdrant:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10

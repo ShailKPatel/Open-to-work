@@ -332,6 +332,45 @@
           <p x-show="notifyHint" class="text-xs text-[color:var(--muted)] mt-1" x-text="notifyHint"></p>
         </section>
 
+        <!-- Draft waiting for the account holder's approval -->
+        <section x-cloak x-show="awaitingApproval()" class="otw-tile p-6 mt-8">
+          <h2 class="text-lg text-[color:var(--ink)]">Review your draft</h2>
+          <p class="text-xs text-[color:var(--muted)] mt-1">
+            Nothing is final yet. Approve it to fit it to the page, or say what should change.
+          </p>
+          <p x-show="(build?.judge?.rejected || 0) > 0" class="text-xs text-[color:var(--muted)] mt-2"
+            x-text="`Fact-check: ${build?.judge?.rejected} bullet(s) rejected, ${build?.judge?.saved} fixed, ${build?.judge?.dropped} dropped.`"></p>
+          <template x-if="build?.draft">
+            <div class="mt-4 space-y-4 text-sm text-[color:var(--ink)]">
+              <p x-show="build.draft.summary" x-text="build.draft.summary"></p>
+              <template x-for="project in build.draft.projects" :key="project.name">
+                <div>
+                  <p class="font-medium" x-text="project.name"></p>
+                  <ul class="list-disc pl-5 mt-1">
+                    <template x-for="point in project.points" :key="point"><li x-text="point"></li></template>
+                  </ul>
+                </div>
+              </template>
+              <template x-for="role in build.draft.experience" :key="`${role.company}${role.title}`">
+                <div>
+                  <p class="font-medium" x-text="`${role.title}, ${role.company}`"></p>
+                  <ul class="list-disc pl-5 mt-1">
+                    <template x-for="point in role.points" :key="point"><li x-text="point"></li></template>
+                  </ul>
+                </div>
+              </template>
+              <p x-show="build.draft.skills.length" x-text="`Skills: ${build.draft.skills.join(', ')}`"></p>
+            </div>
+          </template>
+          <label for="approval-instruction" class="block text-xs text-[color:var(--muted)] mt-4">What should change? (optional)</label>
+          <textarea id="approval-instruction" x-model="approvalInstruction" maxlength="2000" rows="2" class="w-full mt-1 text-sm"></textarea>
+          <p x-show="approvalError" class="text-xs text-red-600 mt-2" x-text="approvalError"></p>
+          <div class="mt-3 flex items-center gap-3">
+            <button @click="decide('approve')" :disabled="deciding" class="otw-btn-accent text-sm px-4 py-2">Approve</button>
+            <button @click="decide('revise')" :disabled="deciding || !approvalInstruction.trim()" class="otw-btn-ghost text-sm px-4 py-2">Send back</button>
+          </div>
+        </section>
+
         <!-- Compiled PDF Result Section -->
         <section x-cloak x-show="resultUrl" class="otw-tile p-6 mt-8">
           <div class="flex items-center justify-between flex-wrap gap-3">
@@ -409,6 +448,9 @@
       generating: false,
       generateError: '',
       resultUrl: null,
+      approvalInstruction: '',
+      approvalError: '',
+      deciding: false,
       resultResumeId: null,
       incompleteResumeId: null,
       pageFitAchieved: null,
@@ -468,6 +510,7 @@
           return;
         }
         this.generating = false;
+        if (build.state === 'awaiting_approval') return;
         if (build.state === 'error') {
           this.incompleteResumeId = build.incomplete_resume_id || null;
           this.generateError = otwResponseError(
@@ -481,6 +524,34 @@
         }
         // Seen here, so the header reminder has nothing left to say about it.
         fetch(`/api/resume-build/builds/${build.id}/dismiss`, { method: 'POST' }).catch(() => {});
+      },
+
+      awaitingApproval() {
+        return this.build?.state === 'awaiting_approval';
+      },
+
+      async decide(action) {
+        if (this.deciding) return;
+        this.deciding = true;
+        this.approvalError = '';
+        try {
+          const res = await fetch(`/api/resume-build/builds/${this.build.id}/decision`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, instruction: this.approvalInstruction.trim() || null }),
+          });
+          const build = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            this.approvalError = otwResponseError(build, `Could not send that (${res.status}).`);
+            return;
+          }
+          this.approvalInstruction = '';
+          this.followBuild(build);
+        } catch (e) {
+          this.approvalError = otwErrorText(e);
+        } finally {
+          this.deciding = false;
+        }
       },
 
       async pollBuild() {

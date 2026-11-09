@@ -9,10 +9,9 @@ id; the build page polls that id, and the header reminder
 (app/web/templates/_header.html) lists every build for the account, so
 the end of one is announced on whatever page is open.
 
-Not persisted, like app/core/jobs.py itself: a restart loses the record
-of a build in flight. The resume a finished build saved to the library
-is a normal row and survives; the page tells a watched build that went
-missing apart from one that finished.
+This record is in memory, like app/core/jobs.py itself: a restart loses
+it. The work is not lost: graph.py checkpoints every step, and a stopped or
+waiting build is an incomplete library row a retry carries on from.
 """
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ logger = logging.getLogger(__name__)
 # Finished builds kept per account, newest first, so the list (and the
 # PDF bytes each one holds) stays bounded. Running ones are never pruned.
 _KEEP_FINISHED = 10
+_FINISHED = ("done", "error")
 
 _lock = threading.Lock()
 _builds: dict[str, Build] = {}
@@ -47,13 +47,15 @@ class Build:
     retry_of: int | None = None
     started_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.UTC))
     stage: str = "Starting"
-    # "running", "done" or "error".
+    # "running", "awaiting_approval", "done" or "error".
     state: str = "running"
     detail: str | None = None
     finished_at: dt.datetime | None = None
     result: dict[str, Any] = field(default_factory=dict)
     pdf_bytes: bytes | None = None
     dismissed: bool = False
+    # What carries the build on once a decision arrives, while it waits.
+    continuation: Callable[[dict[str, Any]], None] | None = None
 
     def set_stage(self, stage: str) -> None:
         with _lock:
@@ -66,6 +68,34 @@ class Build:
             self.state = "done"
             self.stage = "Done"
             self.finished_at = dt.datetime.now(dt.UTC)
+
+    def await_approval(
+        self,
+        result: dict[str, Any],
+        continuation: Callable[[dict[str, Any]], None],
+        resume_id: int | None,
+    ) -> None:
+        """Parks the build on its draft. resume_id is the incomplete library
+        row holding its place, which a retry then finds this build by."""
+        with _lock:
+            self.result = result
+            self.continuation = continuation
+            self.retry_of = resume_id if resume_id is not None else self.retry_of
+            self.state = "awaiting_approval"
+            self.stage = "Waiting for your approval"
+
+    def take_continuation(self) -> Callable[[dict[str, Any]], None] | None:
+        """Moves a waiting build back to running and hands over what carries
+        it on. None when it is not waiting, so two clicks start one run."""
+        with _lock:
+            continuation = self.continuation
+            if self.state != "awaiting_approval" or continuation is None:
+                return None
+            self.continuation = None
+            self.result = {}
+            self.state = "running"
+            self.stage = "Starting"
+            return continuation
 
     def fail(self, detail: str, result: dict[str, Any] | None = None) -> None:
         with _lock:
@@ -114,6 +144,14 @@ def start(
     with _lock:
         _builds[build.id] = build
         _prune(account_id)
+    run_again(build, run)
+    return build
+
+
+def run_again(build: Build, run: Callable[[Build], None]) -> None:
+    """Runs `run(build)` in a new thread, with start()'s guarantee that it
+    cannot be left at "running" forever. The key is new each time because
+    the thread that parked this build may not have exited yet."""
 
     def worker(job: jobs.Job) -> None:
         try:
@@ -125,14 +163,13 @@ def start(
         if build.state == "running":
             build.fail("The build stopped without a result.")
 
-    jobs.start(f"resume_build:{build.id}", worker)
-    return build
+    jobs.start(f"resume_build:{build.id}:{uuid.uuid4().hex}", worker)
 
 
 def _prune(account_id: int) -> None:
     """Caller holds _lock."""
     finished = sorted(
-        (b for b in _builds.values() if b.account_id == account_id and b.state != "running"),
+        (b for b in _builds.values() if b.account_id == account_id and b.state in _FINISHED),
         key=lambda b: b.started_at,
         reverse=True,
     )
@@ -158,20 +195,33 @@ def list_for_account(account_id: int, job_posting_id: int | None = None) -> list
 
 
 def running_retry_of(resume_id: int) -> Build | None:
-    """The build currently retrying this incomplete resume, if any."""
+    """The build currently retrying this incomplete resume, or waiting for
+    approval on it, if any."""
     with _lock:
         for build in _builds.values():
-            if build.retry_of == resume_id and build.state == "running":
+            if build.retry_of == resume_id and build.state not in _FINISHED:
                 return build
     return None
 
 
+def running_count() -> int:
+    with _lock:
+        return sum(1 for build in _builds.values() if build.state == "running")
+
+
+def forget_account(account_id: int) -> None:
+    """Drops an erased account's builds, finished PDFs included."""
+    with _lock:
+        for build_id in [b.id for b in _builds.values() if b.account_id == account_id]:
+            del _builds[build_id]
+
+
 def dismiss(build_id: str) -> bool:
-    """Hides a finished build from the list. A running one stays listed:
-    hiding its card is the page's business, the build carries on."""
+    """Hides a finished build from the list. A running or waiting one stays
+    listed: hiding its card is the page's business, the build carries on."""
     with _lock:
         build = _builds.get(build_id)
-        if build is None or build.state == "running":
+        if build is None or build.state not in _FINISHED:
             return False
         build.dismissed = True
         return True

@@ -1,0 +1,11 @@
+{$DEMO_PUBLIC_HOST} {
+	encode gzip
+	# Refuses oversized uploads even when no Content-Length is sent.
+	request_body {
+		max_size 12MB
+	}
+	# Server-sent progress streams must not be buffered.
+	reverse_proxy app:8000 {
+		flush_interval -1
+	}
+}

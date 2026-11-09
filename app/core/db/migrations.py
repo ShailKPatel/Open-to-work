@@ -42,6 +42,17 @@ def _migrate_accounts_contact_columns(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_accounts_github_user_id(engine: Engine) -> None:
+    """accounts.github_user_id, same idempotent pattern as above."""
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(accounts)"))}
+        if "github_user_id" not in existing:
+            conn.execute(text("ALTER TABLE accounts ADD COLUMN github_user_id INTEGER"))
+        conn.commit()
+
+
 def _migrate_repositories_curation_columns(engine: Engine) -> None:
     """Add repositories.starred to an already-existing repositories table,
     same reasoning and same idempotent PRAGMA-check pattern as
@@ -691,6 +702,7 @@ def init_db() -> None:
     engine = get_engine()
     Base.metadata.create_all(engine)
     _migrate_accounts_contact_columns(engine)
+    _migrate_accounts_github_user_id(engine)
     _migrate_repositories_curation_columns(engine)
     _migrate_resumes_name_column(engine)
     _migrate_job_postings_account_id(engine)

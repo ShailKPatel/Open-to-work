@@ -1,0 +1,41 @@
+{% extends "_base.html" %}
+{% block title %}Welcome · Open to Work{% endblock %}
+{% block content %}
+<main class="max-w-xl mx-auto px-6 py-16 text-[color:var(--ink)]">
+  <h1 class="text-3xl">Open to Work</h1>
+  <p class="mt-4">Turns your GitHub into a resume tailored to one job, and refuses to write what it cannot prove.</p>
+
+  <h2 class="text-lg mt-8">Before you sign in</h2>
+  <ul class="list-disc pl-5 mt-2 space-y-2 text-sm text-[color:var(--muted)]">
+    <li>This is a personal project and a public demo. There is no uptime or data-retention promise.</li>
+    <li>What you upload, paste or sync (resumes, job postings, public GitHub data) is stored on this server.</li>
+    <li>That content is sent to an AI provider ({{ provider }}) to read it and write your resume.</li>
+    {% if tracing %}
+    <li>Runs are also traced to LangSmith for debugging, and those traces include resume content.</li>
+    {% endif %}
+    <li>Sign-in reads only your public GitHub profile.</li>
+    <li>Please do not upload anything you would not want stored on someone else's server.</li>
+  </ul>
+
+  {% if request.state.demo_user %}
+  <a href="/home" class="otw-btn-accent inline-block text-sm px-4 py-2 mt-8">Go to your dashboard</a>
+  <div x-data="{ sure: false, error: '' }" class="mt-10">
+    <button x-show="!sure" @click="sure = true" class="underline text-sm text-[color:var(--muted)]">Delete my account and data</button>
+    <div x-show="sure" x-cloak>
+      <p class="text-sm">This permanently erases your profile, resumes and job postings.</p>
+      <button class="otw-btn text-sm px-4 py-2 mt-2" @click="
+        fetch('/accounts/{{ request.state.demo_user.account_id }}', { method: 'DELETE' }).then((r) => {
+          if (!r.ok) { error = 'Could not delete. Try again.'; return; }
+          localStorage.clear();
+          document.getElementById('signout').submit();
+        })">Yes, delete everything</button>
+      <p x-show="error" x-text="error" class="text-sm mt-2"></p>
+    </div>
+    <form id="signout" method="post" action="/auth/logout"></form>
+  </div>
+  {% else %}
+  <a href="/auth/login" class="otw-btn-accent inline-block text-sm px-4 py-2 mt-8">Sign in with GitHub</a>
+  {% endif %}
+  <p class="mt-6 text-sm"><a class="underline text-[color:var(--muted)]" href="/explanation">How it works</a></p>
+</main>
+{% endblock %}

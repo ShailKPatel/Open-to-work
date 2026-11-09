@@ -106,10 +106,22 @@ def is_grounded_bullet(
 ) -> bool:
     """A project bullet states no number its evidence does not, and names
     no technology outside the project's skills and evidence text."""
-    if not numbers(bullet) <= numbers(evidence):
-        return False
+    return bullet_problem(bullet, evidence, skills, vocabulary) is None
+
+
+def bullet_problem(
+    bullet: str, evidence: str, skills: Iterable[str], vocabulary: TechVocabulary
+) -> str | None:
+    """Why a project bullet fails is_grounded_bullet(), in words the writer
+    can act on when the bullet goes back to it. None when it passes."""
+    unsupported = numbers(bullet) - numbers(evidence)
+    if unsupported:
+        return "states a number the evidence does not: " + ", ".join(sorted(unsupported))
     allowed = {canonical(s) for s in skills} | vocabulary.mentions(evidence)
-    return vocabulary.mentions(bullet) <= allowed
+    unknown = vocabulary.mentions(bullet) - allowed
+    if unknown:
+        return "names a technology this project does not have: " + ", ".join(sorted(unknown))
+    return None
 
 
 def introduces_technology(original: str, rewritten: str, vocabulary: TechVocabulary) -> bool:

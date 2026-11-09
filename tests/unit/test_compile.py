@@ -94,3 +94,14 @@ def test_tectonic_runs_in_untrusted_mode():
     assert captured["env"]["TECTONIC_UNTRUSTED_MODE"] == "1"
     # Shell escape is never asked for on the command line either.
     assert "shell-escape" not in " ".join(captured["cmd"])
+
+
+def test_tectonic_does_not_receive_the_apps_secrets(monkeypatch):
+    from app.resume_build.compile import _tectonic_env
+
+    monkeypatch.setenv("DEMO_SESSION_SECRET", "s3cret")
+    monkeypatch.setenv("APP_SECRET_KEY", "k3y")
+    env = _tectonic_env()
+    assert "DEMO_SESSION_SECRET" not in env and "APP_SECRET_KEY" not in env
+    assert env["TECTONIC_UNTRUSTED_MODE"] == "1"
+    assert "PATH" in env
