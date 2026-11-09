@@ -1,4 +1,4 @@
-.PHONY: test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-public eval-skillspan eval-llm constraints dev up down start
+.PHONY: usage-report test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-public eval-skillspan eval-llm constraints dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
@@ -100,6 +100,10 @@ eval-public:
 eval-llm:
 	.venv/bin/python -m scripts.fetch_real_eval_data
 	.venv/bin/python -m scripts.run_llm_evals $(if $(ONLY),--only $(ONLY),) $(if $(WRITE),--write,)
+
+# Users, resumes, judge rejections and cost per resume for DATABASE_URL.
+usage-report:
+	.venv/bin/python -m scripts.usage_report
 
 # Re-pin constraints.txt to the current venv. Run deliberately, after the
 # suite passes on upgraded packages, and commit with a note on what moved.

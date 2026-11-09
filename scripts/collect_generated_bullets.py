@@ -43,6 +43,7 @@ from app.evals.synthetic import load_jobs, load_personas, repo_id, seed
 from scripts.run_llm_evals import KEYS_FILE, eval_keys
 
 DEFAULT_OUT = Path("evals/judge/generated_bullets.yaml")
+DEFAULT_GRAPH_OUT = Path("evals/judge/generated_bullets_after_revision.yaml")
 
 _HEADER = """\
 # Project bullets written by the app's resume writer, recorded before its
@@ -122,6 +123,68 @@ def _build(persona: Any, job: Any, recorded: list[dict[str, Any]]) -> None:
         orchestrator._ground_projects = original
 
 
+def _build_through_graph(
+    persona: Any, job: Any, recorded: list[dict[str, Any]], stats: dict[str, int]
+) -> None:
+    """One build through the real graph, judge and revise loop included,
+    with approval off. The personas have no JobPosting row, so retrieval is
+    pointed at the job directly, and the page fit is skipped: it needs
+    Tectonic and only touches layout. Records the bullets that survived."""
+    import uuid
+
+    from app.core.db import Account, get_db
+    from app.core.pipeline import Pipeline
+    from app.resume_build import graph, orchestrator
+    from app.resume_build.pagefit import FitResult
+    from app.retrieval.search import Query
+
+    query = Query(text=job.query_text(), skills=tuple(job.skills))
+
+    def context(*args: Any, **kwargs: Any) -> Any:
+        db = get_db()
+        try:
+            account = db.get(Account, persona.account_id)
+            assert account is not None, f"{persona.key} is not seeded"
+            return orchestrator._build_deterministic_context(
+                db, account, persona.account_id, job.text, retrieval_query=query
+            )
+        finally:
+            db.close()
+
+    saved = graph.load_context, graph.load_posting, graph.fit_to_page_limit
+    graph.load_context = context
+    graph.load_posting = lambda *a, **k: (job.text, query)
+    graph.fit_to_page_limit = lambda *a, **k: FitResult(
+        tex="", pdf_bytes=b"", page_count=1, cuts_made=0
+    )
+    try:
+        result = graph.run_graph(
+            {"account_id": persona.account_id, "job_posting_id": 0, "template": "onepage"},
+            1,
+            graph.BuildHooks(pipeline=Pipeline("eval"), on_stage=lambda _: None, progress={}),
+            uuid.uuid4().hex,
+            require_approval=False,
+        )
+    finally:
+        graph.load_context, graph.load_posting, graph.fit_to_page_limit = saved
+
+    judge = result.values.get("judge_stats") or {}
+    for key in ("rejected", "saved", "dropped"):
+        stats[key] = stats.get(key, 0) + judge.get(key, 0)
+    context_data = orchestrator.context_from_dict(result.values["context"])
+    for project in result.values["draft"]["projects"]:
+        source = orchestrator.bullet_evidence(context_data, project)
+        for bullet in project["points"]:
+            recorded.append(
+                {
+                    "repo_id": project["repo_id"],
+                    "evidence": source[0] if source else "",
+                    "bullet": bullet,
+                    "passed_filter": True,
+                }
+            )
+
+
 def _last_model() -> str:
     """The model that answered the latest call. The app falls back to the
     bulk model when the quality model is unavailable, so the configured
@@ -142,7 +205,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--real", type=int, default=15, help="real-text postings to use")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument(
+        "--graph",
+        action="store_true",
+        help="build through the judge and revise loop and record the final bullets; "
+        "use a separate --out from the pre-filter set",
+    )
     args = parser.parse_args()
+    if args.graph and args.out == DEFAULT_OUT:
+        args.out = DEFAULT_GRAPH_OUT
+    stats: dict[str, int] = {}
 
     keys = eval_keys()
     if not keys:
@@ -164,7 +236,10 @@ def main() -> None:
         for persona, job in pairs:
             recorded: list[dict[str, Any]] = []
             try:
-                _paced(partial(_build, persona, job, recorded))
+                if args.graph:
+                    _paced(partial(_build_through_graph, persona, job, recorded, stats))
+                else:
+                    _paced(partial(_build, persona, job, recorded))
             except QuotaExhaustedError as e:
                 print(f"stopped: {e}")
                 break
@@ -189,6 +264,8 @@ def main() -> None:
             _save(args.out, records)
             print(f"{job.key} / {persona.key}: {len(recorded)} bullets")
     print(f"{len(records)} bullets in {args.out}")
+    if stats:
+        print(f"judge this run: {stats}")
 
 
 if __name__ == "__main__":

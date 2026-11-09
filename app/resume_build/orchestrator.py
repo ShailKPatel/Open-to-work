@@ -28,8 +28,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Collection, Iterable
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -713,9 +713,11 @@ def _ground_projects(
     projects: list[dict[str, Any]],
     candidates_by_id: dict[int, dict[str, Any]],
     vocabulary: TechVocabulary,
+    rejected: Collection[tuple[int, str]] = (),
 ) -> tuple[list[dict[str, Any]], int]:
     """Drops each project bullet that fails grounding.is_grounded_bullet()
-    against the evidence its writer was shown for that project, and a
+    against the evidence its writer was shown for that project, or that is
+    listed in `rejected` as (repo_id, bullet), and a
     tagline that fails the same check. A project left with no bullets
     falls back to _reserve_project()'s single bullet, its own
     description, or is dropped when it has none. Returns the projects and
@@ -730,7 +732,10 @@ def _ground_projects(
         )
         skills = candidate["skills"]
         points = [
-            p for p in project["points"] if is_grounded_bullet(p, evidence, skills, vocabulary)
+            p
+            for p in project["points"]
+            if (project["repo_id"], p) not in rejected
+            and is_grounded_bullet(p, evidence, skills, vocabulary)
         ]
         dropped += len(project["points"]) - len(points)
         if points:
@@ -966,6 +971,48 @@ def _build_resume_data_for_text(
         selected_skills=selected_skills,
         retrieval_query=retrieval_query,
     )
+    draft = write_draft(
+        ctx,
+        account_id,
+        job_text,
+        template,
+        project_instructions=project_instructions,
+        selected_skills=selected_skills,
+        selected_experience_ids=selected_experience_ids,
+        selected_education_ids=selected_education_ids,
+        custom_instruction=custom_instruction,
+        points_per_role=points_per_role,
+    )
+    projects, dropped_bullets = _ground_projects(
+        draft["projects"],
+        {c["repo_id"]: c for c in ctx.candidates},
+        TechVocabulary(ctx.technologies),
+    )
+    _log_grounding("resume build", account_id, dropped_bullets, 0)
+    return {
+        **draft,
+        "projects": projects,
+        "reserve": _build_reserve(ctx, draft["experience"], projects, draft["skills"]),
+    }
+
+
+def write_draft(
+    ctx: _DeterministicContext,
+    account_id: int,
+    job_text: str,
+    template: str,
+    *,
+    project_instructions: dict[int, str] | None = None,
+    selected_skills: list[str] | None = None,
+    selected_experience_ids: list[int] | None = None,
+    selected_education_ids: list[int] | None = None,
+    custom_instruction: str | None = None,
+    points_per_role: int | None = None,
+) -> dict[str, Any]:
+    """The writer's one call, and everything decided from its reply except
+    which project bullets survive: that is left to the caller, which either
+    applies the rule filter at once (_build_resume_data_for_text) or sends
+    failures back for another try (graph.py). The draft has no reserve yet."""
     candidates_by_id = {c["repo_id"]: c for c in ctx.candidates}
 
     pool = ctx.experience_pool
@@ -996,13 +1043,8 @@ def _build_resume_data_for_text(
     if response.parsed is None:
         raise ValueError("LLM response for resume generation was not valid JSON")
 
-    vocabulary = TechVocabulary(ctx.technologies)
-    projects, dropped_bullets = _ground_projects(
-        _assemble_projects(
-            response.parsed.get("projects", []), candidates_by_id, project_instructions
-        ),
-        candidates_by_id,
-        vocabulary,
+    projects = _assemble_projects(
+        response.parsed.get("projects", []), candidates_by_id, project_instructions
     )
     skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
     experience = _pick_experience_points(
@@ -1022,8 +1064,8 @@ def _build_resume_data_for_text(
         [point for role in pool for point in role["points"]],
         project_instructions,
     )
-    _log_grounding("resume build", account_id, dropped_bullets, dropped_sentences)
 
+    _log_grounding("resume draft", account_id, 0, dropped_sentences)
     return {
         **ctx.header,
         "summary": summary,
@@ -1032,8 +1074,170 @@ def _build_resume_data_for_text(
         "education": education,
         "technologies": [],
         "skills": skills,
-        "reserve": _build_reserve(ctx, experience, projects, skills),
     }
+
+
+_REVISE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rewrites": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "repo_id": {"type": "integer"},
+                    "original": {"type": "string"},
+                    "text": {"type": "string"},
+                },
+                "required": ["repo_id", "original", "text"],
+            },
+        }
+    },
+    "required": ["rewrites"],
+}
+
+_REVISE_SYSTEM_PROMPT = (
+    "You wrote resume bullets that a fact-checker rejected. For each one you "
+    "are given the project's evidence, the bullet, and the reason it was "
+    "rejected. Rewrite the bullet so every claim is supported by that "
+    "evidence: remove or soften what the evidence does not state, and never "
+    "add a number, technology, team, user, or outcome it does not state. If "
+    "nothing supported is left to say, return an empty text. Copy each "
+    "original exactly as given. Write plain, factual, resume-register prose. "
+    "Never use an em dash; use a period, comma, or colon instead. Return "
+    "JSON matching the given schema, nothing else."
+)
+
+
+def revise_bullets(
+    ctx: _DeterministicContext,
+    draft: dict[str, Any],
+    feedback: list[dict[str, Any]],
+    account_id: int,
+) -> dict[str, Any]:
+    """The draft with each rejected bullet rewritten from its project's
+    evidence and the reason it was rejected. Only those bullets are sent
+    and only they can change, so bullets already accepted stay as they
+    are. The posting is not part of this prompt: the fix is to match the
+    evidence, not the job. A bullet the model leaves alone or returns
+    empty keeps its text, and fails the next check."""
+    blocks = [
+        f"repo_id={item['repo_id']}\nEvidence: {item['evidence']}\n"
+        f"Bullet: {item['bullet']}\nRejected because: {item['reason']}"
+        for item in feedback
+    ]
+    response = complete(
+        "quality",
+        [system_message(_REVISE_SYSTEM_PROMPT), user_message("\n\n".join(blocks))],
+        schema=_REVISE_SCHEMA,
+        account_id=account_id,
+        purpose="resume_revise",
+    )
+    wanted = {(item["repo_id"], item["bullet"]) for item in feedback}
+    rewrites: dict[tuple[int, str], str] = {}
+    planned = (response.parsed or {}).get("rewrites")
+    for item in planned if isinstance(planned, list) else []:
+        if not isinstance(item, dict):
+            continue
+        key = (item.get("repo_id"), str(item.get("original", "")).strip())
+        text = str(item.get("text", "")).strip()
+        if key in wanted and text:
+            rewrites[key] = text  # type: ignore[index]
+
+    projects = []
+    for project in draft["projects"]:
+        points = [rewrites.get((project["repo_id"], p), p) for p in project["points"]]
+        projects.append({**project, "points": list(dict.fromkeys(points))})
+    return {**draft, "projects": projects}
+
+
+def bullet_evidence(
+    ctx: _DeterministicContext, project: dict[str, Any]
+) -> tuple[str, list[str], str] | None:
+    """(evidence text, skills, the repo's own description) for one draft
+    project, exactly as its writer saw them. None for a project that is not
+    among this build's candidates."""
+    for candidate in ctx.candidates:
+        if candidate["repo_id"] == project.get("repo_id"):
+            evidence = format_project_evidence(
+                candidate["name"],
+                candidate["description"],
+                candidate["skills"],
+                project.get("user_note"),
+            )
+            return evidence, candidate["skills"], (candidate["description"] or "").strip()
+    return None
+
+
+def finish_draft(
+    ctx: _DeterministicContext, draft: dict[str, Any], rejected: Collection[tuple[int, str]]
+) -> dict[str, Any]:
+    """The draft with its rejected bullets dropped, the same fallback as a
+    rule failure for a project left with none, and its reserve built."""
+    projects, _ = _ground_projects(
+        draft["projects"],
+        {c["repo_id"]: c for c in ctx.candidates},
+        TechVocabulary(ctx.technologies),
+        rejected,
+    )
+    return {
+        **draft,
+        "projects": projects,
+        "reserve": _build_reserve(ctx, draft["experience"], projects, draft["skills"]),
+    }
+
+
+def load_posting(job_posting_id: int) -> tuple[str, Query]:
+    """A posting's raw text and the search query built from its extracted
+    fields. The text stays quarantined: it reaches a model only through
+    _JOB_TEXT_PREFIX."""
+    db = get_db()
+    try:
+        posting = db.get(JobPosting, job_posting_id)
+        if posting is None:
+            raise ValueError(f"no job posting with id={job_posting_id}")
+        return posting.raw_text_quarantined, query_for_posting(posting)
+    finally:
+        db.close()
+
+
+def load_context(
+    account_id: int,
+    job_posting_id: int,
+    selected_email: str | None = None,
+    selected_phone: str | None = None,
+    selected_project_ids: list[int] | None = None,
+    selected_skills: list[str] | None = None,
+) -> _DeterministicContext:
+    """The retrieval half of a build, on its own: no model call."""
+    job_text, query = load_posting(job_posting_id)
+    db = get_db()
+    try:
+        account = db.get(Account, account_id)
+        if account is None:
+            raise ValueError(f"no account with id={account_id}")
+        return _build_deterministic_context(
+            db,
+            account,
+            account_id,
+            job_text,
+            selected_email=selected_email,
+            selected_phone=selected_phone,
+            selected_project_ids=selected_project_ids,
+            selected_skills=selected_skills,
+            retrieval_query=query,
+        )
+    finally:
+        db.close()
+
+
+def context_to_dict(ctx: _DeterministicContext) -> dict[str, Any]:
+    """Plain data, so a build's context can live in its graph checkpoint."""
+    return asdict(ctx)
+
+
+def context_from_dict(data: dict[str, Any]) -> _DeterministicContext:
+    return _DeterministicContext(**data)
 
 
 def build_resume_data(
@@ -1188,6 +1392,7 @@ def edit_resume_content(
     message: str,
     template: str = "onepage",
     retrieval_query: Query | None = None,
+    context: _DeterministicContext | None = None,
 ) -> dict[str, Any]:
     """Applies a free-text edit instruction from the account holder to an
     existing resume's summary/projects/skills, re-grounded against the
@@ -1201,6 +1406,8 @@ def edit_resume_content(
     quarantined the way a job posting's text is; `job_text` (a
     JobPosting's raw text, or the seed text build_resume_data_from_seed()
     used) still is, same as every other call site in this module.
+    `context` is the build's own retrieval, when the caller already has it
+    (graph.py), so the edit chooses from the same candidates as the draft.
     """
     import json
 
@@ -1209,7 +1416,7 @@ def edit_resume_content(
         account = db.get(Account, account_id)
         if account is None:
             raise ValueError(f"no account with id={account_id}")
-        ctx = _build_deterministic_context(
+        ctx = context or _build_deterministic_context(
             db, account, account_id, job_text, retrieval_query=retrieval_query
         )
         candidates_by_id = {c["repo_id"]: c for c in ctx.candidates}

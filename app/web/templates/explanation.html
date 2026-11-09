@@ -30,7 +30,7 @@
       <h1 class="font-display ex-h1">How <em>Open to Work</em> is built</h1>
       <p class="ex-lede-lg">
         It reads your GitHub and your resume, learns what you can actually do, and writes
-        a resume tailored to one job posting. It runs on your machine in Docker; only the
+        a resume tailored to one job posting. {{ 'It runs on one small cloud server in Docker;' if hosted else 'It runs on your machine in Docker;' }} only the
         LLM call leaves it.
       </p>
     </section>
@@ -100,7 +100,7 @@
         ('search', 'Keep a library', 'Every resume is saved, and the closest one you already have is found for a new job.'),
       ]),
       ('Run it yourself', [
-        ('terminal', 'One command to start', 'Runs in Docker on your machine. Your data stays there.'),
+        ('terminal', 'One command to start', ('Hosted demo: sign in with GitHub.' if hosted else 'Runs in Docker on your machine. Your data stays there.')),
         ('key', 'Any AI provider', 'OpenAI, Anthropic, Gemini, Mistral, Azure, Bedrock or local Ollama. Keys are encrypted.'),
         ('shield', 'Spend limit', 'A monthly budget is checked before every AI call, and repeat calls are free.'),
         ('chart', 'See your usage', 'AI spend by key, profile and model, plus GitHub rate limits.'),
@@ -246,7 +246,7 @@
           <div>
             <h2 class="ex-h2">How the pieces connect</h2>
             <p class="ex-lede">
-              Everything inside the blue frame runs in Docker on your machine. Dashed boxes are outside it.
+              Everything inside the blue frame runs in Docker {{ 'on the server' if hosted else 'on your machine' }}. Dashed boxes are outside it.
               Hover a box to highlight what it talks to.
             </p>
           </div>
@@ -256,7 +256,7 @@
           <div class="ex-scroll">
             <div class="ex-diagram ex-arch" data-wires="arch">
               <div class="ex-boundary" aria-hidden="true">
-                <span class="ex-boundary-label"><span class="ex-logo ex-logo--bare">{{ lg.logo('docker') }}</span>Docker · your machine</span>
+                <span class="ex-boundary-label"><span class="ex-logo ex-logo--bare">{{ lg.logo('docker') }}</span>Docker · {{ 'server' if hosted else 'your machine' }}</span>
               </div>
 
               {{ ex.node('browser', 'Frontend', 'Web pages', 'Server-rendered HTML. No Node; CSS compiled at image build.', logos=['jinja', 'tailwindcss', 'alpinedotjs'], area='grid-column:3;grid-row:1') }}
@@ -269,7 +269,7 @@
               {{ ex.node('embed', 'Embeddings', 'sentence-transformers', models.embedding ~ ' on CPU. No API key.', logos=['huggingface'], area='grid-column:2;grid-row:3', tip='Embedding model|' ~ models.embedding ~ '|Runs locally via sentence-transformers, downloaded once into the hf_cache volume.|Vector size follows the model: 768 for the default bge-base.|The same model embeds every Qdrant collection and every search query.') }}
               {{ ex.node('sqlite', 'Database', 'SQLite', 'Stores all app data.', logos=['sqlite', 'sqlalchemy'], area='grid-column:3;grid-row:3', tip='Database|SQLite via SQLAlchemy|WAL journal mode plus a 30s busy timeout.|Every LLM call is logged here with model, tokens and cost.') }}
               {{ ex.node('llm', 'LLM gateway', 'LiteLLM', 'One call path: cached and budget-capped.', logos=['litellm'], area='grid-column:4;grid-row:3', tip='LLM models|Any LiteLLM model, picked on Manage APIs|A cheaper model for repo skills and links, a stronger one for extraction and resume writing.|Monthly budget: $' ~ ('%g' | format(models.budget)) ~ ', checked before every call.') }}
-              {{ ex.node('providers', 'Outside', 'LLM provider', 'The only call that leaves your machine.', 'cloud', ext=true, area='grid-column:5;grid-row:3') }}
+              {{ ex.node('providers', 'Outside', 'LLM provider', ('The only call that leaves the server.' if hosted else 'The only call that leaves your machine.'), 'cloud', ext=true, area='grid-column:5;grid-row:3') }}
 
               {{ ex.node('qdrant', 'Vector search', 'Qdrant', 'Finds the evidence closest to a job.', logos=['qdrant'], area='grid-column:2;grid-row:4', tip='Vector database|Qdrant · cosine distance|Collections: skill_evidence, experience_points, resumes, job_postings, role_families.|Vectors from ' ~ models.embedding ~ '. Point id equals the SQLite row id.') }}
             </div>
@@ -335,7 +335,7 @@
               {{ ex.node('startsh', 'Bootstrap', 'start.sh', 'Installs Docker if missing, picks free ports.', logos=['gnubash'], mono=true, area='grid-column:2;grid-row:1') }}
               {{ ex.node('compose', 'Orchestration', 'Docker Compose', 'Two services, each health-checked.', logos=['docker'], area='grid-column:3;grid-row:1') }}
 
-              {{ ex.node('open', 'Ready', 'localhost:8000', 'Opens in your browser.', 'globe', ext=true, mono=true, area='grid-column:1;grid-row:2') }}
+              {{ ex.node('open', 'Ready', ('This site' if hosted else 'localhost:8000'), 'Opens in your browser.', 'globe', ext=true, mono=true, area='grid-column:1;grid-row:2') }}
               {{ ex.node('app', 'Container 1', 'app', 'Python 3.12, CPU-only PyTorch, Tectonic, Chromium.', logos=['python', 'pytorch'], mono=true, area='grid-column:2;grid-row:2') }}
               {{ ex.node('qdrantc', 'Container 2', 'qdrant', 'The official Qdrant image.', logos=['qdrant'], mono=true, area='grid-column:3;grid-row:2') }}
 

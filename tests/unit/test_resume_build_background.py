@@ -77,9 +77,9 @@ def _wait_done(client: TestClient, build_id: str) -> dict:
 
 def _fake_build(monkeypatch, skills=("Python",)):
     data = {"summary": "s", "skills": list(skills), "projects": []}
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value=data))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value=data))
     fit = FitResult(tex="x", pdf_bytes=b"%PDF-bg", page_count=1, cuts_made=0)
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", MagicMock(return_value=fit))
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", MagicMock(return_value=fit))
 
 
 def test_start_answers_before_the_build_finishes(posting, monkeypatch):
@@ -90,7 +90,7 @@ def test_start_answers_before_the_build_finishes(posting, monkeypatch):
         release.wait(5)
         return {"summary": "s", "skills": ["Python"], "projects": []}
 
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", _slow)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", _slow)
     client = _client()
 
     resp = client.post("/api/resume-build/start", json=posting)
@@ -127,7 +127,7 @@ def test_failed_build_keeps_the_reason(posting, monkeypatch):
     def _raise(*args, **kwargs):
         raise LLMRateLimitedError("All 2 OpenAI keys failed on this request.")
 
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", _raise)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", _raise)
     client = _client()
 
     build_id = client.post("/api/resume-build/start", json=posting).json()["id"]
@@ -221,12 +221,12 @@ def test_a_build_that_stops_after_tailoring_is_kept_and_retry_skips_that_step(
         "experience": [{"id": 1}], "education": [], "reserve": {"skills": ["Go"]},
     }
     tailor = MagicMock(return_value=data)
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", tailor)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", tailor)
 
     def _timeout(*args, **kwargs):
         raise CompileError("tectonic timed out after 60s")
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _timeout)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _timeout)
     client = _client()
 
     first = _wait_done(client, client.post("/api/resume-build/start", json=posting).json()["id"])
@@ -254,7 +254,7 @@ def test_a_build_that_stops_after_tailoring_is_kept_and_retry_skips_that_step(
         seen["data"] = dict(data)
         return FitResult(tex="x", pdf_bytes=b"%PDF-retry", page_count=1, cuts_made=0)
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _fit)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _fit)
     retry = client.post(f"/api/resume-build/retry/{resume_id}").json()
     assert retry["retry_of"] == resume_id
     done = _wait_done(client, retry["id"])
@@ -275,7 +275,7 @@ def test_a_build_that_stops_before_anything_finished_is_kept_and_retried_whole(
     def _busy(*args, **kwargs):
         raise LLMRateLimitedError("gemini-3.5-flash is getting more requests than it can handle")
 
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", _busy)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", _busy)
     client = _client()
     body = {**posting, "name": "For Acme", "selected_skills": ["Python"]}
 
@@ -293,9 +293,9 @@ def test_a_build_that_stops_before_anything_finished_is_kept_and_retried_whole(
     assert row["build_attempts"] == 2
 
     tailor = MagicMock(return_value={"summary": "s", "skills": ["Python"], "projects": []})
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", tailor)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", tailor)
     fit = FitResult(tex="x", pdf_bytes=b"%PDF", page_count=1, cuts_made=0)
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", MagicMock(return_value=fit))
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", MagicMock(return_value=fit))
 
     done = _wait_done(client, client.post(f"/api/resume-build/retry/{resume_id}").json()["id"])
 

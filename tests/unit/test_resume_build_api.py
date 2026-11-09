@@ -93,10 +93,10 @@ def test_preview_maps_rate_limited_to_503(monkeypatch):
 
 
 def test_generate_returns_pdf_bytes_with_headers(monkeypatch):
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value={}))
     fit_result = FitResult(tex="x", pdf_bytes=b"%PDF-fake", page_count=1, cuts_made=2)
     monkeypatch.setattr(
-        "app.api.resume_build.fit_to_page_limit", MagicMock(return_value=fit_result)
+        "app.resume_build.graph.fit_to_page_limit", MagicMock(return_value=fit_result)
     )
 
     resp = _client().post(
@@ -112,14 +112,14 @@ def test_generate_returns_pdf_bytes_with_headers(monkeypatch):
 
 
 def test_generate_still_returns_best_pdf_on_unfit(monkeypatch):
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value={}))
 
     def _raise(*args, **kwargs):
         raise PageFitNotAchievedError(
             "nope", best_tex="x", best_pdf_bytes=b"%PDF-best", best_page_count=2
         )
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _raise)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _raise)
 
     resp = _client().post(
         "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
@@ -138,7 +138,7 @@ def test_generate_says_which_step_ran_out_of_keys(monkeypatch):
     def _raise(*args, **kwargs):
         raise LLMRateLimitedError("All 2 OpenAI keys failed on this request.")
 
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", _raise)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", _raise)
 
     resp = _client().post(
         "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
@@ -155,7 +155,7 @@ def test_generate_keeps_the_resume_when_the_keys_die_during_the_fit(monkeypatch)
     """The content step is the expensive one and it already succeeded, so
     running out of keys in the page-fit step returns the compiled resume
     with the reason attached, not an error and no file."""
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value={}))
 
     def _raise(*args, **kwargs):
         raise PageFitNotAchievedError(
@@ -164,7 +164,7 @@ def test_generate_keeps_the_resume_when_the_keys_die_during_the_fit(monkeypatch)
             best_tex="x", best_pdf_bytes=b"%PDF-best", best_page_count=2,
         )
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _raise)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _raise)
 
     resp = _client().post(
         "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
@@ -179,7 +179,7 @@ def test_generate_keeps_the_resume_when_the_keys_die_during_the_fit(monkeypatch)
 def test_generate_note_header_is_one_bounded_line(monkeypatch):
     """The message lists one key per line; a header value cannot carry
     newlines, and an over-long one gets dropped in transit."""
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value={}))
 
     def _raise(*args, **kwargs):
         raise PageFitNotAchievedError(
@@ -187,7 +187,7 @@ def test_generate_note_header_is_one_bounded_line(monkeypatch):
             best_tex="x", best_pdf_bytes=b"%PDF-best", best_page_count=2,
         )
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _raise)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _raise)
 
     resp = _client().post(
         "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
@@ -201,12 +201,12 @@ def test_generate_note_header_is_one_bounded_line(monkeypatch):
 
 
 def test_generate_maps_missing_tectonic_to_501(monkeypatch):
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value={}))
 
     def _raise(*args, **kwargs):
         raise TectonicNotInstalledError("no tectonic")
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _raise)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _raise)
 
     resp = _client().post(
         "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
@@ -215,12 +215,12 @@ def test_generate_maps_missing_tectonic_to_501(monkeypatch):
 
 
 def test_generate_maps_compile_error_to_502(monkeypatch):
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value={}))
 
     def _raise(*args, **kwargs):
         raise CompileError("bad latex")
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _raise)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _raise)
 
     resp = _client().post(
         "/api/resume-build/generate", json={"account_id": 1, "job_posting_id": 2}
@@ -232,7 +232,7 @@ def test_generate_maps_unknown_account_to_404(monkeypatch):
     def _raise(*args, **kwargs):
         raise ValueError("no account with id=999")
 
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", _raise)
+    monkeypatch.setattr("app.resume_build.graph.write_draft", _raise)
 
     resp = _client().post(
         "/api/resume-build/generate", json={"account_id": 999, "job_posting_id": 2}
@@ -280,11 +280,11 @@ def test_generate_saves_result_into_resume_library(tmp_path, monkeypatch):
         "experience": [], "education": [], "technologies": [],
     }
     monkeypatch.setattr(
-        "app.api.resume_build.build_resume_data", MagicMock(return_value=fake_data)
+        "app.resume_build.graph.write_draft", MagicMock(return_value=fake_data)
     )
     fit_result = FitResult(tex="x", pdf_bytes=b"%PDF-fake", page_count=1, cuts_made=0)
     monkeypatch.setattr(
-        "app.api.resume_build.fit_to_page_limit", MagicMock(return_value=fit_result)
+        "app.resume_build.graph.fit_to_page_limit", MagicMock(return_value=fit_result)
     )
 
     resp = _client().post(
@@ -311,14 +311,14 @@ def test_generate_saves_result_into_resume_library(tmp_path, monkeypatch):
 
 
 def test_generate_defaults_max_pages_by_template(monkeypatch):
-    monkeypatch.setattr("app.api.resume_build.build_resume_data", MagicMock(return_value={}))
+    monkeypatch.setattr("app.resume_build.graph.write_draft", MagicMock(return_value={}))
     captured = {}
 
     def _fake_fit(data, template, max_pages, account_id=None, **kwargs):
         captured["max_pages"] = max_pages
         return FitResult(tex="x", pdf_bytes=b"%PDF", page_count=max_pages, cuts_made=0)
 
-    monkeypatch.setattr("app.api.resume_build.fit_to_page_limit", _fake_fit)
+    monkeypatch.setattr("app.resume_build.graph.fit_to_page_limit", _fake_fit)
 
     _client().post(
         "/api/resume-build/generate",

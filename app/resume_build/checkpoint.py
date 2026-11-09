@@ -1,8 +1,10 @@
 """What an unfinished resume build had done when it stopped, as the
 checklist the resume library shows beside its Retry button.
 
-A build is three steps (app/api/resume_build.py's _run_build): one model
-call that tailors every section at once, the page-fit pass, then saving.
+From the library's view a build is three steps (app/resume_build/graph.py
+runs them): one model call that tailors every section at once, the
+page-fit pass, then saving. This is display only; what lets a build carry
+on is graph.py's checkpoint and Resume.build_state_json.
 The sections all come out of that one call together, so they are either
 all written or none are; the checklist still names them one by one, so
 "what is left" reads as sections of a resume rather than as pipeline

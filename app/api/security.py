@@ -1,8 +1,10 @@
-"""Request checks and response headers for an app with no login.
+"""Request checks and response headers.
 
-The app trusts whoever can reach it, which is meant to be the person at
-this machine (ports bind to 127.0.0.1). Two browser tricks would let a
-web page elsewhere act through that person's browser:
+Run locally the app has no login and trusts whoever can reach it, which is
+meant to be the person at this machine (ports bind to 127.0.0.1). With
+DEMO_MODE on it is public: app/api/demo.py handles sign-in and ownership,
+and the checks below accept only the demo's own host name. Two browser
+tricks would let a web page elsewhere act through a person's browser:
 
 - Cross-site requests (CSRF): another site's page posting a form or a
   fetch here. State-changing methods are refused unless Sec-Fetch-Site,
@@ -29,11 +31,14 @@ sync and extraction progress streams) pass through untouched.
 
 from __future__ import annotations
 
+from http.cookies import SimpleCookie
 from urllib.parse import urlsplit
 
 from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+
+from app.core.settings import get_settings
 
 ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
@@ -67,11 +72,16 @@ def _origin(url: str) -> str | None:
     return f"{parts.scheme}://{parts.netloc}".lower()
 
 
-def refusal(method: str, headers: dict[str, str], scheme: str) -> tuple[int, str] | None:
+def refusal(
+    method: str, headers: dict[str, str], scheme: str, public_host: str | None = None
+) -> tuple[int, str] | None:
     """(status, reason) for a request to refuse, or None to let it
-    through. headers are keyed by lowercase name."""
+    through. headers are keyed by lowercase name. public_host is the demo's
+    own name: then it is the only Host accepted, and its origin is https
+    whatever scheme the proxy in front used to reach this process."""
     host = headers.get("host", "")
-    if _hostname(host) not in ALLOWED_HOSTS:
+    allowed = {public_host.lower()} if public_host else ALLOWED_HOSTS
+    if _hostname(host) not in allowed:
         return 400, "Unknown host. Open the app at http://localhost with its port."
     if method.upper() not in _UNSAFE_METHODS:
         return None
@@ -80,11 +90,33 @@ def refusal(method: str, headers: dict[str, str], scheme: str) -> tuple[int, str
     fetch_site = headers.get("sec-fetch-site")
     if fetch_site is not None and fetch_site.lower() not in _OWN_FETCH_SITES:
         return cross_site
-    own = f"{scheme}://{host}".lower()
+    own = f"https://{public_host}".lower() if public_host else f"{scheme}://{host}".lower()
     if "origin" in headers:
         return None if headers["origin"].lower() == own else cross_site
     if "referer" in headers:
         return None if _origin(headers["referer"]) == own else cross_site
+    return None
+
+
+_DEMO_MAX_BODY_BYTES = 12 * 1024 * 1024
+_DEMO_CLOSED_PATHS = {"/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"}
+
+
+def _demo_refusal(method: str, path: str, headers: dict[str, str]) -> tuple[int, str] | None:
+    """What can be refused before routing. FastAPI's documentation routes
+    never reach demo_gate; and a request that changes something has to be
+    signed in before its body, possibly a large upload, is read."""
+    from app.api.demo import session_account
+
+    if path in _DEMO_CLOSED_PATHS:
+        return 404, "Not found."
+    length = headers.get("content-length", "")
+    if length.isdigit() and int(length) > _DEMO_MAX_BODY_BYTES:
+        return 413, "That upload is too large for the demo."
+    if method.upper() in _UNSAFE_METHODS and not path.startswith("/auth/"):
+        cookie = SimpleCookie(headers.get("cookie", "")).get("otw_session")
+        if not cookie or session_account(cookie.value) is None:
+            return 401, "Sign in first."
     return None
 
 
@@ -97,9 +129,15 @@ class SecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        settings = get_settings()
+        public_host = settings.demo_public_host if settings.demo_mode else None
+        path = scope["path"]
+
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
+                if public_host:
+                    headers["Strict-Transport-Security"] = "max-age=31536000"
                 for name, value in _RESPONSE_HEADERS.items():
                     if name not in headers:
                         headers[name] = value
@@ -109,7 +147,12 @@ class SecurityMiddleware:
             name.decode("latin-1").lower(): value.decode("latin-1")
             for name, value in scope["headers"]
         }
-        refused = refusal(scope["method"], headers, scope.get("scheme", "http"))
+        refused = refusal(scope["method"], headers, scope.get("scheme", "http"), public_host)
+        if public_host:
+            refused = refused or _demo_refusal(scope["method"], path, headers)
+            # The platform's health probe calls by IP, with no public Host.
+            if path == "/health":
+                refused = None
         if refused is not None:
             status, reason = refused
             await JSONResponse({"detail": reason}, status_code=status)(

@@ -32,6 +32,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from langsmith import traceable
 from sqlalchemy import func, select
 
 from app.core.app_settings import Tier, get_llm_settings
@@ -43,6 +44,8 @@ from app.core.llm_providers import (
     provider_of_model,
 )
 from app.core.rate_limits import record_event
+from app.core.settings import get_settings
+from app.core.tracing import trace_inputs, trace_outputs
 
 if TYPE_CHECKING:  # imported for types only; the real import stays deferred
     from app.core.api_keys_store import DispatchKey
@@ -248,6 +251,30 @@ def month_spend_usd() -> float:
     return _month_spend_usd()
 
 
+def _enforce_demo_limits(account_id: int | None) -> None:
+    """One person's share of a public demo's budget. Here rather than at the
+    route because extraction and syncs keep calling long after the request
+    that started them has gone."""
+    settings = get_settings()
+    if not settings.demo_mode or account_id is None:
+        return
+    from app.core.usage import start_of_utc_day
+
+    db = get_db()
+    try:
+        calls, spent = db.execute(
+            select(func.count(LLMCall.id), func.coalesce(func.sum(LLMCall.cost_usd), 0.0)).where(
+                LLMCall.account_id == account_id,
+                LLMCall.cached.is_(False),
+                LLMCall.created_at >= start_of_utc_day(),
+            )
+        ).one()
+    finally:
+        db.close()
+    if calls >= settings.demo_daily_llm_calls or spent >= settings.demo_daily_cost_usd:
+        raise BudgetExceededError("You have reached today's demo limit. Try again tomorrow.")
+
+
 def _key_month_spend_usd(key_id: int) -> float:
     """This month's spend charged to one key, for its own budget cap.
     Per key rather than per provider, since keys rotate within a request
@@ -356,6 +383,9 @@ def _record(
         db.close()
 
 
+@traceable(
+    run_type="llm", name="complete", process_inputs=trace_inputs, process_outputs=trace_outputs
+)
 def complete(
     tier: Tier,
     messages: list[dict],
@@ -413,6 +443,8 @@ def complete(
         )
         record_event("llm", "budget_exceeded", detail, context=model, account_id=account_id)
         raise BudgetExceededError(detail)
+
+    _enforce_demo_limits(account_id)
 
     provider = provider_of_model(model)
     label = PROVIDER_LABELS.get(provider, provider)

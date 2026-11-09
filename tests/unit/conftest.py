@@ -6,6 +6,27 @@ import app.core.db as db_module
 
 
 @pytest.fixture(autouse=True)
+def _resume_graph_isolated(monkeypatch, tmp_path):
+    """Every resume build gets its own checkpoint file, and API tests run
+    the graph without retrieval or the approval stop: those are covered in
+    test_resume_graph.py, which restores the real functions it needs."""
+    from app.resume_build.orchestrator import _DeterministicContext
+
+    empty = _DeterministicContext({}, [], [], [], [], [], {})
+    monkeypatch.setattr(
+        "app.resume_build.graph._checkpoint_path", lambda: tmp_path / "resume_graph.db"
+    )
+    monkeypatch.setattr("app.resume_build.graph.load_context", lambda *a, **k: empty)
+    monkeypatch.setattr(
+        "app.resume_build.graph.load_posting", lambda *a, **k: ("posting text", "query")
+    )
+    monkeypatch.setattr(
+        "app.resume_build.graph.finish_draft", lambda ctx, draft, rejected: draft
+    )
+    monkeypatch.setattr("app.api.resume_build._approval_required", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_skill_review(monkeypatch):
     """Extraction and resume merges now end in an LLM review of new skill
     names (app/profile/skill_review.py). Default every test to a review that

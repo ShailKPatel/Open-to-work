@@ -38,6 +38,16 @@ class CompileError(RuntimeError):
     """
 
 
+def _tectonic_env() -> dict[str, str]:
+    """Only what Tectonic needs. A public instance holds API secrets in its
+    environment, and a document must have no way to read them."""
+    keep = ("PATH", "HOME", "LANG", "XDG_CACHE_HOME", "TECTONIC_CACHE_DIR")
+    return {
+        **{name: os.environ[name] for name in keep if name in os.environ},
+        "TECTONIC_UNTRUSTED_MODE": "1",
+    }
+
+
 def compile_tex(
     tex_source: str, timeout: int = _DEFAULT_TIMEOUT_SECONDS, _run_fn: Any = None
 ) -> bytes:
@@ -63,7 +73,7 @@ def compile_tex(
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                env={**os.environ, "TECTONIC_UNTRUSTED_MODE": "1"},
+                env=_tectonic_env(),
             )
         except FileNotFoundError as e:
             raise TectonicNotInstalledError(

@@ -622,6 +622,10 @@
           }, 2000);
           return;
         }
+        if (build.state === 'awaiting_approval') {
+          window.location.href = otwWork.buildHref(build);
+          return;
+        }
         this.retrying[resumeId] = false;
         // Seen here, so the header reminder has nothing left to say about it.
         fetch(`/api/resume-build/builds/${build.id}/dismiss`, { method: 'POST' }).catch(() => {});

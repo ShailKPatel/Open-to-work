@@ -1,0 +1,86 @@
+name: Release
+
+# On every merge to main: the full CI suite including the retrieval eval
+# gate, then one image in GitHub Container Registry, tagged with the commit.
+# Then the VM from infra/azure is told to run it. The deploy job is skipped
+# until the AZURE_VM_NAME repository variable exists (docs/DEPLOY.md).
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+    with:
+      run_eval: true
+
+  image:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # GHCR requires a lowercase image name; owner names may not be.
+      - name: Image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: image
+    if: vars.AZURE_VM_NAME != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # OIDC: GitHub proves who is asking, so no Azure secret is stored here.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run the new image on the VM
+        run: |
+          {
+            echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+            echo "COMPOSE_B64=$(base64 -w0 deploy/docker-compose.demo.yml)"
+            echo "CADDY_B64=$(base64 -w0 deploy/Caddyfile)"
+            cat deploy/vm-update.sh
+          } > deploy-script.sh
+          # run-command exits 0 whatever the script did; the marker is the result.
+          output=$(az vm run-command invoke \
+            -g "${{ vars.AZURE_RESOURCE_GROUP }}" -n "${{ vars.AZURE_VM_NAME }}" \
+            --command-id RunShellScript --scripts @deploy-script.sh \
+            --query 'value[0].message' -o tsv)
+          echo "$output"
+          grep -q DEPLOY_OK <<< "$output"
