@@ -228,7 +228,10 @@ def _prompt_hash(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _month_spend_usd() -> float:
+def _month_spend_usd(account_id: int | None = None) -> float:
+    """This month's spend: one account's when account_id is given (each
+    account pays through its own keys, so each has its own monthly budget),
+    otherwise every call's."""
     import datetime as dt
 
     db = get_db()
@@ -238,7 +241,8 @@ def _month_spend_usd() -> float:
         )
         total = db.execute(
             select(func.coalesce(func.sum(LLMCall.cost_usd), 0.0)).where(
-                LLMCall.created_at >= month_start
+                LLMCall.created_at >= month_start,
+                *([LLMCall.account_id == account_id] if account_id is not None else []),
             )
         ).scalar_one()
         return float(total)
@@ -434,7 +438,7 @@ def complete(
             content=cached_content, parsed=parsed, cost_usd=0.0, cached=True, model=model
         )
 
-    spent = _month_spend_usd()
+    spent = _month_spend_usd(account_id)
     if spent >= settings.monthly_budget_usd:
         detail = (
             f"The monthly budget of ${settings.monthly_budget_usd:.2f} for AI calls is used up "

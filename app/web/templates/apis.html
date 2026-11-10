@@ -2,7 +2,11 @@
 {% import "_ui.html" as ui %}
 {% block title %}Manage APIs · Open to Work{% endblock %}
 {% block content %}
-<div x-data="apisApp()" x-init="init()" class="min-h-screen flex flex-col">
+{# In the public demo the model choice and budget are the admin's; everyone
+   manages only their own keys. #}
+{% set demo_user = request.state.demo_user %}
+{% set can_configure = not (demo_user and not demo_user.admin) %}
+<div x-data="apisApp({{ can_configure | tojson }})" x-init="init()" class="min-h-screen flex flex-col">
 
   {% set top_active = '' %}
   {% include "_header.html" %}
@@ -15,8 +19,9 @@
       </a>
     </div>
 
-    <!-- Models and budget: which LiteLLM model each tier uses, plus the
-         global monthly cap. Stored in the database (app/api/app_settings.py). -->
+    {% if can_configure %}
+    {# Models and budget: which LiteLLM model each tier uses, plus the
+       monthly cap per profile. Stored in the database (app/api/app_settings.py). #}
     <section class="mt-10" x-cloak x-show="!loading">
       <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Models and budget</h2>
       <p class="mt-2 text-sm text-[color:var(--muted)]">
@@ -60,7 +65,7 @@
 
         <div>
           <label class="block text-xs uppercase tracking-wide text-[color:var(--muted)]">
-            Monthly budget <span class="normal-case">(USD, across every key)</span>
+            Monthly budget <span class="normal-case">(USD, for each profile, across its keys)</span>
           </label>
           <input type="number" min="0" step="0.01" x-model="llmForm.budget" @input="llmSaved = false" class="otw-input mt-1 max-w-xs" />
         </div>
@@ -73,6 +78,11 @@
         </div>
       </form>
     </section>
+    {% endif %}
+
+    <p class="mt-10 text-sm otw-error" x-cloak x-show="!loading && accountId === null">
+      Pick a profile first: keys belong to one profile. <a href="/" class="underline">Choose a profile</a>.
+    </p>
 
     {# One key's tile. Three groups render it (working, waiting on a quota,
        needs attention), so the markup lives here once and each group passes
@@ -111,29 +121,21 @@
                 <p class="mt-1 text-xs text-[color:var(--muted)]" x-show="key.last_checked_at">
                   Last checked <span x-text="formatTime(key.last_checked_at)"></span><span x-show="key.last_check_detail" x-text="': ' + key.last_check_detail"></span>
                 </p>
-                <p class="mt-1 text-xs text-[color:var(--muted)]">
-                  <span x-show="key.allowed_account_ids.length === 0">Usable by every profile on this device</span>
-                  <span x-show="key.allowed_account_ids.length > 0" x-text="'Restricted to: ' + accountNames(key.allowed_account_ids)"></span>
-                </p>
               </div>
               <div class="flex flex-col items-end gap-2 shrink-0">
                 <div class="flex gap-2 flex-wrap justify-end">
                   <button type="button" @click="checkKey(key)" :disabled="Boolean(busy[key.id])" class="otw-btn-ghost px-3 py-1.5 text-xs" x-text="busy[key.id] ? 'Checking...' : 'Check now'"></button>
-                  <template x-if="canManage(key)">
-                    <div class="flex gap-2 flex-wrap justify-end">
+                  <div class="flex gap-2 flex-wrap justify-end">
                       <button type="button" x-show="!key.is_active" @click="activateKey(key)" :disabled="Boolean(busy[key.id])" class="otw-btn-ghost px-3 py-1.5 text-xs">Set active</button>
                       <button type="button" @click="key.enabled ? disableKey(key) : enableKey(key)" :disabled="Boolean(busy[key.id])" class="otw-btn-ghost px-3 py-1.5 text-xs" x-text="key.enabled ? 'Turn off' : 'Turn on'"></button>
                       <button type="button" @click="openEdit(key)" class="otw-btn-ghost px-3 py-1.5 text-xs">Edit</button>
                       {{ ui.bin_button("deleting = key", label="Delete key", disabled="Boolean(busy[key.id])", size="sm") }}
-                    </div>
-                  </template>
+                  </div>
                 </div>
-                <p x-show="!canManage(key)" class="text-xs text-[color:var(--muted)] text-right max-w-[14rem]" x-text="'Belongs to ' + accountNames(key.allowed_account_ids) + '. Only they can change it.'"></p>
               </div>
             </div>
 
-            <!-- Inline edit: name, the key itself, budget cap, and which
-                 profiles may use it -->
+            <!-- Inline edit: name, the key itself, budget cap -->
             <div x-show="editing === key.id" x-cloak class="mt-4 pt-4 space-y-3" style="border-top: 1px solid var(--line);">
               <div>
                 <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Label</label>
@@ -161,20 +163,6 @@
                   Monthly budget cap <span class="normal-case">(optional, USD)</span>
                 </label>
                 <input type="number" min="0" step="0.01" x-model="editForm.budget_cap_usd" class="otw-input mt-1 max-w-xs" placeholder="no cap" />
-              </div>
-              <div>
-                <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
-                  Restrict to specific profiles <span class="normal-case">(optional, none checked = every profile)</span>
-                </label>
-                <div class="mt-2 flex flex-wrap gap-3">
-                  <template x-for="account in accounts" :key="account.id">
-                    <label class="flex items-center gap-2 text-sm">
-                      <input type="checkbox" class="otw-checkbox" :value="account.id" :checked="editForm.allowed_account_ids.includes(account.id)" @change="toggleEditAccount(account.id)" />
-                      <span x-text="account.first_name + ' ' + account.last_name"></span>
-                    </label>
-                  </template>
-                  <p x-show="accounts.length === 0" class="text-sm text-[color:var(--muted)]">No profiles on this device yet.</p>
-                </div>
               </div>
               <div class="flex gap-2 items-center flex-wrap">
                 <button type="button" @click="saveEdit(key)" :disabled="Boolean(busy[key.id])" class="otw-btn px-4 py-1.5 text-xs" x-text="busy[key.id] ? 'Saving...' : 'Save'"></button>
@@ -255,6 +243,9 @@
     <!-- Add a key -->
     <section class="mt-12 pt-8" style="border-top: 1px solid var(--line);">
       <h2 class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Add a key</h2>
+      <p class="mt-2 text-sm text-[color:var(--muted)]">
+        Keys belong to this profile only. Add as many as you like; nobody else can see or use them.
+      </p>
 
       <form @submit.prevent="submitAdd" class="mt-4 space-y-4 max-w-md">
         <div>
@@ -291,20 +282,6 @@
               <input type="number" min="0" step="0.01" x-model="form.budget_cap_usd" class="otw-input mt-1" placeholder="no cap" />
             </div>
 
-            <div>
-              <label class="text-xs uppercase tracking-wide text-[color:var(--muted)]">
-                Restrict to specific profiles <span class="normal-case text-[color:var(--muted)]">(optional, leave all unchecked for every profile)</span>
-              </label>
-              <div class="mt-2 flex flex-wrap gap-3">
-                <template x-for="account in accounts" :key="account.id">
-                  <label class="flex items-center gap-2 text-sm">
-                    <input type="checkbox" class="otw-checkbox" :value="account.id" @change="toggleFormAccount(account.id)" />
-                    <span x-text="account.first_name + ' ' + account.last_name"></span>
-                  </label>
-                </template>
-                <p x-show="accounts.length === 0" class="text-sm text-[color:var(--muted)]">No profiles on this device yet.</p>
-              </div>
-            </div>
 
             <button type="submit" class="otw-btn px-6" :disabled="submitting">
               <span x-show="!submitting">Add key</span>
@@ -328,7 +305,7 @@
     <div class="otw-modal" style="max-width: 26rem;">
       <h3 class="font-display text-2xl">Delete this key?</h3>
       <p class="mt-3 text-sm text-[color:var(--muted)]">
-        <span x-text="deleting ? 'The “' + deleting.label + '” ' + providerLabel(deleting.provider) + ' key is removed from this device for every profile. ' : ''"></span>
+        <span x-text="deleting ? 'The “' + deleting.label + '” ' + providerLabel(deleting.provider) + ' key is removed from this profile. ' : ''"></span>
         This cannot be undone: to use it again you would have to paste the key in from scratch.
       </p>
       <div class="mt-8 flex gap-3 justify-end">
@@ -352,15 +329,15 @@
   // come from the backend (app/core/llm_providers.py) via
   // GET /api/api-keys/providers, not hardcoded here; a new provider
   // needs no frontend change.
-  function apisApp() {
+  function apisApp(canConfigure) {
     return {
+      canConfigure,
       accountName: '',
       accountId: null,
       loading: true,
       keys: [],
       providers: [],
-      accounts: [],
-      form: { provider: '', label: '', credentials: {}, budget_cap_usd: '', allowed_account_ids: [] },
+      form: { provider: '', label: '', credentials: {}, budget_cap_usd: '' },
       submitting: false,
       addError: '',
       busy: {},
@@ -368,7 +345,7 @@
       recheckNote: '',
       blockedNote: '',
       editing: null,
-      editForm: { label: '', credentials: {}, budget_cap_usd: '', allowed_account_ids: [] },
+      editForm: { label: '', credentials: {}, budget_cap_usd: '' },
       editError: '',
       deleting: null,
       tiers: [
@@ -387,21 +364,23 @@
         this.accountId = Number(localStorage.getItem('otw_account_id')) || null;
         // The model catalog loads LiteLLM server-side, which is slow the
         // first time, so the page doesn't wait for it.
-        fetch('/api/app-settings/llm/models')
-          .then((res) => res.json())
-          .then((catalog) => { this.llmCatalog = catalog; })
-          .catch(() => {});
+        if (this.canConfigure) {
+          fetch('/api/app-settings/llm/models')
+            .then((res) => res.json())
+            .then((catalog) => { this.llmCatalog = catalog; })
+            .catch(() => {});
+        }
         try {
-          const [keysRes, providersRes, accountsRes, llmRes] = await Promise.all([
-            fetch('/api/api-keys'),
-            fetch('/api/api-keys/providers'),
-            fetch('/accounts'),
-            fetch('/api/app-settings/llm'),
-          ]);
-          this.keys = await keysRes.json();
+          const providersRes = await fetch('/api/api-keys/providers');
           this.providers = await providersRes.json();
-          this.accounts = await accountsRes.json();
-          this.applyLlm(await llmRes.json());
+          if (this.accountId !== null) {
+            const keysRes = await fetch(this.keysUrl('/api/api-keys'));
+            this.keys = keysRes.ok ? await keysRes.json() : [];
+          }
+          if (this.canConfigure) {
+            const llmRes = await fetch('/api/app-settings/llm');
+            this.applyLlm(await llmRes.json());
+          }
         } finally {
           this.loading = false;
         }
@@ -542,12 +521,9 @@
         return field ? field.label : fieldName;
       },
 
-      accountNames(ids) {
-        return ids
-          .map((id) => this.accounts.find((a) => a.id === id))
-          .filter(Boolean)
-          .map((a) => a.first_name)
-          .join(', ') || 'no one currently on this device';
+      // Every key route is scoped to the profile using the page.
+      keysUrl(path) {
+        return `${path}${path.includes('?') ? '&' : '?'}account_id=${this.accountId}`;
       },
 
       formatTime(iso) {
@@ -556,16 +532,6 @@
         } catch (e) {
           return iso;
         }
-      },
-
-      // A key open to every profile is shared, so anyone may change or
-      // delete it. One restricted to some profiles belongs to them, so
-      // everyone else (including this page before anyone signs in) sees it
-      // read-only. The server has no idea who is looking; this is a
-      // courtesy between people sharing a device, not a lock.
-      canManage(key) {
-        return key.allowed_account_ids.length === 0
-          || (this.accountId !== null && key.allowed_account_ids.includes(this.accountId));
       },
 
       fieldsFor(provider) {
@@ -583,23 +549,11 @@
         this.addError = '';
       },
 
-      toggleFormAccount(id) {
-        const i = this.form.allowed_account_ids.indexOf(id);
-        if (i === -1) this.form.allowed_account_ids.push(id);
-        else this.form.allowed_account_ids.splice(i, 1);
-      },
-
-      toggleEditAccount(id) {
-        const i = this.editForm.allowed_account_ids.indexOf(id);
-        if (i === -1) this.editForm.allowed_account_ids.push(id);
-        else this.editForm.allowed_account_ids.splice(i, 1);
-      },
-
       async submitAdd() {
         this.submitting = true;
         this.addError = '';
         try {
-          const res = await fetch('/api/api-keys', {
+          const res = await fetch(this.keysUrl('/api/api-keys'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -607,7 +561,6 @@
               label: this.form.label,
               credentials: this.form.credentials,
               budget_cap_usd: this.form.budget_cap_usd === '' ? null : Number(this.form.budget_cap_usd),
-              allowed_account_ids: this.form.allowed_account_ids,
             }),
           });
           const data = await res.json();
@@ -616,7 +569,7 @@
             return;
           }
           this.keys.push(data);
-          this.form = { provider: '', label: '', credentials: {}, budget_cap_usd: '', allowed_account_ids: [] };
+          this.form = { provider: '', label: '', credentials: {}, budget_cap_usd: '' };
         } catch (e) {
           this.addError = 'Could not reach the server, try again.';
         } finally {
@@ -631,7 +584,6 @@
           label: key.label,
           credentials: {},
           budget_cap_usd: key.budget_cap_usd ?? '',
-          allowed_account_ids: [...key.allowed_account_ids],
         };
       },
 
@@ -643,7 +595,7 @@
         const replacing = Object.values(this.editForm.credentials).some((v) => (v || '').trim());
         try {
           if (replacing) {
-            const res = await fetch(`/api/api-keys/${key.id}/credentials`, {
+            const res = await fetch(this.keysUrl(`/api/api-keys/${key.id}/credentials`), {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ credentials: this.editForm.credentials }),
@@ -654,14 +606,13 @@
               return;
             }
           }
-          const res = await fetch(`/api/api-keys/${key.id}`, {
+          const res = await fetch(this.keysUrl(`/api/api-keys/${key.id}`), {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               label: this.editForm.label,
               has_budget_cap: this.editForm.budget_cap_usd !== '',
               budget_cap_usd: this.editForm.budget_cap_usd === '' ? null : Number(this.editForm.budget_cap_usd),
-              allowed_account_ids: this.editForm.allowed_account_ids,
             }),
           });
           if (!res.ok) {
@@ -681,7 +632,7 @@
       async checkKey(key) {
         this.busy[key.id] = true;
         try {
-          const res = await fetch(`/api/api-keys/${key.id}/check`, { method: 'POST' });
+          const res = await fetch(this.keysUrl(`/api/api-keys/${key.id}/check`), { method: 'POST' });
           if (res.ok) {
             const updated = await res.json();
             this.keys = this.keys.map((k) => (k.id === updated.id ? updated : k));
@@ -700,7 +651,7 @@
         this.recheckNote = '';
         this.blockedNote = '';
         try {
-          const res = await fetch('/api/api-keys/recheck', {
+          const res = await fetch(this.keysUrl('/api/api-keys/recheck'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ scope }),
@@ -726,7 +677,7 @@
       async activateKey(key) {
         this.busy[key.id] = true;
         try {
-          const res = await fetch(`/api/api-keys/${key.id}/activate`, { method: 'POST' });
+          const res = await fetch(this.keysUrl(`/api/api-keys/${key.id}/activate`), { method: 'POST' });
           if (res.ok) {
             const updated = await res.json();
             this.keys = this.keys.map((k) =>
@@ -741,7 +692,7 @@
       async enableKey(key) {
         this.busy[key.id] = true;
         try {
-          const res = await fetch(`/api/api-keys/${key.id}/enable`, { method: 'POST' });
+          const res = await fetch(this.keysUrl(`/api/api-keys/${key.id}/enable`), { method: 'POST' });
           if (res.ok) {
             const updated = await res.json();
             this.keys = this.keys.map((k) => (k.id === updated.id ? updated : k));
@@ -754,7 +705,7 @@
       async disableKey(key) {
         this.busy[key.id] = true;
         try {
-          const res = await fetch(`/api/api-keys/${key.id}/disable`, { method: 'POST' });
+          const res = await fetch(this.keysUrl(`/api/api-keys/${key.id}/disable`), { method: 'POST' });
           if (res.ok) {
             const updated = await res.json();
             this.keys = this.keys.map((k) => (k.id === updated.id ? updated : k));
@@ -768,10 +719,10 @@
         const key = this.deleting;
         this.busy[key.id] = true;
         try {
-          await fetch(`/api/api-keys/${key.id}`, { method: 'DELETE' });
+          await fetch(this.keysUrl(`/api/api-keys/${key.id}`), { method: 'DELETE' });
           // Deleting the active key promotes another one server side, so
           // reload rather than just dropping the row.
-          const res = await fetch('/api/api-keys');
+          const res = await fetch(this.keysUrl('/api/api-keys'));
           this.keys = res.ok ? await res.json() : this.keys.filter((k) => k.id !== key.id);
           this.deleting = null;
         } finally {

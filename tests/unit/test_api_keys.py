@@ -23,6 +23,19 @@ def _reset_db(tmp_path: Path):
     init_db()
 
 
+def _account(name: str = "Ada") -> int:
+    from app.core.db import Account, get_db
+
+    db = get_db()
+    try:
+        account = Account(first_name=name, last_name="Test", github_username="")
+        db.add(account)
+        db.commit()
+        return account.id
+    finally:
+        db.close()
+
+
 def _client():
     from fastapi.testclient import TestClient
 
@@ -122,8 +135,9 @@ def test_replace_credentials_swaps_the_secret_and_keeps_the_rest(tmp_path):
     from app.core import api_keys_store
 
     _reset_db(tmp_path)
+    owner = _account()
     added, _ = api_keys_store.add_key(
-        "openai", "Work", {"api_key": "sk-old-secret"}, 5.0, allowed_account_ids=[3]
+        "openai", "Work", {"api_key": "sk-old-secret"}, 5.0, account_id=owner
     )
     api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
 
@@ -133,7 +147,7 @@ def test_replace_credentials_swaps_the_secret_and_keeps_the_rest(tmp_path):
     assert replaced["masked"] != added["masked"]
     assert replaced["label"] == "Work"
     assert replaced["budget_cap_usd"] == 5.0
-    assert replaced["allowed_account_ids"] == [3]
+    assert replaced["account_id"] == owner
     assert replaced["is_active"] is True
     assert replaced["status"] == "valid"
     assert replaced["exhausted_at"] is None
@@ -256,16 +270,15 @@ def test_check_key_unknown_id_returns_none(tmp_path):
     assert api_keys_store.check_key(999999) is None
 
 
-def test_resolve_dispatch_key_respects_account_allow_list(tmp_path):
+def test_resolve_dispatch_keys_serves_only_the_owning_account(tmp_path):
     from app.core import api_keys_store
 
     _reset_db(tmp_path)
-    added, _ = api_keys_store.add_key(
-        "openai", "Restricted", {"api_key": "sk-1"}, None, allowed_account_ids=[5]
-    )
+    mine, other = _account("Mine"), _account("Other")
+    api_keys_store.add_key("openai", "Owned", {"api_key": "sk-1"}, None, account_id=mine)
 
-    assert api_keys_store.resolve_dispatch_keys("openai", 5)
-    assert api_keys_store.resolve_dispatch_keys("openai", 6) == []
+    assert api_keys_store.resolve_dispatch_keys("openai", mine)
+    assert api_keys_store.resolve_dispatch_keys("openai", other) == []
     assert api_keys_store.resolve_dispatch_keys("openai", None) == []
 
 
@@ -324,8 +337,9 @@ def test_resolve_dispatch_keys_leaves_out_what_cannot_serve_the_call(tmp_path):
     _reset_db(tmp_path)
     usable, _ = api_keys_store.add_key("openai", "Usable", {"api_key": "sk-1"}, None)
     off, _ = api_keys_store.add_key("openai", "Switched off", {"api_key": "sk-2"}, None)
+    someone = _account("Someone")
     api_keys_store.add_key(
-        "openai", "Someone else's", {"api_key": "sk-3"}, None, allowed_account_ids=[99]
+        "openai", "Someone else's", {"api_key": "sk-3"}, None, account_id=someone
     )
     api_keys_store.set_enabled(off["id"], False)
 
@@ -635,8 +649,9 @@ def test_default_provider_reflects_settings(tmp_path):
 
 def test_add_key_endpoint_rejects_unknown_provider(tmp_path):
     _reset_db(tmp_path)
+    acct = _account()
     resp = _client().post(
-        "/api/api-keys", json={"provider": "not-a-provider", "credentials": {}}
+        f"/api/api-keys?account_id={acct}", json={"provider": "not-a-provider", "credentials": {}}
     )
     assert resp.status_code == 422
 
@@ -649,17 +664,20 @@ def test_add_key_endpoint_rejects_invalid_credentials(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.core.api_keys_store.validate_credentials", validate_credentials)
     _reset_db(tmp_path)
+    acct = _account()
     resp = _client().post(
-        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": ""}}
+        f"/api/api-keys?account_id={acct}",
+        json={"provider": "openai", "credentials": {"api_key": ""}}
     )
     assert resp.status_code == 422
-    assert _client().get("/api/api-keys").json() == []
+    assert _client().get(f"/api/api-keys?account_id={acct}").json() == []
 
 
 def test_add_key_endpoint_never_returns_the_raw_credential(tmp_path):
     _reset_db(tmp_path)
+    acct = _account()
     resp = _client().post(
-        "/api/api-keys",
+        f"/api/api-keys?account_id={acct}",
         json={"provider": "openai", "label": "Mine", "credentials": {"api_key": "sk-real-value"}},
     )
     assert resp.status_code == 200
@@ -671,15 +689,16 @@ def test_add_key_endpoint_never_returns_the_raw_credential(tmp_path):
 def test_update_key_endpoint_clears_budget_cap(tmp_path):
     client = _client()
     _reset_db(tmp_path)
+    acct = _account()
     added = client.post(
-        "/api/api-keys",
+        f"/api/api-keys?account_id={acct}",
         json={
             "provider": "openai", "credentials": {"api_key": "sk-1"}, "budget_cap_usd": 5.0,
         },
     ).json()
 
     resp = client.patch(
-        f"/api/api-keys/{added['id']}",
+        f"/api/api-keys/{added['id']}?account_id={acct}",
         json={"budget_cap_usd": None, "has_budget_cap": False},
     )
     assert resp.status_code == 200
@@ -688,19 +707,22 @@ def test_update_key_endpoint_clears_budget_cap(tmp_path):
 
 def test_update_key_endpoint_unknown_id_404s(tmp_path):
     _reset_db(tmp_path)
-    resp = _client().patch("/api/api-keys/999999", json={"label": "x"})
+    acct = _account()
+    resp = _client().patch(f"/api/api-keys/999999?account_id={acct}", json={"label": "x"})
     assert resp.status_code == 404
 
 
 def test_replace_credentials_endpoint(tmp_path):
     client = _client()
     _reset_db(tmp_path)
+    acct = _account()
     added = client.post(
-        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": "sk-old-value"}}
+        f"/api/api-keys?account_id={acct}",
+        json={"provider": "openai", "credentials": {"api_key": "sk-old-value"}}
     ).json()
 
     resp = client.put(
-        f"/api/api-keys/{added['id']}/credentials",
+        f"/api/api-keys/{added['id']}/credentials?account_id={acct}",
         json={"credentials": {"api_key": "sk-new-value"}},
     )
     assert resp.status_code == 200
@@ -708,7 +730,8 @@ def test_replace_credentials_endpoint(tmp_path):
     assert resp.json()["masked"]["api_key"].startswith("sk-")
 
     missing = client.put(
-        "/api/api-keys/999999/credentials", json={"credentials": {"api_key": "sk-1"}}
+        f"/api/api-keys/999999/credentials?account_id={acct}",
+        json={"credentials": {"api_key": "sk-1"}}
     )
     assert missing.status_code == 404
 
@@ -718,86 +741,98 @@ def test_replace_credentials_endpoint_rejects_invalid_credentials(tmp_path, monk
 
     client = _client()
     _reset_db(tmp_path)
+    acct = _account()
     added = client.post(
-        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": "sk-old-value"}}
+        f"/api/api-keys?account_id={acct}",
+        json={"provider": "openai", "credentials": {"api_key": "sk-old-value"}}
     ).json()
     monkeypatch.setattr("app.core.api_keys_store.validate_credentials", validate_credentials)
 
     resp = client.put(
-        f"/api/api-keys/{added['id']}/credentials", json={"credentials": {"api_key": ""}}
+        f"/api/api-keys/{added['id']}/credentials?account_id={acct}",
+        json={"credentials": {"api_key": ""}}
     )
     assert resp.status_code == 422
 
 
 def test_check_key_endpoint_unknown_id_404s(tmp_path):
     _reset_db(tmp_path)
-    resp = _client().post("/api/api-keys/999999/check")
+    acct = _account()
+    resp = _client().post(f"/api/api-keys/999999/check?account_id={acct}")
     assert resp.status_code == 404
 
 
 def test_activate_enable_disable_endpoints(tmp_path):
     client = _client()
     _reset_db(tmp_path)
+    acct = _account()
     first = client.post(
-        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": "sk-1"}}
+        f"/api/api-keys?account_id={acct}",
+        json={"provider": "openai", "credentials": {"api_key": "sk-1"}}
     ).json()
     second = client.post(
-        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": "sk-2"}}
+        f"/api/api-keys?account_id={acct}",
+        json={"provider": "openai", "credentials": {"api_key": "sk-2"}}
     ).json()
 
-    resp = client.post(f"/api/api-keys/{second['id']}/activate")
+    resp = client.post(f"/api/api-keys/{second['id']}/activate?account_id={acct}")
     assert resp.json()["is_active"] is True
-    assert client.get("/api/api-keys").json()[0]["is_active"] is False  # first, now inactive
+    # The first key, now inactive.
+    assert client.get(f"/api/api-keys?account_id={acct}").json()[0]["is_active"] is False
 
-    resp = client.post(f"/api/api-keys/{first['id']}/disable")
+    resp = client.post(f"/api/api-keys/{first['id']}/disable?account_id={acct}")
     assert resp.json()["enabled"] is False
 
-    resp = client.post(f"/api/api-keys/{first['id']}/enable")
+    resp = client.post(f"/api/api-keys/{first['id']}/enable?account_id={acct}")
     assert resp.json()["enabled"] is True
 
 
 def test_activate_endpoint_unknown_id_404s(tmp_path):
     _reset_db(tmp_path)
-    resp = _client().post("/api/api-keys/999999/activate")
+    acct = _account()
+    resp = _client().post(f"/api/api-keys/999999/activate?account_id={acct}")
     assert resp.status_code == 404
 
 
 def test_delete_key_endpoint(tmp_path):
     client = _client()
     _reset_db(tmp_path)
+    acct = _account()
     added = client.post(
-        "/api/api-keys", json={"provider": "openai", "credentials": {"api_key": "sk-1"}}
+        f"/api/api-keys?account_id={acct}",
+        json={"provider": "openai", "credentials": {"api_key": "sk-1"}}
     ).json()
 
-    resp = client.delete(f"/api/api-keys/{added['id']}")
+    resp = client.delete(f"/api/api-keys/{added['id']}?account_id={acct}")
     assert resp.status_code == 200
     assert resp.json() == {"deleted": True}
-    assert client.get("/api/api-keys").json() == []
+    assert client.get(f"/api/api-keys?account_id={acct}").json() == []
 
 
-def test_delete_key_endpoint_unknown_id_is_still_reported_deleted(tmp_path):
-    """Documents existing behavior: delete_key() no-ops on a missing row
-    rather than 404ing (see app/core/api_keys_store.py), and the endpoint
-    mirrors that: idempotent rather than an error."""
+def test_delete_key_endpoint_unknown_id_404s(tmp_path):
+    """A missing key and another account's key look the same: 404."""
     _reset_db(tmp_path)
-    resp = _client().delete("/api/api-keys/999999")
-    assert resp.status_code == 200
-    assert resp.json() == {"deleted": True}
+    acct = _account()
+    resp = _client().delete(f"/api/api-keys/999999?account_id={acct}")
+    assert resp.status_code == 404
 
 
 def test_recheck_endpoint_reports_what_it_checked_and_what_came_back(tmp_path):
     from app.core import api_keys_store
 
     _reset_db(tmp_path)
-    added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None)
+    acct = _account()
+    added, _ = api_keys_store.add_key("openai", "Key", {"api_key": "sk-1"}, None, account_id=acct)
     api_keys_store.record_dispatch_outcome(added["id"], ok=False, rate_limited=True)
 
     client = _client()
     # Its wait has not passed, so the automatic scope has nothing to do.
-    due = client.post("/api/api-keys/recheck", json={"scope": "due"}).json()
+    due = client.post(f"/api/api-keys/recheck?account_id={acct}", json={"scope": "due"}).json()
     assert (due["checked"], due["recovered"]) == (0, 0)
 
-    skipped_wait = client.post("/api/api-keys/recheck", json={"scope": "exhausted"}).json()
+    skipped_wait = client.post(
+        f"/api/api-keys/recheck?account_id={acct}", json={"scope": "exhausted"}
+    ).json()
     assert (skipped_wait["checked"], skipped_wait["recovered"]) == (1, 1)
     assert skipped_wait["keys"][0]["status"] == "valid"
     assert skipped_wait["keys"][0]["retry_at"] is None
@@ -805,8 +840,9 @@ def test_recheck_endpoint_reports_what_it_checked_and_what_came_back(tmp_path):
 
 def test_recheck_endpoint_defaults_to_the_automatic_scope(tmp_path):
     _reset_db(tmp_path)
+    acct = _account()
 
-    body = _client().post("/api/api-keys/recheck").json()
+    body = _client().post(f"/api/api-keys/recheck?account_id={acct}").json()
 
     assert body["scope"] == "due"
     assert body["checked"] == 0
@@ -814,7 +850,127 @@ def test_recheck_endpoint_defaults_to_the_automatic_scope(tmp_path):
 
 def test_recheck_endpoint_rejects_an_unknown_scope(tmp_path):
     _reset_db(tmp_path)
+    acct = _account()
 
-    res = _client().post("/api/api-keys/recheck", json={"scope": "everything"})
+    res = _client().post(f"/api/api-keys/recheck?account_id={acct}", json={"scope": "everything"})
 
     assert res.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Ownership: keys belong to one account
+# ---------------------------------------------------------------------------
+
+
+def test_each_account_sees_and_changes_only_its_own_keys(tmp_path):
+    _reset_db(tmp_path)
+    mine, theirs = _account("Mine"), _account("Theirs")
+    client = _client()
+    key = client.post(
+        f"/api/api-keys?account_id={mine}",
+        json={"provider": "gemini", "label": "Mine", "credentials": {"api_key": "AIza-mine"}},
+    ).json()
+    assert key["account_id"] == mine
+
+    assert client.get(f"/api/api-keys?account_id={theirs}").json() == []
+    for method, path, body in (
+        ("patch", f"/api/api-keys/{key['id']}", {"label": "taken"}),
+        ("put", f"/api/api-keys/{key['id']}/credentials", {"credentials": {"api_key": "x"}}),
+        ("post", f"/api/api-keys/{key['id']}/check", None),
+        ("post", f"/api/api-keys/{key['id']}/activate", None),
+        ("post", f"/api/api-keys/{key['id']}/disable", None),
+        ("delete", f"/api/api-keys/{key['id']}", None),
+    ):
+        kwargs = {"json": body} if body is not None else {}
+        resp = getattr(client, method)(f"{path}?account_id={theirs}", **kwargs)
+        assert resp.status_code == 404, (method, path)
+
+    [still] = client.get(f"/api/api-keys?account_id={mine}").json()
+    assert still["label"] == "Mine" and still["enabled"] is True
+
+
+def test_two_accounts_may_store_the_same_key_separately(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    a, b = _account("A"), _account("B")
+    same = {"api_key": "AIza-same"}
+    first, _ = api_keys_store.add_key("gemini", "Same", same, None, account_id=a)
+    second, _ = api_keys_store.add_key("gemini", "Same", same, None, account_id=b)
+
+    assert first["id"] != second["id"]
+    # Each is its owner's first key, so each is active in its own account.
+    assert first["is_active"] and second["is_active"]
+    api_keys_store.delete_key(first["id"], a)
+    assert [k.id for k in api_keys_store.resolve_dispatch_keys("gemini", b)] == [second["id"]]
+    assert api_keys_store.resolve_dispatch_keys("gemini", a) == []
+
+
+def test_an_account_can_hold_several_keys_and_active_is_per_account(tmp_path):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    a, b = _account("A"), _account("B")
+    a1, _ = api_keys_store.add_key("gemini", "A1", {"api_key": "k1"}, None, account_id=a)
+    a2, _ = api_keys_store.add_key("gemini", "A2", {"api_key": "k2"}, None, account_id=a)
+    b1, _ = api_keys_store.add_key("gemini", "B1", {"api_key": "k3"}, None, account_id=b)
+    assert (a1["is_active"], a2["is_active"], b1["is_active"]) == (True, False, True)
+
+    api_keys_store.activate_key(a2["id"], a)
+    states = {k["id"]: k["is_active"] for k in api_keys_store.list_keys()}
+    assert states == {a1["id"]: False, a2["id"]: True, b1["id"]: True}
+
+    # Deleting A's active key promotes A's other key, never B's.
+    api_keys_store.delete_key(a2["id"], a)
+    states = {k["id"]: k["is_active"] for k in api_keys_store.list_keys()}
+    assert states == {a1["id"]: True, b1["id"]: True}
+    assert [k.id for k in api_keys_store.resolve_dispatch_keys("gemini", a)] == [a1["id"]]
+
+
+def test_unowned_keys_never_serve_the_public_demo(tmp_path, monkeypatch):
+    from app.core import api_keys_store
+
+    _reset_db(tmp_path)
+    acct = _account()
+    api_keys_store.add_key("gemini", "Harness", {"api_key": "k"}, None)
+    assert api_keys_store.resolve_dispatch_keys("gemini", acct)
+
+    monkeypatch.setenv("DEMO_MODE", "true")
+    get_settings.cache_clear()
+    try:
+        assert api_keys_store.resolve_dispatch_keys("gemini", acct) == []
+    finally:
+        monkeypatch.delenv("DEMO_MODE")
+        get_settings.cache_clear()
+
+
+def test_verify_endpoint_checks_without_storing(tmp_path, monkeypatch):
+    from app.core.llm_providers import validate_credentials
+
+    _reset_db(tmp_path)
+    acct = _account()
+    client = _client()
+    ok = client.post(
+        "/api/api-keys/verify", json={"provider": "gemini", "credentials": {"api_key": "AIza-x"}}
+    )
+    assert ok.status_code == 200 and ok.json()["status"] == "valid"
+    assert client.get(f"/api/api-keys?account_id={acct}").json() == []
+
+    monkeypatch.setattr("app.core.api_keys_store.validate_credentials", validate_credentials)
+    bad = client.post(
+        "/api/api-keys/verify", json={"provider": "gemini", "credentials": {"api_key": ""}}
+    )
+    assert bad.status_code == 422
+    unknown = client.post("/api/api-keys/verify", json={"provider": "nope", "credentials": {}})
+    assert unknown.status_code == 422
+
+
+def test_key_routes_need_an_existing_account(tmp_path):
+    _reset_db(tmp_path)
+    client = _client()
+    assert client.get("/api/api-keys").status_code == 422
+    resp = client.post(
+        "/api/api-keys?account_id=424242",
+        json={"provider": "gemini", "credentials": {"api_key": "AIza-x"}},
+    )
+    assert resp.status_code == 404

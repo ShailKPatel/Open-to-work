@@ -747,8 +747,14 @@ class ApiKey(Base):
     one blob, since some providers need several fields (Bedrock, Azure).
     masked_preview is computed at save time so listing keys never decrypts.
     budget_cap_usd is an optional per-key cap on top of the global budget.
-    enabled switches a key off without losing its place, and a non-empty
-    allowed_account_ids restricts it to those accounts.
+    enabled switches a key off without losing its place.
+
+    Every key belongs to one account (account_id) and only that account's
+    work dispatches with it; an account may hold any number of keys. Two
+    accounts entering the same key get two separate rows. is_active is per
+    account and provider. allowed_account_ids is the retired sharing list:
+    _migrate_api_keys_owner (app/core/db/migrations.py) turned each shared
+    key into one copy per account, and nothing reads it since.
 
     status is unknown, valid, invalid, rate_limited or blocked.
     rate_limited is temporary: exhausted_at, exhaustion_kind and retry_at
@@ -763,6 +769,11 @@ class ApiKey(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     provider: Mapped[str] = mapped_column(String, index=True)
+    # Nullable only for rows from before ownership that had no account to
+    # go to; those are never dispatched.
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id"), nullable=True, index=True
+    )
     label: Mapped[str] = mapped_column(String)
     encrypted_credentials: Mapped[str] = mapped_column(Text)
     masked_preview: Mapped[dict] = mapped_column(JSON)

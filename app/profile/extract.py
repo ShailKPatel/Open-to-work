@@ -348,7 +348,16 @@ def prefetch_repo_facts(repos: list[Repository]) -> dict[int, RepoFacts]:
     repo and stops the batch (see build.py).
     """
     facts: dict[int, RepoFacts] = {}
-    groups = [repos[i : i + _BATCH_SIZE] for i in range(0, len(repos), _BATCH_SIZE)]
+    # Each account's repos are batched apart: a call runs on one account's
+    # own keys, so a group never mixes two people's repos.
+    by_account: dict[int | None, list[Repository]] = {}
+    for repo in repos:
+        by_account.setdefault(repo.account_id, []).append(repo)
+    groups = [
+        same[i : i + _BATCH_SIZE]
+        for same in by_account.values()
+        for i in range(0, len(same), _BATCH_SIZE)
+    ]
     for group in groups:
         try:
             facts.update(_extract_group(group))
@@ -400,10 +409,7 @@ def _extract_group(repos: list[Repository]) -> dict[int, RepoFacts]:
         "bulk",
         messages,
         schema=_BATCH_SCHEMA,
-        # One account context only when the whole group shares one, which
-        # it does whenever build.py drives this (a batch is one account's
-        # repos). Mixed groups fall back to no account context, so a
-        # profile-restricted key is never used for another profile's repo.
+        # Groups are built per account above, so there is exactly one.
         account_id=account_ids.pop() if len(account_ids) == 1 else None,
         purpose="repo_facts_batch",
     )

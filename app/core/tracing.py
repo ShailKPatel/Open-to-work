@@ -52,7 +52,10 @@ def trace_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
 
 
 def trace_outputs(response: Any) -> dict[str, Any]:
-    """LangSmith reads token counts from usage_metadata."""
+    """LangSmith reads token counts from usage_metadata. A call that raised
+    has no response; the error is recorded on the run instead."""
+    if response is None:
+        return {}
     return {
         "content": response.content,
         "model": response.model,
