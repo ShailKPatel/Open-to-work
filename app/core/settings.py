@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     demo_github_client_secret: str = ""
     demo_session_secret: str = ""
     demo_admin_github_id: int = 0
+    # An account anyone may look around without signing in, read-only.
+    # 0 turns the "sample profile" button off.
+    demo_sample_account_id: int = 0
     demo_max_accounts: int = 50
     demo_daily_resume_builds: int = 5
     demo_daily_llm_calls: int = 200

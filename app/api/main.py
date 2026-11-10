@@ -155,6 +155,7 @@ def welcome_page(request: Request) -> HTMLResponse:
     context = {
         "provider": provider_of_model(get_llm_settings().quality_model).title(),
         "tracing": get_settings().tracing_enabled,
+        "sample": get_settings().demo_sample_account_id > 0,
     }
     return templates.TemplateResponse(request, "welcome.html", context)
 

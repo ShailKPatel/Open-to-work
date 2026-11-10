@@ -210,7 +210,7 @@
             fetch(`/api/projects?account_id=${this.accountId}`),
             fetch(`/api/skills?account_id=${this.accountId}`),
             fetch('/api/api-keys/default-provider'),
-            fetch('/api/api-keys'),
+            fetch(`/api/api-keys?account_id=${this.accountId}`),
             fetch(`/api/job-analytics/skills-demand?account_id=${this.accountId}`),
             fetch(`/api/github-profile?account_id=${this.accountId}`),
           ]);
@@ -222,13 +222,13 @@
 
           // Provider-agnostic: connected when a usable key exists for the
           // provider(s) the configured LiteLLM models dispatch to.
-          {% if request.state.demo_user and not request.state.demo_user.admin %}
-          // The demo's key is the owner's; visitors never manage or see one.
+          {% if request.state.demo_user and request.state.demo_user.sample %}
+          // The read-only sample never asks a visitor for a key.
           this.llmConnected = true;
           return;
           {% endif %}
           const defaultProvider = await defaultProviderRes.json();
-          const keys = await keysRes.json();
+          const keys = keysRes.ok ? await keysRes.json() : [];
           const usable = (provider) =>
             keys.some((k) => k.provider === provider && k.is_active && k.status !== 'invalid');
           this.llmConnected = usable(defaultProvider.bulk) && usable(defaultProvider.quality);

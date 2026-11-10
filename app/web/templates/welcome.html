@@ -10,6 +10,7 @@
     <li>This is a personal project and a public demo. There is no uptime or data-retention promise.</li>
     <li>What you upload, paste or sync (resumes, job postings, public GitHub data) is stored on this server.</li>
     <li>That content is sent to an AI provider ({{ provider }}) to read it and write your resume.</li>
+    <li>The AI runs on your own {{ provider }} API key, added after sign-in under API keys. It is stored encrypted, only your account uses it, and deleting your account deletes it. Free {{ provider }} keys work.</li>
     {% if tracing %}
     <li>Runs are also traced to LangSmith for debugging, and those traces include resume content.</li>
     {% endif %}
@@ -17,7 +18,12 @@
     <li>Please do not upload anything you would not want stored on someone else's server.</li>
   </ul>
 
-  {% if request.state.demo_user %}
+  {% if request.state.demo_user and request.state.demo_user.sample %}
+  <a href="/home" class="otw-btn-accent inline-block text-sm px-4 py-2 mt-8">Back to the sample profile</a>
+  <form method="post" action="/auth/logout" class="mt-4">
+    <button class="underline text-sm text-[color:var(--muted)]">Leave the sample</button>
+  </form>
+  {% elif request.state.demo_user %}
   <a href="/home" class="otw-btn-accent inline-block text-sm px-4 py-2 mt-8">Go to your dashboard</a>
   <div x-data="{ sure: false, error: '' }" class="mt-10">
     <button x-show="!sure" @click="sure = true" class="underline text-sm text-[color:var(--muted)]">Delete my account and data</button>
@@ -35,6 +41,12 @@
   </div>
   {% else %}
   <a href="/auth/login" class="otw-btn-accent inline-block text-sm px-4 py-2 mt-8">Sign in with GitHub</a>
+  {% if sample %}
+  <form method="post" action="/auth/sample" class="mt-4">
+    <button class="otw-btn-ghost text-sm px-4 py-2">Look around a sample profile</button>
+    <p class="mt-2 text-xs text-[color:var(--muted)]">No sign-in needed. Read-only: a real profile built by this app, with placeholder contact details.</p>
+  </form>
+  {% endif %}
   {% endif %}
   <p class="mt-6 text-sm"><a class="underline text-[color:var(--muted)]" href="/explanation">How it works</a></p>
 </main>

@@ -73,3 +73,7 @@ def test_a_traced_call_reports_tokens_and_passes_the_response_through():
     assert client.create_run.called or client.update_run.called
     sent = str(client.create_run.call_args) + str(client.update_run.call_args)
     assert "total_tokens" in sent and "'cost_usd': 0.01" in sent
+
+
+def test_a_failed_call_has_no_outputs_to_record():
+    assert trace_outputs(None) == {}

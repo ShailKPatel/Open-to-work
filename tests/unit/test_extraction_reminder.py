@@ -25,7 +25,7 @@ def account_id(tmp_path, monkeypatch):
     session.close()
     # no background extraction thread in these tests
     monkeypatch.setattr(jobs, "extraction_snapshot", lambda account_id: None)
-    monkeypatch.setattr(jobs, "_earliest_key_retry", lambda: None)
+    monkeypatch.setattr(jobs, "_earliest_key_retry", lambda account_id: None)
     return account_id
 
 
@@ -44,7 +44,7 @@ def _repos(account_id, statuses, error=None, owner="ada"):
 
 def test_run_cut_off_by_a_limit_says_where_it_stopped_and_why(account_id, monkeypatch):
     retry = dt.datetime(2026, 9, 30, 6, 0, tzinfo=dt.UTC)
-    monkeypatch.setattr(jobs, "_earliest_key_retry", lambda: retry)
+    monkeypatch.setattr(jobs, "_earliest_key_retry", lambda account_id: retry)
     _repos(
         account_id,
         ["extracted", "extracted", "no_signal", "extracted", "rate_limited", "pending", "pending"],

@@ -133,13 +133,14 @@ def extraction_stream(account_id: int) -> Iterator[dict[str, Any]]:
 _STOP_NOTE = " Processing stopped here"
 
 
-def _earliest_key_retry() -> dt.datetime | None:
-    """When the soonest out-of-quota API key is due back, if any."""
+def _earliest_key_retry(account_id: int) -> dt.datetime | None:
+    """When the soonest of this account's out-of-quota keys is due back,
+    if any."""
     from app.core import api_keys_store
 
     times = [
         dt.datetime.fromisoformat(key["retry_at"])
-        for key in api_keys_store.list_keys()
+        for key in api_keys_store.list_keys(account_id)
         if key["enabled"] and key["status"] == "rate_limited" and key["retry_at"]
     ]
     return min(times) if times else None
@@ -198,7 +199,7 @@ def extraction_reminder(account_id: int) -> dict[str, Any]:
         "rate_limited": len(limited),
         "next_repo": next_up[0].full_name if next_up else None,
         "reason": reason,
-        "retry_at": _earliest_key_retry() if limited else None,
+        "retry_at": _earliest_key_retry(account_id) if limited else None,
     }
 
 

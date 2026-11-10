@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import (
     Account,
+    ApiKey,
     ContactEmail,
     ContactPhone,
     Education,
@@ -63,13 +64,25 @@ _MIN_SECRET_CHARS = 32
 
 _PUBLIC = {
     "/health", "/explanation", "/welcome", "/auth/login", "/auth/callback", "/auth/logout",
+    "/auth/sample",
+}
+
+# The sample profile is read-only, and these reads stay closed to it too:
+# its keys, and the original resume file, which may carry real contact
+# details. Streams are closed because some of them start work.
+_SAMPLE_CLOSED = {
+    "/apis",
+    "/api/api-keys",
+    "/api/api-keys/providers",
+    "/api/api-keys/default-provider",
+    "/api/resume/{resume_id}/file",
 }
 
 _ALLOWED_PAGES = {
     "/", "/home", "/portfolio", "/portfolio/projects", "/portfolio/projects/{repo_id:int}",
     "/portfolio/education", "/portfolio/experience", "/portfolio/experience/{experience_id:int}",
     "/portfolio/skills", "/portfolio/contact-links", "/portfolio/resume",
-    "/portfolio/resume/build", "/monitor/sync", "/jobs", "/jobs/{posting_id:int}",
+    "/portfolio/resume/build", "/monitor/sync", "/jobs", "/jobs/{posting_id:int}", "/apis",
 }
 
 _ALLOWED = {
@@ -164,6 +177,19 @@ _ALLOWED = {
     ("POST", "/api/github-sync/{run_row_id}/resume"),
     ("POST", "/api/github-sync/{run_row_id}/dismiss"),
     ("GET", "/api/job-analytics/skills-demand"),
+    # Each person's own LLM keys. The model choice and budget stay admin-only.
+    ("GET", "/api/api-keys"),
+    ("POST", "/api/api-keys"),
+    ("GET", "/api/api-keys/providers"),
+    ("GET", "/api/api-keys/default-provider"),
+    ("POST", "/api/api-keys/recheck"),
+    ("PATCH", "/api/api-keys/{key_id}"),
+    ("DELETE", "/api/api-keys/{key_id}"),
+    ("PUT", "/api/api-keys/{key_id}/credentials"),
+    *(
+        ("POST", f"/api/api-keys/{{key_id}}/{action}")
+        for action in ("check", "activate", "enable", "disable")
+    ),
 }
 
 # Every kind of id a listed route takes, and the table that says who owns it.
@@ -176,6 +202,7 @@ _OWNERS: dict[str, Any] = {
     "source_id": SyncSource,
     "run_row_id": GitHubSyncRun,
     "education_id": Education,
+    "key_id": ApiKey,
 }
 
 # A child id in the path must belong to the parent beside it, which _OWNERS
@@ -216,6 +243,8 @@ class DemoUser:
     account_id: int
     first_name: str
     admin: bool
+    # A visitor looking around the sample profile without signing in.
+    sample: bool = False
 
 
 def require_valid_demo_settings(settings: Settings) -> None:
@@ -262,7 +291,11 @@ def _load_user(session: dict[str, Any]) -> DemoUser | None:
         account = db.get(Account, session.get("account_id"))
         if account is None:
             return None
-        return DemoUser(account.id, account.first_name, bool(session.get("admin")))
+        sample = bool(session.get("sample"))
+        if sample and account.id != get_settings().demo_sample_account_id:
+            return None  # the sample was switched to another account, or off
+        admin = bool(session.get("admin")) and not sample
+        return DemoUser(account.id, account.first_name, admin, sample)
     finally:
         db.close()
 
@@ -400,6 +433,12 @@ async def demo_gate(request: Request) -> None:
     if user.admin:
         return
 
+    if user.sample and (
+        request.method != "GET"
+        or route_path in _SAMPLE_CLOSED
+        or route_path.endswith("/stream")
+    ):
+        raise _denied()
     if (request.method, route_path) not in _ALLOWED:
         raise _denied()
     if route_path == "/":
@@ -522,6 +561,32 @@ def callback(request: Request, code: str = "", state: str = "") -> Response:
         _SESSION_COOKIE,
         token,
         max_age=_SESSION_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+    return response
+
+
+@router.post("/auth/sample")
+def sample() -> Response:
+    """Opens the sample profile read-only, with no GitHub sign-in."""
+    settings = _require_demo()
+    db = get_db()
+    try:
+        exists = db.get(Account, settings.demo_sample_account_id) is not None
+    finally:
+        db.close()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Not found.")
+    token = _serializer().dumps(
+        {"account_id": settings.demo_sample_account_id, "admin": False, "sample": True}
+    )
+    response = RedirectResponse("/home", 303)
+    response.set_cookie(
+        _SESSION_COOKIE,
+        token,
+        max_age=24 * 3600,
         httponly=True,
         secure=True,
         samesite="lax",

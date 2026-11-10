@@ -21,6 +21,9 @@
       {% set restricted = demo_user and not demo_user.admin %}
       {% if restricted %}
       <a href="/monitor/sync" class="otw-topnav-link {{ 'active' if top_active == 'monitor' }}">Sync</a>
+      {% if not demo_user.sample %}
+      <a href="/apis" class="otw-topnav-link">API keys</a>
+      {% endif %}
       {% else %}
       <a href="/monitor" class="otw-topnav-link {{ 'active' if top_active == 'monitor' }}">Monitor</a>
       {% endif %}
@@ -36,7 +39,10 @@
       class="otw-pill otw-pill-warn"
       :title="model ? model + ' is unavailable right now. Manage APIs' : 'Manage APIs'"
     >AI degraded</a>
-    {% if demo_user %}
+    {% if demo_user and demo_user.sample %}
+    <a href="/welcome" class="otw-pill" title="Changes are switched off. Sign in with GitHub to build your own.">Sample profile, read-only</a>
+    <form method="post" action="/auth/logout"><button class="otw-topnav-link">Leave sample</button></form>
+    {% elif demo_user %}
     <form method="post" action="/auth/logout"><button class="otw-topnav-link">Sign out</button></form>
     {% endif %}
     {% if not restricted %}

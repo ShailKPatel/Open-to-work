@@ -86,7 +86,7 @@
             </div>
 
             <div x-show="keyAdded" x-cloak class="mt-10 otw-tick">
-              <span>✓</span> API key added
+              <span>✓</span> API key works. It is saved with your profile on the next step.
             </div>
           </div>
 
@@ -226,6 +226,8 @@
       defaultProviderLabel: 'Gemini',
       keyInput: '',
       keyAdded: false,
+      // The checked key, held only until the profile is created with it.
+      verifiedKey: '',
       verifyingKey: false,
       keyError: '',
 
@@ -239,25 +241,17 @@
           return;
         }
         try {
-          const [accountsRes, defaultProviderRes, keysRes] = await Promise.all([
+          const [accountsRes, defaultProviderRes] = await Promise.all([
             fetch('/accounts'),
             fetch('/api/api-keys/default-provider'),
-            fetch('/api/api-keys'),
           ]);
           this.accounts = await accountsRes.json();
           const defaultProvider = await defaultProviderRes.json();
           this.defaultProvider = defaultProvider.bulk;
           this.defaultProviderLabel = defaultProvider.bulk_label;
-          const keys = await keysRes.json();
-          this.keyAdded = keys.some((k) => k.provider === this.defaultProvider && k.is_active);
-
-          if (this.accounts.length > 0) {
-            this.view = 'picker';
-          } else if (!this.keyAdded) {
-            this.view = 'welcome'; // full first-run wizard
-          } else {
-            this.view = 'create'; // key already set up, just need a profile
-          }
+          // Keys belong to a profile, so a first run always starts with
+          // the wizard; another profile adds its keys on /apis.
+          this.view = this.accounts.length > 0 ? 'picker' : 'welcome';
         } catch (e) {
           this.view = this.accounts.length > 0 ? 'picker' : 'welcome';
         } finally {
@@ -269,12 +263,13 @@
         this.verifyingKey = true;
         this.keyError = '';
         try {
-          const res = await fetch('/api/api-keys', {
+          // Checked only: there is no profile to own it yet. It is saved
+          // with the profile in submitCreate().
+          const res = await fetch('/api/api-keys/verify', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               provider: this.defaultProvider,
-              label: this.defaultProviderLabel,
               credentials: { api_key: this.keyInput },
             }),
           });
@@ -284,7 +279,8 @@
             return;
           }
           this.keyAdded = true;
-          this.keyInput = ''; // never keep the raw value around client-side either
+          this.verifiedKey = this.keyInput;
+          this.keyInput = '';
         } catch (e) {
           this.keyError = 'Could not reach the server, try again.';
         } finally {
@@ -362,6 +358,10 @@
             body.append('github_username', this.form.github_username);
             body.append('request_id', this.requestId);
             if (this.resumeFile) body.append('resume', this.resumeFile);
+            if (this.verifiedKey) {
+              body.append('api_key_provider', this.defaultProvider);
+              body.append('api_key', this.verifiedKey);
+            }
             if (confirmLarge) body.append('confirm_large', 'true');
             return fetch('/accounts', { method: 'POST', body });
           });
@@ -371,6 +371,7 @@
             this.createError = otwResponseError(data, 'Could not create profile.');
             return;
           }
+          this.verifiedKey = '';
           // The resume, if any, is read in the background; the Resume page
           // shows how that went, and offers Retry if the AI provider was down.
           this.selectAccount(data, { isNew: true });

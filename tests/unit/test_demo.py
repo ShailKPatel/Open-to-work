@@ -126,16 +126,16 @@ def test_every_route_not_listed_is_closed(world):
         response = client.request(method, re.sub(r"\{[^}]+\}", "1", path))
         assert response.status_code == 404, (method, path, response.status_code)
         checked += 1
-    assert checked > 25
+    assert checked > 15
 
 
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/api-keys",
+        "/api/app-settings/llm",
         "/api/monitor/llm/calls",
         "/api/resume-build/generate",
-        "/apis",
+        "/monitor",
         "/settings",
     ],
 )
@@ -256,7 +256,7 @@ def test_account_list_shows_only_your_own(world):
 
 def test_admin_passes_the_gate_and_sees_everyone(world):
     client = _client(world["me"]["account"], admin=True)
-    assert client.get("/api/api-keys").status_code == 200
+    assert client.get("/api/app-settings/llm").status_code == 200
     assert len(client.get("/accounts").json()) == 2
 
 
@@ -433,8 +433,66 @@ def test_explanation_describes_the_hosted_app():
     assert "on one small cloud server" in html and "localhost:8000" not in html
 
 
-def test_home_does_not_ask_visitors_for_an_api_key(world):
-    assert "this.llmConnected = true;" in _client(world["me"]["account"]).get("/home").text
+def test_home_asks_visitors_for_their_own_api_key(world):
+    html = _client(world["me"]["account"]).get("/home").text
+    assert "this.llmConnected = true;" not in html
+    assert "/api/api-keys?account_id=" in html
+
+
+def _stub_key_check(monkeypatch):
+    monkeypatch.setattr(
+        "app.core.api_keys_store.validate_credentials",
+        lambda provider, credentials: ("valid", "This key is working."),
+    )
+
+
+def test_visitors_manage_only_their_own_keys(world, monkeypatch):
+    _stub_key_check(monkeypatch)
+    me, them = world["me"]["account"], world["them"]["account"]
+    mine_client, their_client = _client(me), _client(them)
+    theirs = their_client.post(
+        f"/api/api-keys?account_id={them}",
+        json={"provider": "gemini", "label": "Theirs", "credentials": {"api_key": "AIza-t"}},
+    )
+    assert theirs.status_code == 200
+    key_id = theirs.json()["id"]
+
+    mine = mine_client.post(
+        f"/api/api-keys?account_id={me}",
+        json={"provider": "gemini", "label": "Mine", "credentials": {"api_key": "AIza-m"}},
+    )
+    assert mine.status_code == 200
+    assert [k["label"] for k in mine_client.get(f"/api/api-keys?account_id={me}").json()] == [
+        "Mine"
+    ]
+
+    # Their list, under either account id, and their key by id: all closed.
+    assert mine_client.get(f"/api/api-keys?account_id={them}").status_code == 404
+    for method, path in (
+        ("DELETE", f"/api/api-keys/{key_id}"),
+        ("PATCH", f"/api/api-keys/{key_id}"),
+        ("POST", f"/api/api-keys/{key_id}/disable"),
+        ("POST", f"/api/api-keys/{key_id}/check"),
+    ):
+        kwargs = {"json": {"label": "x"}} if method == "PATCH" else {}
+        for account in (me, them):
+            resp = mine_client.request(method, f"{path}?account_id={account}", **kwargs)
+            assert resp.status_code == 404, (method, path, account)
+    assert their_client.get(f"/api/api-keys?account_id={them}").json()[0]["enabled"] is True
+
+
+def test_visitor_keys_page_has_no_model_or_budget_settings(world):
+    html = _client(world["me"]["account"]).get("/apis").text
+    assert "Models and budget" not in html
+    assert "Add a key" in html
+    assert "Models and budget" in _client(world["me"]["account"], admin=True).get("/apis").text
+
+
+def test_a_visitor_cannot_verify_keys_through_the_server(world):
+    response = _client(world["me"]["account"]).post(
+        "/api/api-keys/verify", json={"provider": "gemini", "credentials": {"api_key": "x"}}
+    )
+    assert response.status_code == 404
 
 
 def test_docs_are_closed():
@@ -622,3 +680,70 @@ def test_usage_report(world):
     assert result["resumes_built"] == 2 and result["users_with_a_resume"] == 1
     assert (result["bullets_rejected"], result["bullets_saved_by_revision"]) == (4, 3)
     assert result["avg_cost_per_resume_usd"] == 0.05
+
+
+def _sample_client(world, monkeypatch, account_key="me"):
+    monkeypatch.setenv("DEMO_SAMPLE_ACCOUNT_ID", str(world[account_key]["account"]))
+    get_settings.cache_clear()
+    client = TestClient(fastapi_app, base_url=BASE, follow_redirects=False)
+    response = client.post("/auth/sample", headers={"origin": BASE})
+    assert (response.status_code, response.headers["location"]) == (303, "/home")
+    return client
+
+
+def test_sample_profile_is_off_unless_configured(world):
+    client = TestClient(fastapi_app, base_url=BASE, follow_redirects=False)
+    assert client.post("/auth/sample", headers={"origin": BASE}).status_code == 404
+    assert "/auth/sample" not in client.get("/welcome").text
+
+
+def test_sample_profile_reads_the_sample_account_only(world, monkeypatch):
+    client = _sample_client(world, monkeypatch)
+    me, them = world["me"], world["them"]
+    assert client.get("/home").status_code == 200
+    assert "Sample profile, read-only" in client.get("/home").text
+    assert client.get("/api/resume", params={"account_id": me["account"]}).status_code == 200
+    assert client.get("/api/resume", params={"account_id": them["account"]}).status_code == 404
+    assert "/auth/sample" in TestClient(fastapi_app, base_url=BASE).get("/welcome").text
+
+
+def test_sample_profile_cannot_change_anything_or_see_keys(world, monkeypatch):
+    client = _sample_client(world, monkeypatch)
+    me = world["me"]
+    headers = {"origin": BASE}
+    for method, path, kwargs in (
+        ("POST", "/api/job-postings", {"json": {"account_id": me["account"], "text": "x"}}),
+        ("DELETE", f"/api/resume/{me['resume']}", {"params": {"account_id": me["account"]}}),
+        ("DELETE", f"/accounts/{me['account']}", {}),
+        ("PATCH", f"/api/accounts/{me['account']}/contact", {"json": {"contact_email": "x"}}),
+        ("POST", f"/api/api-keys?account_id={me['account']}", {"json": {}}),
+        ("POST", "/api/resume-build/start", {"json": {"account_id": me["account"]}}),
+    ):
+        response = client.request(method, path, headers=headers, **kwargs)
+        assert response.status_code == 404, (method, path)
+    for path in (
+        f"/api/api-keys?account_id={me['account']}",
+        "/apis",
+        f"/api/resume/{me['resume']}/file?account_id={me['account']}",
+    ):
+        assert client.get(path).status_code == 404, path
+    assert 'href="/apis" class="otw-topnav-link"' not in client.get("/home").text
+
+
+def test_sample_session_ends_when_the_sample_moves(world, monkeypatch):
+    client = _sample_client(world, monkeypatch)
+    monkeypatch.setenv("DEMO_SAMPLE_ACCOUNT_ID", str(world["them"]["account"]))
+    get_settings.cache_clear()
+    response = client.get("/api/resume", params={"account_id": world["me"]["account"]})
+    assert response.status_code == 401
+
+
+def test_a_sample_session_is_never_admin(world, monkeypatch):
+    monkeypatch.setenv("DEMO_SAMPLE_ACCOUNT_ID", str(world["me"]["account"]))
+    get_settings.cache_clear()
+    client = TestClient(fastapi_app, base_url=BASE, follow_redirects=False)
+    token = URLSafeTimedSerializer(SECRET, salt="otw-session").dumps(
+        {"account_id": world["me"]["account"], "admin": True, "sample": True}
+    )
+    client.cookies.set("otw_session", token, domain=HOST)
+    assert client.get("/api/app-settings/llm").status_code == 404

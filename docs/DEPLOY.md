@@ -15,6 +15,7 @@ The app must sit behind HTTPS: session cookies are `Secure`.
 | `DEMO_GITHUB_CLIENT_SECRET` | yes | Same OAuth app. |
 | `DEMO_SESSION_SECRET` | yes | At least 32 random characters; signs session cookies. |
 | `DEMO_ADMIN_GITHUB_ID` | | Your numeric GitHub id. This account skips the gate. |
+| `DEMO_SAMPLE_ACCOUNT_ID` | | Optional. An account id visitors can browse read-only from `/welcome` without signing in. Set it after that account exists. |
 | `APP_SECRET_KEY` | yes | Fernet key encrypting stored API keys. Must not change. |
 | `GITHUB_TOKEN` | yes | Raises the GitHub API limit for syncs. |
 | `DEMO_DAILY_RESUME_BUILDS` | | Default 5 per user. |
@@ -59,8 +60,17 @@ domain you own at the VM's IP and change `DEMO_PUBLIC_HOST`.
 $100 lasts roughly five months running nonstop. Set a budget alert. Stopping
 (deallocating) the VM ends compute charges; disks still bill.
 
-After the first deploy, sign in with the admin account, add the LLM key on
-`/apis`, and set the monthly budget.
+After the first deploy, sign in with the admin account, add your LLM keys on
+`/apis`, and set the models and monthly budget. Keys belong to the account
+that adds them: every visitor adds their own, and nobody else's work uses them.
+
+**Sample profile.** To let people look around without signing in, use your own
+account: set placeholder contact details on it (Portfolio, Contact), build a
+resume or two, then set `DEMO_SAMPLE_ACCOUNT_ID` to its id and resend the env
+file. The id is in the address bar of any portfolio API call, or run
+`docker compose exec app python -c "from app.core.db import Account, get_db; print([(a.id, a.github_username) for a in get_db().query(Account)])"`
+on the VM. Visitors can read everything on it except its keys and the
+original uploaded resume file, and can change nothing.
 
 **Storage.** SQLite WAL mode, which the app database and the graph checkpointer
 both use, needs shared memory and is unsafe on network file systems (SMB, NFS,

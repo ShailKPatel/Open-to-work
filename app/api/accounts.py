@@ -20,8 +20,10 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.deps import DbSession
 from app.api.input_limits import file_notes, require_confirmation
+from app.core import api_keys_store
 from app.core.db import (
     Account,
+    ApiKey,
     Education,
     Experience,
     ExperiencePoint,
@@ -39,6 +41,7 @@ from app.core.db import (
     SocialLink,
     SyncSource,
 )
+from app.core.llm_providers import PROVIDER_LABELS, PROVIDERS
 from app.core.settings import get_settings
 from app.ingest.github.client import GitHubClient
 from app.profile.resume_ingest import GeneratedResumeError, ingest_resume, is_generated_pdf
@@ -160,6 +163,8 @@ def create_account(
     resume: UploadFile | None = File(None),
     confirm_large: bool = Form(False),
     request_id: str = Form(""),
+    api_key_provider: str = Form(""),
+    api_key: str = Form(""),
     *,
     db: DbSession,
 ) -> CreatedAccount:
@@ -169,6 +174,11 @@ def create_account(
     Sending the same signup again (same request_id, or the same name and
     GitHub username within a minute) answers with the profile already
     made instead of a second one.
+
+    api_key, from the first-run wizard, is stored as the new profile's own
+    key before anything reads the resume, so that first read has a key. A
+    key the provider refuses is skipped, not an error: the profile still
+    gets made, and the key can be added on /apis.
     """
     # GitHub is optional at signup, non-technical users, or anyone without
     # a GitHub account, leave it blank and build their profile by hand
@@ -207,6 +217,17 @@ def create_account(
             raise
         return _created(db, existing)
     db.refresh(account)
+
+    if api_key.strip() and api_key_provider in PROVIDERS:
+        stored, detail = api_keys_store.add_key(
+            api_key_provider,
+            PROVIDER_LABELS.get(api_key_provider, api_key_provider),
+            {"api_key": api_key.strip()},
+            None,
+            account_id=account.id,
+        )
+        if stored is None:
+            logger.info("signup key for account %s not stored: %s", account.id, detail)
 
     if username:
         # Seed one sync source with the signup username so the
@@ -314,8 +335,8 @@ def delete_account(account_id: int, *, db: DbSession) -> dict:
     points (SQLite and Qdrant), education, contact-adjacent social links,
     freestanding manual skills, any profile snapshot, every resume
     (SQLite, Qdrant, and its file), every job posting this account
-    created (SQLite, Qdrant, and any screenshot file), and the account
-    itself. No soft-delete, this is what "delete" means here, per the
+    created (SQLite, Qdrant, and any screenshot file), its API keys, and
+    the account itself. No soft-delete, this is what "delete" means here, per the
     confirmation prompt the client shows before calling this.
     """
     account = db.get(Account, account_id)
@@ -433,6 +454,7 @@ def delete_account(account_id: int, *, db: DbSession) -> dict:
     )
     db.execute(delete(Resume).where(Resume.account_id == account_id))
     db.execute(delete(JobPosting).where(JobPosting.account_id == account_id))
+    db.execute(delete(ApiKey).where(ApiKey.account_id == account_id))
 
     # Removes every resume file for this account too: they all live
     # under this one per-account directory (app/profile/resume_ingest.py).

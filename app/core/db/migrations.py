@@ -697,6 +697,75 @@ def _migrate_llm_failure_columns(engine: Engine) -> None:
         conn.commit()
 
 
+def _migrate_api_keys_owner(engine: Engine) -> None:
+    """Gives every key one owning account. A key used to be shared by every
+    profile (empty allowed_account_ids) or by a listed few; now it belongs
+    to exactly one. Each shared key becomes one copy per account that could
+    use it, so nobody loses a key they had, and each account then has at
+    most one active key per provider. A key with no account to go to stays
+    unowned and unused. Idempotent: only rows without an owner are touched.
+    """
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.connect() as conn:
+        existing = {row[1] for row in conn.execute(text("PRAGMA table_info(api_keys)"))}
+        if "account_id" not in existing:
+            conn.execute(
+                text("ALTER TABLE api_keys ADD COLUMN account_id INTEGER REFERENCES accounts(id)")
+            )
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_api_keys_account_id ON api_keys (account_id)")
+            )
+        account_ids = [row[0] for row in conn.execute(text("SELECT id FROM accounts ORDER BY id"))]
+        columns = [
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(api_keys)"))
+            if row[1] not in ("id", "account_id")
+        ]
+        unowned = conn.execute(
+            text("SELECT id, allowed_account_ids FROM api_keys WHERE account_id IS NULL")
+        ).all()
+        for key_id, allowed_raw in unowned:
+            try:
+                allowed = json.loads(allowed_raw) if allowed_raw else []
+            except (TypeError, ValueError):
+                allowed = []
+            owners = [a for a in (allowed or account_ids) if a in account_ids]
+            if not owners:
+                continue
+            conn.execute(
+                text("UPDATE api_keys SET account_id = :a WHERE id = :k"),
+                {"a": owners[0], "k": key_id},
+            )
+            column_list = ", ".join(columns)
+            for owner in owners[1:]:
+                conn.execute(
+                    text(
+                        f"INSERT INTO api_keys (account_id, {column_list}) "
+                        f"SELECT :a, {column_list} FROM api_keys WHERE id = :k"
+                    ),
+                    {"a": owner, "k": key_id},
+                )
+        # One active key per account and provider: the oldest active one wins.
+        conn.execute(
+            text(
+                "UPDATE api_keys SET is_active = 0 WHERE is_active = 1 AND account_id IS NOT NULL "
+                "AND id <> (SELECT MIN(k2.id) FROM api_keys k2 WHERE k2.is_active = 1 "
+                "AND k2.account_id = api_keys.account_id AND k2.provider = api_keys.provider)"
+            )
+        )
+        conn.execute(
+            text(
+                "UPDATE api_keys SET is_active = 1 WHERE account_id IS NOT NULL "
+                "AND id = (SELECT MIN(k2.id) FROM api_keys k2 "
+                "WHERE k2.account_id = api_keys.account_id AND k2.provider = api_keys.provider) "
+                "AND NOT EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.is_active = 1 "
+                "AND k3.account_id = api_keys.account_id AND k3.provider = api_keys.provider)"
+            )
+        )
+        conn.commit()
+
+
 def init_db() -> None:
     _backup_sqlite_file(get_settings().database_url)
     engine = get_engine()
@@ -717,6 +786,7 @@ def init_db() -> None:
     _migrate_job_postings_source_columns(engine)
     _migrate_contact_items(engine)
     _migrate_api_keys_exhaustion_columns(engine)
+    _migrate_api_keys_owner(engine)
     _migrate_skills_source_resume_column(engine)
     _migrate_repositories_profile_readme_column(engine)
     _migrate_repositories_readme_sha_column(engine)

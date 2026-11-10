@@ -3,9 +3,17 @@ keys reads only masked_preview, and only app/core/llm.py receives a
 decrypted credential, through resolve_dispatch_keys(). Each provider's
 credential fields are defined in app/core/llm_providers.py.
 
-A provider may have several keys, at most one of them active.
-resolve_dispatch_keys(provider, account_id) drops disabled keys and keys
-restricted to other accounts, and orders the rest best first: no recent
+Every key added through the app belongs to one account, and only that
+account's work dispatches with it. An account may hold several keys per
+provider, at most one of them active. Two accounts may store the same key;
+each gets its own row. The functions that change a key take the caller's
+account_id and act only on that account's keys (None skips the check, for
+internal callers only). A key with no owner comes from the eval harness or
+from a database that had no profiles when ownership arrived: it serves every
+account when run locally and is never used in the public demo.
+
+resolve_dispatch_keys(provider, account_id) drops disabled keys and other
+accounts' keys, and orders the rest best first: no recent
 complaint, then the active key, then by id. Status only reorders: a key
 rate-limited an hour ago is likely fine now, so it goes last rather than
 being dropped, and record_dispatch_outcome() marks it valid once it
@@ -25,13 +33,14 @@ import json
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, Select, select
 from sqlalchemy.orm import Session
 
 from app.core.crypto import decrypt, encrypt
 from app.core.db import ApiKey, get_db
 from app.core.key_cooldown import plan_cooldown, postpone
 from app.core.llm_providers import fields_for, validate_credentials
+from app.core.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -140,14 +149,38 @@ def _to_out(row: ApiKey) -> dict:
         "budget_cap_usd": row.budget_cap_usd,
         "is_active": row.is_active,
         "enabled": row.enabled,
-        "allowed_account_ids": row.allowed_account_ids or [],
+        "account_id": row.account_id,
     }
 
 
-def list_keys() -> list[dict]:
+def _owned(db: Session, key_id: int, account_id: int | None) -> ApiKey | None:
+    """The key, if it exists and belongs to account_id. Another account's
+    key reads as missing, so ids cannot be probed."""
+    row = db.get(ApiKey, key_id)
+    if row is None or (account_id is not None and row.account_id != account_id):
+        return None
+    return row
+
+
+def _same_group(row: ApiKey) -> Select[ApiKey]:
+    """The keys that share an active slot with this one: same provider,
+    same owner."""
+    owner: ColumnElement[bool]
+    if row.account_id is None:
+        owner = ApiKey.account_id.is_(None)
+    else:
+        owner = ApiKey.account_id == row.account_id
+    return select(ApiKey).where(ApiKey.provider == row.provider, owner)
+
+
+def list_keys(account_id: int | None = None) -> list[dict]:
+    """One account's keys, or with None every key (internal callers)."""
     db = get_db()
     try:
-        rows = db.execute(select(ApiKey).order_by(ApiKey.provider, ApiKey.id)).scalars().all()
+        query = select(ApiKey).order_by(ApiKey.provider, ApiKey.id)
+        if account_id is not None:
+            query = query.where(ApiKey.account_id == account_id)
+        rows = db.execute(query).scalars().all()
         return [_to_out(r) for r in rows]
     finally:
         db.close()
@@ -158,31 +191,31 @@ def add_key(
     label: str,
     credentials: dict,
     budget_cap_usd: float | None,
-    allowed_account_ids: list[int] | None = None,
+    account_id: int | None = None,
 ) -> tuple[dict | None, str]:
     status, detail = validate_credentials(provider, credentials)
     if status == "invalid":
         return None, detail
     db = get_db()
     try:
-        # First key stored for a provider goes active automatically; a
-        # second one for the same provider is added inactive, waiting for
-        # activate_key() rather than silently taking over dispatch.
-        has_active = db.execute(
-            select(ApiKey.id).where(ApiKey.provider == provider, ApiKey.is_active.is_(True))
-        ).first()
+        # An account's first key for a provider goes active automatically;
+        # a second one is added inactive, waiting for activate_key() rather
+        # than silently taking over dispatch.
         row = ApiKey(
             provider=provider,
+            account_id=account_id,
             label=label.strip() or "Untitled",
             encrypted_credentials=encrypt(json.dumps(credentials)),
             masked_preview=_build_masked_preview(provider, credentials),
-            is_active=has_active is None,
             enabled=True,
-            allowed_account_ids=sorted(set(allowed_account_ids or [])),
+            allowed_account_ids=[],
             status=status,
             last_checked_at=_now(),
             last_check_detail=detail,
             budget_cap_usd=budget_cap_usd,
+        )
+        row.is_active = (
+            db.execute(_same_group(row).where(ApiKey.is_active.is_(True))).first() is None
         )
         if status in _EXHAUSTED_STATUSES:
             # Stored while out of quota: it goes in with a cooldown so the
@@ -201,27 +234,24 @@ def update_key(
     *,
     label: str | None = None,
     budget_cap_usd: float | None = ...,  # type: ignore[assignment]
-    allowed_account_ids: list[int] | None = ...,  # type: ignore[assignment]
+    account_id: int | None = None,
 ) -> dict | None:
     """Partial update for the fields that don't need re-validating a
-    credential (label, budget cap, the allowed-accounts list). Swapping
+    credential (label, budget cap). Swapping
     the credentials themselves means adding a new key and deleting the old
     one, so this never touches encrypted_credentials (replace_credentials()
     does that).
-    `budget_cap_usd`/`allowed_account_ids` use `...` as "leave unchanged"
-    since `None`/`[]` are both meaningful values (no cap, no restriction).
+    `budget_cap_usd` uses `...` as "leave unchanged" since None means no cap.
     """
     db = get_db()
     try:
-        row = db.get(ApiKey, key_id)
+        row = _owned(db, key_id, account_id)
         if row is None:
             return None
         if label is not None:
             row.label = label.strip() or "Untitled"
         if budget_cap_usd is not ...:
             row.budget_cap_usd = budget_cap_usd
-        if allowed_account_ids is not ...:
-            row.allowed_account_ids = sorted(set(allowed_account_ids or []))
         db.commit()
         db.refresh(row)
         return _to_out(row)
@@ -229,7 +259,9 @@ def update_key(
         db.close()
 
 
-def replace_credentials(key_id: int, credentials: dict) -> tuple[dict | None, str]:
+def replace_credentials(
+    key_id: int, credentials: dict, account_id: int | None = None
+) -> tuple[dict | None, str]:
     """Swaps the secret behind an existing key in place, keeping its label,
     cap, allow-list and place in rotation. Validated exactly like
     add_key(): a rejected credential leaves the stored one untouched. The
@@ -238,7 +270,7 @@ def replace_credentials(key_id: int, credentials: dict) -> tuple[dict | None, st
     id so the caller can tell that apart from a rejected credential."""
     db = get_db()
     try:
-        row = db.get(ApiKey, key_id)
+        row = _owned(db, key_id, account_id)
         if row is None:
             raise LookupError(key_id)
         status, detail = validate_credentials(row.provider, credentials)
@@ -259,14 +291,14 @@ def replace_credentials(key_id: int, credentials: dict) -> tuple[dict | None, st
         db.close()
 
 
-def set_enabled(key_id: int, enabled: bool) -> dict | None:
+def set_enabled(key_id: int, enabled: bool, account_id: int | None = None) -> dict | None:
     """The manual on/off switch, independent of is_active/delete. A
     disabled key is skipped by resolve_dispatch_keys() entirely, even if
     it's the active one for its provider, so it is not used as failover
     either; re-enabling needs no re-activation."""
     db = get_db()
     try:
-        row = db.get(ApiKey, key_id)
+        row = _owned(db, key_id, account_id)
         if row is None:
             return None
         row.enabled = enabled
@@ -277,41 +309,35 @@ def set_enabled(key_id: int, enabled: bool) -> dict | None:
         db.close()
 
 
-def delete_key(key_id: int) -> None:
+def delete_key(key_id: int, account_id: int | None = None) -> bool:
+    """False when there is no such key for this account."""
     db = get_db()
     try:
-        row = db.get(ApiKey, key_id)
+        row = _owned(db, key_id, account_id)
         if row is None:
-            return
-        was_active, provider = row.is_active, row.provider
+            return False
+        was_active, group = row.is_active, _same_group(row)
         db.delete(row)
         db.commit()
         if was_active:
-            # promote the next-oldest remaining key for that provider (if
-            # any) so it doesn't silently end up with none active
-            next_row = (
-                db.execute(select(ApiKey).where(ApiKey.provider == provider).order_by(ApiKey.id))
-                .scalars()
-                .first()
-            )
+            # promote the owner's next-oldest remaining key for that
+            # provider (if any) so it doesn't silently end up with none active
+            next_row = db.execute(group.order_by(ApiKey.id)).scalars().first()
             if next_row is not None:
                 next_row.is_active = True
                 db.commit()
+        return True
     finally:
         db.close()
 
 
-def activate_key(key_id: int) -> dict | None:
+def activate_key(key_id: int, account_id: int | None = None) -> dict | None:
     db = get_db()
     try:
-        row = db.get(ApiKey, key_id)
+        row = _owned(db, key_id, account_id)
         if row is None:
             return None
-        others = (
-            db.execute(select(ApiKey).where(ApiKey.provider == row.provider, ApiKey.id != row.id))
-            .scalars()
-            .all()
-        )
+        others = db.execute(_same_group(row).where(ApiKey.id != row.id)).scalars().all()
         for other in others:
             other.is_active = False
         row.is_active = True
@@ -322,14 +348,14 @@ def activate_key(key_id: int) -> dict | None:
         db.close()
 
 
-def check_key(key_id: int) -> dict | None:
+def check_key(key_id: int, account_id: int | None = None) -> dict | None:
     """Re-validates the already-stored credentials in place; the caller
     never resends them. This is the manual "check" button, so it runs
     whatever the key's current status is, including a blocked one that the
     automatic pass deliberately leaves alone."""
     db = get_db()
     try:
-        row = db.get(ApiKey, key_id)
+        row = _owned(db, key_id, account_id)
         if row is None:
             return None
         _apply_check(row, _now())
@@ -383,7 +409,7 @@ def _apply_check(row: ApiKey, now: dt.datetime) -> None:
         )
 
 
-def recheck_keys(scope: str = "due") -> list[dict]:
+def recheck_keys(scope: str = "due", account_id: int | None = None) -> list[dict]:
     """Rechecks a group of unhappy keys and returns the ones it touched.
 
     `scope` picks the group, and the difference between them is the whole
@@ -397,13 +423,19 @@ def recheck_keys(scope: str = "due") -> list[dict]:
     "blocked"   the rejected and blocked keys, which nothing else ever
                 touches on its own. Only ever from an explicit request.
 
+    account_id limits the pass to that account's keys; None is every key
+    (the automatic pass).
+
     Keys that are switched off are skipped in every scope: they are not
     dispatched with, so spending a request to learn their status is waste.
     """
     now = _now()
     db = get_db()
     try:
-        rows = db.execute(select(ApiKey).where(ApiKey.enabled.is_(True))).scalars().all()
+        query = select(ApiKey).where(ApiKey.enabled.is_(True))
+        if account_id is not None:
+            query = query.where(ApiKey.account_id == account_id)
+        rows = db.execute(query).scalars().all()
         if scope == "blocked":
             targets = [r for r in rows if r.status in _MANUAL_ONLY_STATUSES]
         elif scope == "exhausted":
@@ -430,12 +462,11 @@ def recheck_keys(scope: str = "due") -> list[dict]:
         db.close()
 
 
-def _allows_account(row: ApiKey, account_id: int | None) -> bool:
-    if not row.allowed_account_ids:  # empty/None = every account allowed
-        return True
-    if account_id is None:
-        return False  # restricted key, no account context to check against
-    return account_id in row.allowed_account_ids
+def _serves(row: ApiKey, account_id: int | None, demo_mode: bool) -> bool:
+    if row.account_id is None:
+        # Harness or pre-ownership key: never in the public demo.
+        return not demo_mode
+    return row.account_id == account_id
 
 
 def _dispatch_order(row: ApiKey) -> tuple[int, int, int]:
@@ -452,7 +483,8 @@ def _resolve_rows(db: Session, provider: str, account_id: int | None) -> list[Ap
         .scalars()
         .all()
     )
-    return sorted((r for r in rows if _allows_account(r, account_id)), key=_dispatch_order)
+    demo_mode = get_settings().demo_mode
+    return sorted((r for r in rows if _serves(r, account_id, demo_mode)), key=_dispatch_order)
 
 
 @dataclass(frozen=True)
@@ -469,9 +501,8 @@ class DispatchKey:
 
 def resolve_dispatch_keys(provider: str, account_id: int | None) -> list[DispatchKey]:
     """Every key app/core/llm.py may try for this provider+account, in
-    the order to try them. Empty means nothing usable is configured:
-    either no key at all, or every key for this provider is disabled or
-    restricted to other accounts.
+    the order to try them. Empty means nothing usable is configured: this
+    account has no enabled key for the provider.
 
     Decrypts each one up front rather than lazily, so dispatch never
     reopens the store mid-request. That is one small decrypt per stored
