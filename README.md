@@ -93,6 +93,40 @@ flowchart LR
 
 Every model call goes through one client. It caches responses by content hash, checks the monthly budget before sending, and records cost, tokens, latency, and the feature that made the call. When a key runs out, the next key for the same provider takes over and the job keeps going.
 
+### MCP server and profile agent
+
+`app/mcp_server.py` exposes one profile to any MCP client over stdio. Every tool wraps code the app already runs, and the profile is fixed at startup, so no tool can reach another one.
+
+| Tool | Does |
+| --- | --- |
+| `search_evidence` | Hybrid search over the profile's skill evidence |
+| `list_projects` | The profile's projects, starred first |
+| `add_job_posting` | Saves a posting; it is read in the background |
+| `start_resume_build` | Starts a build for one of the profile's postings |
+| `get_build_status` | Stage, state and result of a build |
+
+```bash
+make mcp ACCOUNT=1            # add READ_ONLY=1 to leave out the two writing tools
+```
+
+Client config (Claude Desktop `claude_desktop_config.json`, Cursor `.cursor/mcp.json`, Claude Code `.mcp.json`), with absolute paths to this checkout:
+
+```json
+{
+  "mcpServers": {
+    "open-to-work": {
+      "command": "/path/to/open-to-work/.venv/bin/python",
+      "args": ["-m", "app.mcp_server", "--account-id", "1"],
+      "cwd": "/path/to/open-to-work"
+    }
+  }
+}
+```
+
+Claude Code can also add it with `claude mcp add open-to-work -- /path/to/open-to-work/.venv/bin/python -m app.mcp_server --account-id 1`, run from the checkout. A build started through MCP runs inside the server process, so it stops when the client closes it.
+
+**Ask** (`/portfolio/ask`, `POST /api/profile-agent/ask`) answers a question about your profile with a LangGraph agent that loads the same server's tools through langchain-mcp-adapters. It gets the read-only tools only, and its model is a thin LangChain wrapper over the LLM gateway, so budget, cache and key failover apply to every step.
+
 ## Tech stack
 
 | Layer | Tools |
@@ -147,6 +181,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d qdrant
 | `make test-live` | Checks against real services |
 | `make ingest ACCOUNT=<user>` | GitHub sync from the command line |
 | `make eval ACCOUNT=<id>` | Retrieval and groundedness evaluation |
+| `make mcp ACCOUNT=<id>` | MCP server for one profile over stdio |
 
 ### Testing
 
@@ -236,6 +271,8 @@ Add `WRITE=1` to save a report to `evals/results/`. CI runs retrieval on a separ
 ```
 app/
   api/            FastAPI routers and page routes
+  agent/          "ask about my profile" agent over the MCP tools
+  mcp_server.py   MCP server (stdio) for one profile
   core/           settings, models, LLM client, embeddings, credential storage
   ingest/github/  GitHub client, sync, manifest parsing, cancellation
   profile/        skill extraction and weighting, resume and job extraction, injection detection

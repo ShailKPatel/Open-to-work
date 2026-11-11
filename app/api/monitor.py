@@ -55,6 +55,7 @@ _PURPOSE_LABELS = {
     "resume_extract": "Resume import",
     "role_family": "Role family match",
     "groundedness_eval": "Groundedness eval",
+    "profile_agent": "Ask about my profile",
 }
 
 

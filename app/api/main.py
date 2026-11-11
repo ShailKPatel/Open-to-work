@@ -24,6 +24,7 @@ from app.api.job_postings import fail_interrupted_extractions
 from app.api.job_postings import router as job_postings_router
 from app.api.llm_errors import install as install_llm_error_handlers
 from app.api.monitor import router as monitor_router
+from app.api.profile_agent import router as profile_agent_router
 from app.api.projects import router as projects_router
 from app.api.resume import router as resume_router
 from app.api.resume_build import router as resume_build_router
@@ -95,6 +96,7 @@ app.include_router(github_sync_router)
 app.include_router(job_analytics_router)
 app.include_router(job_postings_router)
 app.include_router(monitor_router)
+app.include_router(profile_agent_router)
 app.include_router(projects_router)
 app.include_router(resume_router)
 app.include_router(resume_build_router)
@@ -136,6 +138,7 @@ for _path, _template in (
     ("/portfolio/contact-links", "contact_links.html"),
     ("/portfolio/resume", "resume.html"),
     ("/portfolio/resume/build", "resume_build.html"),
+    ("/portfolio/ask", "ask.html"),
     ("/monitor", "monitor.html"),
     ("/monitor/sync", "sources.html"),
     ("/jobs", "jobs.html"),

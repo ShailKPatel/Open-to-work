@@ -27,6 +27,9 @@ dependencies = [
     "langsmith>=0.14.17",  # optional tracing, app/core/tracing.py (imported directly)
     "boto3>=1.43",  # backups to S3-compatible storage, app/core/backup.py (imported directly)
     "itsdangerous>=2.2",  # signed session cookie in demo mode, app/api/demo.py
+    "mcp>=1.30",  # MCP server (FastMCP, stdio), app/mcp_server.py
+    "langchain-mcp-adapters>=0.3.2",  # MCP tools as LangChain tools, app/agent/profile_agent.py
+    "langchain-core>=1.7",  # chat model base class, app/agent/chat_model.py (imported directly)
 ]
 
 [project.optional-dependencies]

@@ -82,7 +82,8 @@ _ALLOWED_PAGES = {
     "/", "/home", "/portfolio", "/portfolio/projects", "/portfolio/projects/{repo_id:int}",
     "/portfolio/education", "/portfolio/experience", "/portfolio/experience/{experience_id:int}",
     "/portfolio/skills", "/portfolio/contact-links", "/portfolio/resume",
-    "/portfolio/resume/build", "/monitor/sync", "/jobs", "/jobs/{posting_id:int}", "/apis",
+    "/portfolio/resume/build", "/portfolio/ask", "/monitor/sync", "/jobs",
+    "/jobs/{posting_id:int}", "/apis",
 }
 
 _ALLOWED = {
@@ -177,6 +178,9 @@ _ALLOWED = {
     ("POST", "/api/github-sync/{run_row_id}/resume"),
     ("POST", "/api/github-sync/{run_row_id}/dismiss"),
     ("GET", "/api/job-analytics/skills-demand"),
+    # Read-only tools only (app/agent/profile_agent.py); its model calls
+    # fall under the per-day LLM caps in app/core/llm.py.
+    ("POST", "/api/profile-agent/ask"),
     # Each person's own LLM keys. The model choice and budget stay admin-only.
     ("GET", "/api/api-keys"),
     ("POST", "/api/api-keys"),

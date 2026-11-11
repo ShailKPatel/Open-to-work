@@ -1,4 +1,4 @@
-.PHONY: usage-report test coverage test-live lint ingest eval eval-fixture eval-synthetic eval-real eval-public eval-skillspan eval-llm constraints dev up down start
+.PHONY: usage-report test coverage test-live lint ingest mcp eval eval-fixture eval-synthetic eval-real eval-public eval-skillspan eval-llm constraints dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
@@ -39,6 +39,13 @@ ingest:
 # dense-vs-BM25 retrieval comparison.
 eval:
 	.venv/bin/python -m app.evals $(ACCOUNT) $(if $(NO_GROUNDEDNESS),--no-groundedness,)
+
+# MCP server for one profile over stdio, for Claude Desktop, Claude Code or
+# Cursor (client config in README.md). stdout is the protocol channel, so
+# run it from a client rather than reading its output.
+#   make mcp ACCOUNT=1 [READ_ONLY=1]
+mcp:
+	.venv/bin/python -m app.mcp_server --account-id $(ACCOUNT) $(if $(READ_ONLY),--read-only,)
 
 # The eval gate CI runs on every pull request, reproduced locally so a red
 # gate can be debugged without pushing. Seeds the synthetic fixture account

@@ -1,0 +1,97 @@
+{% extends "_base.html" %}
+{% block title %}Ask · Open to Work{% endblock %}
+{% block content %}
+<!-- Ask about my profile: one question at a time to the agent in
+     app/agent/profile_agent.py (POST /api/profile-agent/ask). The answer
+     comes from this profile's own evidence through read-only tools. -->
+<div x-data="askApp()" x-init="init()" class="min-h-screen flex flex-col">
+
+  {% set top_active = 'portfolio' %}
+  {% include "_header.html" %}
+
+  <main class="flex-1 px-10 pb-24 max-w-3xl mx-auto w-full">
+    {% set data_active = 'ask' %}
+    {% include "_portfolio_subnav.html" %}
+
+    <h1 class="font-display text-4xl mt-8">Ask about my profile</h1>
+    <p class="text-sm text-[color:var(--muted)] mt-2">
+      Answered from your projects, skills and experience. The agent can only
+      look things up; it never changes your profile.
+    </p>
+
+    <form @submit.prevent="send" class="otw-tile p-6 mt-8">
+      <textarea
+        x-model="question"
+        rows="3"
+        maxlength="1000"
+        placeholder="e.g. Which of my projects show Kubernetes experience?"
+        class="otw-input w-full"
+        @keydown.enter.meta.prevent="send"
+        @keydown.enter.ctrl.prevent="send"
+      ></textarea>
+      <div class="flex items-center justify-end gap-2 mt-3">
+        <p x-show="error" x-cloak class="otw-error text-xs mr-auto" x-text="error"></p>
+        <button type="submit" :disabled="!question.trim() || asking" class="otw-btn text-sm px-4 py-2">
+          <span x-show="!asking">Ask</span>
+          <span x-show="asking" x-cloak class="otw-working">Thinking…</span>
+        </button>
+      </div>
+    </form>
+
+    <template x-for="(item, i) in history" :key="i">
+      <div class="otw-tile p-6 mt-6">
+        <p class="text-xs uppercase tracking-wide text-[color:var(--muted)]">Question</p>
+        <p class="mt-1 text-sm" x-text="item.question"></p>
+        <p class="text-xs uppercase tracking-wide text-[color:var(--muted)] mt-4">Answer</p>
+        <p class="mt-1 text-sm whitespace-pre-line" x-text="item.answer"></p>
+        <p class="mt-4 text-xs text-[color:var(--muted)]" x-text="meta(item)"></p>
+      </div>
+    </template>
+  </main>
+</div>
+
+<script>
+  function askApp() {
+    return {
+      accountId: null,
+      accountName: '',
+      question: '',
+      asking: false,
+      error: '',
+      history: [],
+
+      init() {
+        this.accountId = localStorage.getItem('otw_account_id');
+        this.accountName = localStorage.getItem('otw_account_name') || '';
+        if (!this.accountId) {
+          window.location.href = '/';
+        }
+      },
+
+      meta(item) {
+        const tools = item.tools_used.length ? 'Looked up: ' + [...new Set(item.tools_used)].join(', ') : 'No lookups';
+        return `${tools} · ${item.steps} step${item.steps === 1 ? '' : 's'} · $${item.cost_usd.toFixed(4)}`;
+      },
+
+      async send() {
+        const question = this.question.trim();
+        if (!question || this.asking) return;
+        this.asking = true;
+        this.error = '';
+        const res = await otwFetch('/api/profile-agent/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ account_id: Number(this.accountId), question }),
+        }, { fallback: 'Could not get an answer.', retry: () => this.send() });
+        this.asking = false;
+        if (!res.ok) {
+          this.error = res.error;
+          return;
+        }
+        this.history.unshift({ question, ...res.data });
+        this.question = '';
+      },
+    };
+  }
+</script>
+{% endblock %}

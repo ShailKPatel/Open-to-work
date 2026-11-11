@@ -2,8 +2,10 @@ name: Release
 
 # On every merge to main: the full CI suite including the retrieval eval
 # gate, then one image in GitHub Container Registry, tagged with the commit.
-# Then the VM from infra/azure is told to run it. The deploy job is skipped
-# until the AZURE_VM_NAME repository variable exists (docs/DEPLOY.md).
+# Then the server is told to run it: the Azure VM from infra/azure through
+# run-command, or any server prepared by deploy/server-setup.sh over SSH.
+# Each deploy job is skipped until its repository variable exists
+# (AZURE_VM_NAME or DEPLOY_SSH_HOST; docs/DEPLOY.md).
 on:
   push:
     branches: [main]
@@ -82,5 +84,36 @@ jobs:
             -g "${{ vars.AZURE_RESOURCE_GROUP }}" -n "${{ vars.AZURE_VM_NAME }}" \
             --command-id RunShellScript --scripts @deploy-script.sh \
             --query 'value[0].message' -o tsv)
+          echo "$output"
+          grep -q DEPLOY_OK <<< "$output"
+
+  deploy-ssh:
+    needs: image
+    if: vars.DEPLOY_SSH_HOST != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # The host key is pinned from a variable, so a first connection can
+      # never be answered by someone else's machine.
+      - name: Run the new image on the server
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.DEPLOY_SSH_KNOWN_HOSTS }}
+          HOST: ${{ vars.DEPLOY_SSH_HOST }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          {
+            echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+            echo "COMPOSE_B64=$(base64 -w0 deploy/docker-compose.demo.yml)"
+            echo "CADDY_B64=$(base64 -w0 deploy/Caddyfile)"
+            cat deploy/vm-update.sh
+          } > deploy-script.sh
+          output=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes \
+            "deploy@$HOST" 'bash -s' < deploy-script.sh)
           echo "$output"
           grep -q DEPLOY_OK <<< "$output"

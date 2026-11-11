@@ -231,7 +231,7 @@ LangGraph's checkpoints live in a separate file, `data/resume_graph.db`.
 - **Sessions.** GitHub OAuth with a `state` check and no scope. Accounts match on GitHub's numeric id, since logins can be reassigned. Cookies are signed, `HttpOnly`, `Secure`, `SameSite=Lax`, seven days. The app refuses to start with incomplete settings.
 - **Limits.** Per-user daily caps sit in `complete()`, so background work is capped too. Requests that change something need a session before their body is read, and bodies over 12 MB are refused.
 - **Isolation.** Tectonic gets a minimal environment with no secrets. The container drops all Linux capabilities. Qdrant has no published port. Only 80 and 443 are open on the VM.
-- **Data.** `/welcome` says where data goes before sign-in. Deleting an account also removes cached model replies, in-memory builds and unfinished drafts. Backups go to a private bucket and exclude `APP_SECRET_KEY`.
+- **Data.** `/welcome` says where data goes before sign-in. Deleting an account also removes cached model replies, in-memory builds and unfinished drafts. Backups go to a private bucket and exclude `APP_SECRET_KEY`. `app.core.restore` puts one back and `app.retrieval.rebuild` refills Qdrant from SQLite, so the vector index is never backed up.
 
 Known limit: the container still runs as root, without capabilities, because local Docker Compose bind-mounts `./data` as root.
 
