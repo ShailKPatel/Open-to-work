@@ -113,6 +113,7 @@ def test_full_server_lists_every_tool():
     assert _tools(mcp_server.build_server(1)) == {
         "search_evidence",
         "list_projects",
+        "list_job_postings",
         "add_job_posting",
         "start_resume_build",
         "get_build_status",
@@ -123,8 +124,70 @@ def test_read_only_server_leaves_out_writes():
     assert _tools(mcp_server.build_server(1, read_only=True)) == {
         "search_evidence",
         "list_projects",
+        "list_job_postings",
         "get_build_status",
     }
+
+
+def test_profile_and_jobs_servers_split_the_tools():
+    assert _tools(mcp_server.build_profile_server(1)) == {"search_evidence", "list_projects"}
+    assert _tools(mcp_server.build_jobs_server(1)) == {
+        "list_job_postings",
+        "add_job_posting",
+        "start_resume_build",
+        "get_build_status",
+    }
+    assert _tools(mcp_server.build_jobs_server(1, read_only=True)) == {
+        "list_job_postings",
+        "get_build_status",
+    }
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [("profile", 2), ("jobs", 2), ("all", 4)],
+)
+def test_build_named_picks_the_server(name, expected):
+    assert len(_tools(mcp_server.build_named(name, 1, read_only=True))) == expected
+
+
+def test_build_named_refuses_an_unknown_server():
+    with pytest.raises(ValueError):
+        mcp_server.build_named("billing", 1)
+
+
+# --- list_job_postings ---------------------------------------------------
+
+
+def test_list_job_postings_is_this_profile_only():
+    mine, other = _account("Ada"), _account("Bob")
+    _posting(mine, "Senior Python engineer")
+    _posting(other, "Staff Go engineer")
+    rows = _payload(_call(mcp_server.build_jobs_server(mine, read_only=True), "list_job_postings"))
+    assert [(r["company"], r["title"]) for r in rows] == [("Acme", "Engineer")]
+    assert set(rows[0]) >= {"id", "seniority", "work_mode", "salary_range", "saved_at"}
+    assert "raw_text" not in rows[0]
+
+
+# --- command line --------------------------------------------------------
+
+
+def test_main_runs_the_named_server_over_http(monkeypatch):
+    account = _account()
+    ran = {}
+
+    def fake_run(self, transport="stdio", mount_path=None):
+        ran.update(name=self.name, transport=transport, host=self.settings.host,
+                   port=self.settings.port)
+
+    monkeypatch.setattr(mcp_server.FastMCP, "run", fake_run)
+    monkeypatch.setattr("app.core.tracing.configure_tracing", lambda: None)
+    mcp_server.main(
+        ["--account-id", str(account), "--server", "profile", "--transport", "streamable-http",
+         "--port", "9001"]
+    )
+    assert ran == {"name": "open-to-work-profile", "transport": "streamable-http",
+                   "host": "127.0.0.1", "port": 9001}
 
 
 # --- search_evidence -----------------------------------------------------

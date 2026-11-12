@@ -1,9 +1,21 @@
-"""MCP server: one profile's evidence, projects, job postings and resume
-builds as tools an MCP client (Claude Desktop, Claude Code, Cursor) can
-call.
+"""MCP servers: one profile's evidence, projects, job postings and resume
+builds as tools an MCP client (Claude Desktop, Claude Code, Cursor, or the
+app's own profile agent) can call.
+
+Two servers, one per part of the app, so a client connects to the parts
+it needs and each can run on its own:
+
+- profile (build_profile_server): search_evidence, list_projects. Reads
+  the skill evidence in Qdrant and the projects in SQLite.
+- jobs (build_jobs_server): list_job_postings, get_build_status, and the
+  two that write or spend, add_job_posting and start_resume_build.
+
+build_server() is both on one server, for a desktop client that wants a
+single entry. The profile agent (app/agent/mcp_hub.py) connects to the two
+separately, next to any outside MCP server it is configured for.
 
 Every tool wraps code the web app already runs; nothing here decides
-anything the routes do not. The profile is fixed when the server is built
+anything the routes do not. The profile is fixed when a server is built
 (--account-id or OTW_MCP_ACCOUNT_ID), so no tool takes an account_id and
 none can reach another profile's rows: an id from a client is checked
 against that profile first, and one that belongs elsewhere reads as not
@@ -13,11 +25,14 @@ With DEMO_MODE on, the same per-profile rules as the hosted demo apply:
 the sample profile is read-only, and writes and builds count against the
 demo's daily limits.
 
-read_only=True leaves out the tools that write or spend (adding a posting,
-starting a build). The profile agent (app/agent/) builds its server that
-way, so text inside a posting or a README cannot steer it into either.
+read_only=True leaves out the tools that write or spend. The profile agent
+builds its servers that way, so text inside a posting or a README cannot
+steer it into either.
 
-Run over stdio:  make mcp ACCOUNT=1
+Run over stdio:            make mcp ACCOUNT=1 [SERVER=profile|jobs]
+Run over streamable HTTP:  make mcp-http ACCOUNT=1 [SERVER=...] [PORT=8765]
+HTTP binds to 127.0.0.1 only and has no auth of its own: the profile is
+fixed at startup, so it is for a client on the same machine.
 """
 
 from __future__ import annotations
@@ -37,12 +52,24 @@ from app.core.db import Account, Experience, JobPosting, Repository, get_db
 from app.core.settings import get_settings
 
 _MAX_RESULTS = 25
+_MAX_POSTINGS = 50
 
 _INSTRUCTIONS = (
     "Tools for one Open to Work profile: search the skill evidence drawn "
     "from its GitHub projects and work experience, list its projects, save "
     "a job posting, and start or follow a resume build tailored to one."
 )
+_PROFILE_INSTRUCTIONS = (
+    "Read one Open to Work profile: search the skill evidence drawn from "
+    "its GitHub projects and work experience, and list its projects."
+)
+_JOBS_INSTRUCTIONS = (
+    "One Open to Work profile's job postings and resume builds: list the "
+    "saved postings, save a new one, and start or follow a resume build "
+    "tailored to one."
+)
+
+SERVERS = ("profile", "jobs")
 
 
 def _not_found(kind: str, ident: object) -> ToolError:
@@ -188,6 +215,32 @@ def list_projects(account_id: int) -> list[dict[str, Any]]:
     ]
 
 
+def list_job_postings(account_id: int) -> list[dict[str, Any]]:
+    """The profile's saved postings, newest first, as the jobs page lists
+    them: what was read from each, not its raw text."""
+    from app.api import job_postings
+
+    db = get_db()
+    try:
+        rows = job_postings.list_postings(account_id, db=db)
+    finally:
+        db.close()
+    return [
+        {
+            "id": r.id,
+            "company": r.company,
+            "title": r.title,
+            "location": r.location,
+            "seniority": r.seniority,
+            "work_mode": r.work_mode_kind,
+            "salary_range": r.salary_range,
+            "extraction_status": r.extraction_status,
+            "saved_at": r.fetched_at.isoformat(),
+        }
+        for r in rows[:_MAX_POSTINGS]
+    ]
+
+
 def add_job_posting(
     account_id: int,
     text: str,
@@ -248,16 +301,13 @@ def get_build_status(account_id: int, build_id: str) -> dict[str, Any]:
     return build.public()
 
 
-def build_server(account_id: int, *, read_only: bool = False) -> FastMCP:
-    """An MCP server bound to one profile. read_only leaves out the tools
-    that write or spend."""
-    server = FastMCP("open-to-work", instructions=_INSTRUCTIONS)
+async def _run[T](fn: Callable[[], T]) -> T:
+    # The wrapped code is synchronous (SQLAlchemy, the embedding model), so
+    # it runs off the event loop the MCP session reads from.
+    return await anyio.to_thread.run_sync(fn)
 
-    async def _run[T](fn: Callable[[], T]) -> T:
-        # The wrapped code is synchronous (SQLAlchemy, the embedding model),
-        # so it runs off the event loop the MCP session reads from.
-        return await anyio.to_thread.run_sync(fn)
 
+def _add_profile_tools(server: FastMCP, account_id: int) -> None:
     @server.tool(name="search_evidence")
     async def _search_evidence(
         query: str, top_k: int = 10, source: str | None = None
@@ -274,6 +324,15 @@ def build_server(account_id: int, *, read_only: bool = False) -> FastMCP:
         first, with language, skill count and extraction status."""
         return await _run(lambda: list_projects(account_id))
 
+
+def _add_jobs_tools(server: FastMCP, account_id: int, *, read_only: bool) -> None:
+    @server.tool(name="list_job_postings")
+    async def _list_job_postings() -> list[dict[str, Any]]:
+        """Lists this profile's saved job postings, newest first: company,
+        title, location, seniority, work mode, salary and whether the
+        posting has been read yet. Use an id from here to start a build."""
+        return await _run(lambda: list_job_postings(account_id))
+
     @server.tool(name="get_build_status")
     async def _get_build_status(build_id: str) -> dict[str, Any]:
         """Reports a resume build's stage and state ('running',
@@ -281,7 +340,7 @@ def build_server(account_id: int, *, read_only: bool = False) -> FastMCP:
         return await _run(lambda: get_build_status(account_id, build_id))
 
     if read_only:
-        return server
+        return
 
     @server.tool(name="add_job_posting")
     async def _add_job_posting(
@@ -307,7 +366,43 @@ def build_server(account_id: int, *, read_only: bool = False) -> FastMCP:
             lambda: start_resume_build(account_id, job_posting_id, template, name)
         )
 
+
+def build_profile_server(account_id: int, **settings: Any) -> FastMCP:
+    """The profile server: evidence search and projects. Read-only by
+    nature. `settings` go to FastMCP (host, port for HTTP)."""
+    server = FastMCP("open-to-work-profile", instructions=_PROFILE_INSTRUCTIONS, **settings)
+    _add_profile_tools(server, account_id)
     return server
+
+
+def build_jobs_server(account_id: int, *, read_only: bool = False, **settings: Any) -> FastMCP:
+    """The jobs server: postings and resume builds. read_only leaves out
+    the tools that write or spend."""
+    server = FastMCP("open-to-work-jobs", instructions=_JOBS_INSTRUCTIONS, **settings)
+    _add_jobs_tools(server, account_id, read_only=read_only)
+    return server
+
+
+def build_server(account_id: int, *, read_only: bool = False, **settings: Any) -> FastMCP:
+    """Both servers' tools on one server, for a client that wants a single
+    entry. read_only leaves out the tools that write or spend."""
+    server = FastMCP("open-to-work", instructions=_INSTRUCTIONS, **settings)
+    _add_profile_tools(server, account_id)
+    _add_jobs_tools(server, account_id, read_only=read_only)
+    return server
+
+
+def build_named(
+    name: str, account_id: int, *, read_only: bool = False, **settings: Any
+) -> FastMCP:
+    """'all', 'profile' or 'jobs', as the command line names them."""
+    if name == "profile":
+        return build_profile_server(account_id, **settings)
+    if name == "jobs":
+        return build_jobs_server(account_id, read_only=read_only, **settings)
+    if name == "all":
+        return build_server(account_id, read_only=read_only, **settings)
+    raise ValueError(f"unknown server {name!r}")
 
 
 def _account_exists(account_id: int) -> bool:
@@ -329,6 +424,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--read-only", action="store_true", help="leave out add_job_posting and start_resume_build"
     )
+    parser.add_argument(
+        "--server",
+        choices=("all", *SERVERS),
+        default="all",
+        help="which server to run (default: all tools on one server)",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default="stdio",
+        help="stdio for a desktop client, streamable-http to serve on 127.0.0.1",
+    )
+    parser.add_argument("--port", type=int, default=8765, help="port for streamable-http")
     args = parser.parse_args(argv)
     if args.account_id is None:
         parser.error("--account-id or OTW_MCP_ACCOUNT_ID is required")
@@ -340,8 +448,15 @@ def main(argv: list[str] | None = None) -> None:
     init_db()
     if not _account_exists(args.account_id):
         parser.error(f"no profile with id {args.account_id}")
-    # stdout is the MCP channel; logs go to stderr, as they already do.
-    build_server(args.account_id, read_only=args.read_only).run("stdio")
+    if args.transport == "stdio":
+        # stdout is the MCP channel; logs go to stderr, as they already do.
+        build_named(args.server, args.account_id, read_only=args.read_only).run("stdio")
+        return
+    # Loopback only: the server has no auth of its own (see the docstring).
+    server = build_named(
+        args.server, args.account_id, read_only=args.read_only, host="127.0.0.1", port=args.port
+    )
+    server.run("streamable-http")
 
 
 if __name__ == "__main__":

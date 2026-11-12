@@ -28,14 +28,13 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.chains import document_prompt, documents, structured_chain
 from app.core.db import SkillVerdict
 from app.core.llm import (
     BudgetExceededError,
     LLMRateLimitedError,
     complete,
     is_out_of_keys,
-    system_message,
-    user_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -62,6 +61,8 @@ _SYSTEM_PROMPT = (
     "keep it. Copy each returned name exactly as it was given. If every name "
     "belongs, return an empty list."
 )
+
+_PROMPT = document_prompt(_SYSTEM_PROMPT)
 
 
 def name_key(name: str) -> str:
@@ -118,18 +119,19 @@ def _decide(db: Session, account_id: int, name: str, verdict: str) -> None:
 
 def _names_to_remove(names: list[str], account_id: int) -> set[str]:
     listing = "\n".join(names)
-    messages = [
-        system_message(_SYSTEM_PROMPT),
-        user_message(f"Skill names, one per line:\n{listing}"),
-    ]
-    response = complete(
-        "bulk", messages, schema=_SCHEMA, account_id=account_id, purpose="skill_review"
-    )
-    if response.parsed is None:
+    parsed = structured_chain(
+        _PROMPT,
+        tier="bulk",
+        schema=_SCHEMA,
+        purpose="skill_review",
+        account_id=account_id,
+        complete_fn=complete,
+    ).invoke(documents(f"Skill names, one per line:\n{listing}"))
+    if parsed is None:
         raise ValueError("skill review returned no parseable JSON")
     asked = {name_key(n) for n in names}
     # Only names we actually sent count; the model can't invent a removal.
-    return {name_key(str(n)) for n in response.parsed.get("remove", [])} & asked
+    return {name_key(str(n)) for n in parsed.get("remove", [])} & asked
 
 
 def review_names(db: Session, account_id: int, names: list[str]) -> set[str]:

@@ -99,6 +99,12 @@
         ('code', 'Ask for changes', 'Say what to change in plain words and get a new PDF.'),
         ('search', 'Keep a library', 'Every resume is saved, and the closest one you already have is found for a new job.'),
       ]),
+      ('Ask and connect', [
+        ('threads', 'Ask about your profile', 'An agent answers from your evidence, projects and saved jobs, and names what it used.'),
+        ('cube', 'Use it from Claude or Cursor', 'MCP servers for your profile and your jobs, over stdio or local HTTP.'),
+        ('branch', 'Read your repos live', 'When turned on, the agent reads your own repos through GitHub\'s MCP server. Read-only, your repos only.'),
+        ('chart', 'See the trail', 'Each answer lists the tools and servers it used, its steps and what it cost.'),
+      ]),
       ('Run it yourself', [
         ('terminal', 'One command to start', ('Hosted demo: sign in with GitHub.' if hosted else 'Runs in Docker on your machine. Your data stays there.')),
         ('key', 'Any AI provider', 'OpenAI, Anthropic, Gemini, Mistral, Azure, Bedrock or local Ollama. Keys are encrypted.'),
@@ -210,6 +216,7 @@
         ('Backend', [('python', 'Python 3.12', 'the whole app'), ('fastapi', 'FastAPI', 'web server and API'), ('pydantic', 'Pydantic', 'typed data and LLM output'), ('sqlalchemy', 'SQLAlchemy', 'database access')]),
         ('Frontend', [('jinja', 'Jinja2', 'server-rendered pages'), ('tailwindcss', 'Tailwind CSS', 'styling'), ('alpinedotjs', 'Alpine.js', 'interactivity, no build step')]),
         ('AI', [('litellm', 'LiteLLM', 'one API for every LLM provider'), ('huggingface', 'sentence-transformers', 'embeddings, run locally'), ('pytorch', 'PyTorch (CPU)', 'runs the embedding model')]),
+        ('Agents and tools', [('langchain', 'LangChain', 'every prompt as a chain, structured output'), ('langgraph', 'LangGraph', 'resume build graph and the profile agent'), ('modelcontextprotocol', 'MCP', 'tool servers for the agent and desktop clients')]),
         ('Data', [('sqlite', 'SQLite', 'app data'), ('qdrant', 'Qdrant', 'vector search')]),
         ('Ingestion', [('github', 'GitHub API', 'repos, READMEs, commits')]),
         ('Output and infra', [('latex', 'LaTeX (Tectonic)', 'resume PDF'), ('docker', 'Docker Compose', 'one-command setup')]),
@@ -272,6 +279,8 @@
               {{ ex.node('providers', 'Outside', 'LLM provider', ('The only call that leaves the server.' if hosted else 'The only call that leaves your machine.'), 'cloud', ext=true, area='grid-column:5;grid-row:3') }}
 
               {{ ex.node('qdrant', 'Vector search', 'Qdrant', 'Finds the evidence closest to a job.', logos=['qdrant'], area='grid-column:2;grid-row:4', tip='Vector database|Qdrant · cosine distance|Collections: skill_evidence, experience_points, resumes, job_postings, role_families.|Vectors from ' ~ models.embedding ~ '. Point id equals the SQLite row id.') }}
+              {{ ex.node('agent', 'Agent', 'LangGraph + MCP', 'Answers questions through MCP tools.', logos=['langgraph', 'modelcontextprotocol'], area='grid-column:4;grid-row:4', tip='Profile agent|A LangGraph loop over MCP tools|Own servers: profile (evidence, projects) and jobs (postings, builds), read-only.|Each step is one call through the LLM gateway.') }}
+              {{ ex.node('ghmcp', 'Outside · optional', 'GitHub MCP', 'Live, read-only reads of your own repos.', logos=['github'], ext=true, area='grid-column:5;grid-row:4') }}
             </div>
           </div>
         </div>
@@ -284,8 +293,9 @@
           <div>
             <h2 class="ex-h2">Every LLM call goes through one gateway</h2>
             <p class="ex-lede">
-              No feature calls a provider directly. Each call passes the same checks in order,
-              so caching and spend limits can't be skipped. Switching provider is a setting.
+              No feature calls a provider directly. Every prompt is a LangChain chain whose model
+              is this gateway, so each call passes the same checks in order and caching and spend
+              limits can't be skipped. Switching provider is a setting.
             </p>
           </div>
         </header>
@@ -293,7 +303,7 @@
         <div class="ex-panel">
           <div class="ex-scroll">
             <div class="ex-diagram ex-gateway" data-wires="gateway">
-              {{ ex.node('caller', 'Any feature', 'complete()', 'Text, images or PDFs.', 'code', mono=true, area='grid-column:1;grid-row:1') }}
+              {{ ex.node('caller', 'Any feature', 'complete()', 'A LangChain prompt: text, images or PDFs.', 'code', mono=true, area='grid-column:1;grid-row:1') }}
               {{ ex.node('cache', 'Check 1', 'Seen before?', 'Same request is answered from the database.', 'hash', area='grid-column:2;grid-row:1') }}
               {{ ex.node('budget', 'Check 2', 'Under budget?', 'Monthly cap checked before the call.', 'shield', area='grid-column:3;grid-row:1') }}
               {{ ex.node('keys', 'Check 3', 'Pick a key', 'Encrypted at rest. Next key if one fails.', 'key', area='grid-column:4;grid-row:1') }}
@@ -315,10 +325,40 @@
         </div>
       </section>
 
-      <!-- 4 · Containerization -->
+      <!-- 4 · Agent and MCP hub -->
       <section class="ex-section">
         <header class="ex-section-head">
           <span class="ex-section-num">4</span>
+          <div>
+            <h2 class="ex-h2">An agent that works through MCP</h2>
+            <p class="ex-lede">
+              Ask a question and a LangGraph agent looks it up. Every tool it has comes from an MCP
+              server: the app's own, split by job, and GitHub's when it is turned on. One policy sits
+              in front of all of them, so text inside a README or a posting can't make it write
+              anything or read someone else's code.
+            </p>
+          </div>
+        </header>
+
+        <div class="ex-panel">
+          <div class="ex-scroll">
+            <div class="ex-diagram ex-mcp" data-wires="mcp">
+              {{ ex.node('m-q', 'You ask', 'Ask about my profile', 'One question, in plain words.', 'user', area='grid-column:1;grid-row:1') }}
+              {{ ex.node('m-agent', 'LangGraph', 'Agent loop', 'Think, call a tool, read the result. Six model turns at most.', logos=['langgraph'], area='grid-column:2;grid-row:1') }}
+              {{ ex.node('m-model', 'LangChain', 'Prompt and model', 'Each step is one call through the LLM gateway.', logos=['langchain'], area='grid-column:2;grid-row:2') }}
+              {{ ex.node('m-hub', 'MCP hub', 'One tool list', 'Each tool named for its server. Every call checked.', logos=['modelcontextprotocol'], area='grid-column:3;grid-row:1', tip='Policy|Only listed tools are offered to the model.|Each call is checked again as it happens.|GitHub calls must name one of your own repos.|An outside server that is down is skipped.') }}
+              {{ ex.node('m-profile', 'Own server', 'profile', 'Search skill evidence, list projects.', 'db', mono=true, area='grid-column:4;grid-row:1') }}
+              {{ ex.node('m-jobs', 'Own server', 'jobs', 'Saved postings, resume build status.', 'briefcase', mono=true, area='grid-column:4;grid-row:2') }}
+              {{ ex.node('m-github', 'Outside · optional', 'GitHub MCP', 'Files, commits and releases of your repos. Read-only.', logos=['github'], ext=true, area='grid-column:4;grid-row:3') }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5 · Containerization -->
+      <section class="ex-section">
+        <header class="ex-section-head">
+          <span class="ex-section-num">5</span>
           <div>
             <h2 class="ex-h2">Runs with one command</h2>
             <p class="ex-lede">
@@ -699,6 +739,15 @@
   .ex-pill em { font-style: normal; font-size: 0.68rem; color: var(--muted); }
   .ex-pill:hover, .ex-pill.hot { border-color: var(--ink); }
 
+  /* agent and MCP hub layout */
+  .ex-mcp {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    column-gap: 56px;
+    row-gap: 56px;
+    min-width: 980px;
+    padding: 0.25rem 0.25rem 0.5rem;
+  }
+
   /* 5 docker layout */
   .ex-docker {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -992,6 +1041,17 @@
         { from: 'api', fs: 'right', to: 'resume', ts: 'left' },
         { from: 'resume', fs: 'bottom', to: 'llm', ts: 'top', label: 'prompt' },
         { from: 'llm', fs: 'right', to: 'providers', ts: 'left' },
+        { from: 'agent', fs: 'top', to: 'llm', ts: 'bottom', label: 'each step' },
+        { from: 'agent', fs: 'left', to: 'qdrant', ts: 'right', label: 'MCP tools' },
+        { from: 'agent', fs: 'right', to: 'ghmcp', ts: 'left' },
+      ],
+      mcp: [
+        { from: 'm-q', fs: 'right', to: 'm-agent', ts: 'left' },
+        { from: 'm-agent', fs: 'right', to: 'm-hub', ts: 'left', label: 'tool calls' },
+        { from: 'm-agent', fs: 'bottom', to: 'm-model', ts: 'top', label: 'each step' },
+        { from: 'm-hub', fs: 'right', to: 'm-profile', ts: 'left' },
+        { from: 'm-hub', fs: 'bottom', ff: 0.35, to: 'm-jobs', ts: 'left' },
+        { from: 'm-hub', fs: 'bottom', ff: 0.7, to: 'm-github', ts: 'left' },
       ],
       gateway: [
         { from: 'caller', fs: 'right', to: 'cache', ts: 'left' },

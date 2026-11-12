@@ -25,14 +25,13 @@ import logging
 import re
 from dataclasses import dataclass, field
 
+from app.core.chains import document_prompt, documents, structured_chain
 from app.core.db import Repository
 from app.core.llm import (
     BudgetExceededError,
     LLMRateLimitedError,
     complete,
     is_out_of_keys,
-    system_message,
-    user_message,
 )
 from app.profile.claims import EvidenceType, LinkClaim, SkillClaim
 
@@ -152,6 +151,9 @@ _BATCH_SYSTEM_PROMPT = (
     "however similar they look. A repository whose text evidences nothing "
     "gets an entry with two empty lists, not a missing entry."
 )
+
+_PROMPT = document_prompt(_SYSTEM_PROMPT)
+_BATCH_PROMPT = document_prompt(_BATCH_SYSTEM_PROMPT)
 
 # Same convention as job posting text (app/resume_build/orchestrator.py's
 # _JOB_TEXT_PREFIX): a repo can be anyone's, so its README is labeled as
@@ -314,24 +316,20 @@ def extract_repo_facts(repo: Repository, bypass_cache: bool = False) -> RepoFact
     """
     text, evidence_type = _source_text(repo)
     label = _source_label(evidence_type)
-    messages = [
-        system_message(_SYSTEM_PROMPT),
-        user_message(f"{_REPO_TEXT_PREFIX}Repository: {repo.full_name}\n\n{label}:\n{text}"),
-    ]
-
-    response = complete(
-        "bulk",
-        messages,
+    parsed = structured_chain(
+        _PROMPT,
+        tier="bulk",
         schema=_FACTS_SCHEMA,
-        account_id=repo.account_id,
         purpose="repo_facts",
+        account_id=repo.account_id,
         bypass_cache=bypass_cache,
-    )
-    if response.parsed is None:
+        complete_fn=complete,
+    ).invoke(documents(f"{_REPO_TEXT_PREFIX}Repository: {repo.full_name}\n\n{label}:\n{text}"))
+    if parsed is None:
         return RepoFacts()
     return RepoFacts(
-        skills=_skill_claims(response.parsed.get("skills", []), evidence_type, label),
-        links=_link_claims(response.parsed.get("links", [])),
+        skills=_skill_claims(parsed.get("skills", []), evidence_type, label),
+        links=_link_claims(parsed.get("links", [])),
     )
 
 
@@ -401,23 +399,20 @@ def _extract_group(repos: list[Repository]) -> dict[int, RepoFacts]:
         return {only.id: extract_repo_facts(only)}
 
     account_ids = {r.account_id for r in repos if r.id in sources}
-    messages = [
-        system_message(_BATCH_SYSTEM_PROMPT),
-        user_message(_REPO_TEXT_PREFIX + "\n\n---\n\n".join(blocks)),
-    ]
-    response = complete(
-        "bulk",
-        messages,
+    parsed = structured_chain(
+        _BATCH_PROMPT,
+        tier="bulk",
         schema=_BATCH_SCHEMA,
+        purpose="repo_facts_batch",
         # Groups are built per account above, so there is exactly one.
         account_id=account_ids.pop() if len(account_ids) == 1 else None,
-        purpose="repo_facts_batch",
-    )
-    if response.parsed is None:
+        complete_fn=complete,
+    ).invoke(documents(_REPO_TEXT_PREFIX + "\n\n---\n\n".join(blocks)))
+    if parsed is None:
         return {}
 
     facts: dict[int, RepoFacts] = {}
-    for entry in response.parsed.get("repos", []):
+    for entry in parsed.get("repos", []):
         try:
             repo_id = int(entry.get("repo_id"))
         except (TypeError, ValueError):

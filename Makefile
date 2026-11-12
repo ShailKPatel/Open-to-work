@@ -1,4 +1,4 @@
-.PHONY: usage-report test coverage test-live lint ingest mcp eval eval-fixture eval-synthetic eval-real eval-public eval-skillspan eval-llm constraints dev up down start
+.PHONY: usage-report test coverage test-live lint ingest mcp mcp-http eval eval-fixture eval-synthetic eval-real eval-public eval-skillspan eval-llm constraints dev up down start
 
 # Local (host venv): fast inner loop while writing code.
 test:
@@ -43,9 +43,17 @@ eval:
 # MCP server for one profile over stdio, for Claude Desktop, Claude Code or
 # Cursor (client config in README.md). stdout is the protocol channel, so
 # run it from a client rather than reading its output.
-#   make mcp ACCOUNT=1 [READ_ONLY=1]
+#   make mcp ACCOUNT=1 [READ_ONLY=1] [SERVER=all|profile|jobs]
 mcp:
-	.venv/bin/python -m app.mcp_server --account-id $(ACCOUNT) $(if $(READ_ONLY),--read-only,)
+	.venv/bin/python -m app.mcp_server --account-id $(ACCOUNT) $(if $(READ_ONLY),--read-only,) \
+		--server $(or $(SERVER),all)
+
+# The same servers over streamable HTTP on 127.0.0.1 (no auth of its own,
+# so loopback only), for an MCP client on this machine:
+#   make mcp-http ACCOUNT=1 [SERVER=profile] [PORT=8765] [READ_ONLY=1]
+mcp-http:
+	.venv/bin/python -m app.mcp_server --account-id $(ACCOUNT) $(if $(READ_ONLY),--read-only,) \
+		--server $(or $(SERVER),all) --transport streamable-http --port $(or $(PORT),8765)
 
 # The eval gate CI runs on every pull request, reproduced locally so a red
 # gate can be debugged without pushing. Seeds the synthetic fixture account

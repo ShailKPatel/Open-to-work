@@ -25,6 +25,7 @@ The app must sit behind HTTPS: session cookies are `Secure`.
 | `DEMO_DAILY_WRITES`, `DEMO_DAILY_INTAKE` | | Per user. Defaults 500 changes and 30 uploads or re-reads. |
 | `DEMO_MAX_SOURCES`, `DEMO_MAX_RUNNING_BUILDS` | | Defaults 5 per user and 3 in total. |
 | `TRACING_ENABLED=true` | | With `LANGSMITH_API_KEY` (secret), sends traces, including resume content, to LangSmith. |
+| `MCP_GITHUB_ENABLED=true` | | With `GITHUB_TOKEN`, the profile agent also reads each profile's own repos through GitHub's remote MCP server (read-only, allowlisted tools, own repos only). The token is the deployment's, so leave it off unless that is acceptable. `MCP_GITHUB_URL` overrides the endpoint. |
 
 ## Azure VM
 

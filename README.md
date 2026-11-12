@@ -89,24 +89,31 @@ flowchart LR
 4. A Jinja2 LaTeX template renders the result and Tectonic compiles it.
 5. If the PDF runs long, a multimodal model reads it and cuts one item at a time (a skill, then a project bullet, then an experience bullet) until it fits.
 
-### LLM gateway
+### LLM gateway and prompts
 
 Every model call goes through one client. It caches responses by content hash, checks the monthly budget before sending, and records cost, tokens, latency, and the feature that made the call. When a key runs out, the next key for the same provider takes over and the job keeps going.
 
-### MCP server and profile agent
+Every prompt is a LangChain chain over that client: `document_prompt(SYSTEM) | CompleteChatModel(...).with_structured_output(SCHEMA)` (`app/core/chains.py`). `CompleteChatModel` is a `BaseChatModel` whose only way to a provider is the gateway, so LangChain handles prompt composition, structured output, tool binding and tracing while caching, budgets and key failover still apply to every call. Fixed instructions are the system message; job postings, READMEs and resumes go in as ready-made user messages through a `MessagesPlaceholder`, never as template strings, so text inside them is never interpolated. A chain sends the provider exactly the request the old hand-built message lists did, so cached answers still match.
 
-`app/mcp_server.py` exposes one profile to any MCP client over stdio. Every tool wraps code the app already runs, and the profile is fixed at startup, so no tool can reach another one.
+LangGraph runs the parts that loop or wait: the resume build (write, judge, revise, human approval, page fit, with a SQLite checkpointer) and the profile agent.
 
-| Tool | Does |
-| --- | --- |
-| `search_evidence` | Hybrid search over the profile's skill evidence |
-| `list_projects` | The profile's projects, starred first |
-| `add_job_posting` | Saves a posting; it is read in the background |
-| `start_resume_build` | Starts a build for one of the profile's postings |
-| `get_build_status` | Stage, state and result of a build |
+### MCP servers and the profile agent
+
+`app/mcp_server.py` exposes one profile as two MCP servers, one per part of the app. Every tool wraps code the app already runs, and the profile is fixed at startup, so no tool can reach another one.
+
+| Server | Tool | Does |
+| --- | --- | --- |
+| `profile` | `search_evidence` | Hybrid search over the profile's skill evidence |
+| `profile` | `list_projects` | The profile's projects, starred first |
+| `jobs` | `list_job_postings` | Saved postings with what was read from each |
+| `jobs` | `add_job_posting` | Saves a posting; it is read in the background |
+| `jobs` | `start_resume_build` | Starts a build for one of the profile's postings |
+| `jobs` | `get_build_status` | Stage, state and result of a build |
 
 ```bash
-make mcp ACCOUNT=1            # add READ_ONLY=1 to leave out the two writing tools
+make mcp ACCOUNT=1                    # all tools on one server, over stdio
+make mcp ACCOUNT=1 SERVER=profile     # one server; READ_ONLY=1 leaves out the two writing tools
+make mcp-http ACCOUNT=1 PORT=8765     # streamable HTTP on 127.0.0.1 (no auth, loopback only)
 ```
 
 Client config (Claude Desktop `claude_desktop_config.json`, Cursor `.cursor/mcp.json`, Claude Code `.mcp.json`), with absolute paths to this checkout:
@@ -125,14 +132,31 @@ Client config (Claude Desktop `claude_desktop_config.json`, Cursor `.cursor/mcp.
 
 Claude Code can also add it with `claude mcp add open-to-work -- /path/to/open-to-work/.venv/bin/python -m app.mcp_server --account-id 1`, run from the checkout. A build started through MCP runs inside the server process, so it stops when the client closes it.
 
-**Ask** (`/portfolio/ask`, `POST /api/profile-agent/ask`) answers a question about your profile with a LangGraph agent that loads the same server's tools through langchain-mcp-adapters. It gets the read-only tools only, and its model is a thin LangChain wrapper over the LLM gateway, so budget, cache and key failover apply to every step.
+**Ask** (`/portfolio/ask`, `POST /api/profile-agent/ask`) answers a question about your profile with a LangGraph agent whose every tool comes through an MCP hub (`app/agent/mcp_hub.py`, built on langchain-mcp-adapters):
+
+```mermaid
+flowchart LR
+    Q[Question] --> AG[LangGraph agent]
+    AG -- each step --> LLM[LangChain model<br/>over the LLM gateway]
+    AG -- tool calls --> HUB[MCP hub<br/>allowlist + per-call policy]
+    HUB --> P[profile server]
+    HUB --> J[jobs server]
+    HUB -. optional .-> G[GitHub MCP server<br/>remote, read-only]
+```
+
+- The app's own `profile` and `jobs` servers are built read-only for the asking profile and connected in memory, so each question gets servers bound to its own profile.
+- GitHub's remote MCP server (`https://api.githubcopilot.com/mcp/x/repos/readonly`) joins when `MCP_GITHUB_ENABLED=true` and `GITHUB_TOKEN` are set, for live reads of files, commits and releases beyond the last sync.
+- Tool names carry their server (`profile_search_evidence`, `github_get_file_contents`), and each answer lists the tools and servers it used.
+- One policy covers every server: tools not on the allowlist are never offered, every call is checked again as it runs, and a GitHub call must name one of the profile's own repos. Text in a README or posting cannot make the agent write anything or read someone else's code. An outside server that is down is skipped and reported.
+- The batch GitHub sync still uses the REST API directly (PyGithub): it needs paging, ETags and rate-limit handling that an agent tool does not.
 
 ## Tech stack
 
 | Layer | Tools |
 | --- | --- |
 | Backend | Python 3.12, FastAPI, SQLAlchemy, SQLite |
-| Orchestration | LangGraph with a SQLite checkpointer, LangSmith tracing (optional) |
+| Orchestration | LangChain (prompts, structured output, tools), LangGraph with a SQLite checkpointer, LangSmith tracing (optional) |
+| Tools | MCP: two servers of its own (stdio or streamable HTTP), GitHub's remote server, langchain-mcp-adapters |
 | Retrieval | Qdrant, bge-base-en-v1.5 (local embeddings), rank-bm25 |
 | LLM | LiteLLM with Gemini, OpenAI, Anthropic, Mistral, Ollama, Azure OpenAI, AWS Bedrock |
 | Frontend | Jinja2, Tailwind CSS, Alpine.js |
@@ -271,9 +295,9 @@ Add `WRITE=1` to save a report to `evals/results/`. CI runs retrieval on a separ
 ```
 app/
   api/            FastAPI routers and page routes
-  agent/          "ask about my profile" agent over the MCP tools
-  mcp_server.py   MCP server (stdio) for one profile
-  core/           settings, models, LLM client, embeddings, credential storage
+  agent/          "ask about my profile" agent and the MCP hub it works through
+  mcp_server.py   profile and jobs MCP servers (stdio or streamable HTTP) for one profile
+  core/           settings, models, LLM client, LangChain model and chains, embeddings, credential storage
   ingest/github/  GitHub client, sync, manifest parsing, cancellation
   profile/        skill extraction and weighting, resume and job extraction, injection detection
   retrieval/      Qdrant indexing, hybrid search (embeddings + BM25)

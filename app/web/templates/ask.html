@@ -3,7 +3,8 @@
 {% block content %}
 <!-- Ask about my profile: one question at a time to the agent in
      app/agent/profile_agent.py (POST /api/profile-agent/ask). The answer
-     comes from this profile's own evidence through read-only tools. -->
+     comes from read-only MCP tools: the app's own profile and jobs servers,
+     plus GitHub's when configured (app/agent/mcp_hub.py). -->
 <div x-data="askApp()" x-init="init()" class="min-h-screen flex flex-col">
 
   {% set top_active = 'portfolio' %}
@@ -15,8 +16,9 @@
 
     <h1 class="font-display text-4xl mt-8">Ask about my profile</h1>
     <p class="text-sm text-[color:var(--muted)] mt-2">
-      Answered from your projects, skills and experience. The agent can only
-      look things up; it never changes your profile.
+      Answered from your projects, skills, experience and saved jobs. The agent
+      reaches them through MCP servers and can only look things up; it never
+      changes your profile.
     </p>
 
     <form @submit.prevent="send" class="otw-tile p-6 mt-8">
@@ -70,7 +72,9 @@
 
       meta(item) {
         const tools = item.tools_used.length ? 'Looked up: ' + [...new Set(item.tools_used)].join(', ') : 'No lookups';
-        return `${tools} · ${item.steps} step${item.steps === 1 ? '' : 's'} · $${item.cost_usd.toFixed(4)}`;
+        const servers = (item.servers || []).length ? ' · via MCP: ' + item.servers.join(', ') : '';
+        const down = (item.unavailable || []).length ? ' (unreachable: ' + item.unavailable.join(', ') + ')' : '';
+        return `${tools}${servers}${down} · ${item.steps} step${item.steps === 1 ? '' : 's'} · $${item.cost_usd.toFixed(4)}`;
       },
 
       async send() {

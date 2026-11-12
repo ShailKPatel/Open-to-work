@@ -19,7 +19,7 @@ from langchain_core.tools import tool
 
 import app.core.db as db_module
 from app.agent import profile_agent
-from app.agent.chat_model import (
+from app.core.chat_model import (
     CompleteChatModel,
     _arguments,
     _text,
@@ -103,7 +103,7 @@ def test_unbound_model_is_a_plain_completion():
 
 def test_model_uses_complete_by_default(monkeypatch):
     fake = _Script(_response(content="ok"))
-    monkeypatch.setattr("app.agent.chat_model.complete", fake)
+    monkeypatch.setattr("app.core.chat_model.complete", fake)
     assert CompleteChatModel(tier="quality").invoke("Hi").content == "ok"
     assert fake.calls[0]["tier"] == "quality"
 
@@ -190,19 +190,24 @@ def profile(tmp_path, monkeypatch):
 
 def test_agent_searches_then_answers(profile):
     fake = _Script(
-        _decision("search_evidence", {"query": "kubernetes"}),
+        _decision("profile_search_evidence", {"query": "kubernetes"}),
         _decision(answer="Yes: ada/kube shows Kubernetes."),
     )
     model = CompleteChatModel(account_id=profile["account_id"], complete_fn=fake)
     result = anyio.run(lambda: profile_agent.ask(profile["account_id"], "Kubernetes?", model=model))
 
     assert result.answer == "Yes: ada/kube shows Kubernetes."
-    assert result.tools_used == ["search_evidence"]
+    assert result.tools_used == ["profile_search_evidence"]
+    assert result.servers == ["profile", "jobs"] and result.unavailable == []
     assert result.steps == 2
     assert result.cost_usd == 0.002
-    # Only the read-only tools are offered.
+    # Only the read-only tools are offered, each named for its MCP server.
     assert fake.calls[0]["schema"]["properties"]["tool"]["enum"] == [
-        "", "search_evidence", "list_projects", "get_build_status"
+        "",
+        "profile_search_evidence",
+        "profile_list_projects",
+        "jobs_list_job_postings",
+        "jobs_get_build_status",
     ]
     assert fake.calls[0]["messages"][0]["content"].startswith(profile_agent.SYSTEM_PROMPT)
     tool_turn = fake.calls[1]["messages"][-1]["content"]
@@ -211,14 +216,14 @@ def test_agent_searches_then_answers(profile):
 
 def test_agent_builds_its_own_model_by_default(profile, monkeypatch):
     fake = _Script(_decision(answer="Nothing to look up."))
-    monkeypatch.setattr("app.agent.chat_model.complete", fake)
+    monkeypatch.setattr("app.core.chat_model.complete", fake)
     result = anyio.run(lambda: profile_agent.ask(profile["account_id"], "Hi"))
     assert result.answer == "Nothing to look up."
     assert fake.calls[0]["account_id"] == profile["account_id"]
 
 
 def test_agent_stops_at_the_step_limit(profile):
-    loops = [_decision("list_projects") for _ in range(profile_agent.MAX_MODEL_TURNS + 2)]
+    loops = [_decision("profile_list_projects") for _ in range(profile_agent.MAX_MODEL_TURNS + 2)]
     model = CompleteChatModel(account_id=profile["account_id"], complete_fn=_Script(*loops))
     result = anyio.run(lambda: profile_agent.ask(profile["account_id"], "Loop", model=model))
     assert "step limit" in result.answer
@@ -247,7 +252,8 @@ def test_ask_route_answers(profile, monkeypatch):
     )
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "An answer", "tools_used": ["list_projects"], "steps": 2, "cost_usd": 0.01
+        "answer": "An answer", "tools_used": ["list_projects"], "steps": 2, "cost_usd": 0.01,
+        "servers": [], "unavailable": [],
     }
     assert seen == {"account_id": profile["account_id"], "question": "What did I build?"}
 

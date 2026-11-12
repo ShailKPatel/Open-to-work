@@ -36,6 +36,8 @@ One VM with a block disk, not a managed container platform with shared storage, 
 | `app_settings.py` | Settings chosen in the app and stored in `app_settings`: bulk model, quality model (Gemini by default), and the monthly budget. |
 | `db/` | SQLAlchemy models (`models.py`), engine and `get_db()` (`engine.py`), `init_db()` and migrations (`migrations.py`). |
 | `llm.py` | The one module that calls an LLM provider. |
+| `chat_model.py` | `CompleteChatModel`, a LangChain `BaseChatModel` whose only way to a provider is `complete()`: structured output, tool binding, multimodal parts mapped back to LiteLLM's shape. |
+| `chains.py` | `document_prompt()` and `structured_chain()`: every prompt in the app as a LangChain runnable over `CompleteChatModel`. |
 | `llm_providers.py` | Provider registry: credential fields, which are secret, a cheap validation request, and extra LiteLLM arguments. |
 | `api_keys_store.py` | Encrypted provider credentials, key selection for each call, and the recheck for keys that ran out of quota. |
 | `key_cooldown.py` | How long an exhausted key waits before a recheck, read from the provider's error (Gemini in detail, a default elsewhere). |
@@ -67,6 +69,14 @@ To restore a snapshot: `cp data/backups/<snapshot>.db data/open_to_work.db`.
 `purpose` names the feature that made the call (`repo_facts`, `resume_build`, `pagefit_trim`, ...). The `/monitor` usage view groups by it to show what costs money, separate from which model or key paid.
 
 Errors: `BudgetExceededError` before sending, `ApiKeyMissingError` when no key can be used, and `LLMRateLimitedError`, which wraps LiteLLM's `RateLimitError` so callers do not import LiteLLM. Build messages with `user_message(text, images=, files=)` and `system_message(text)`.
+
+**Prompts.** Features do not call `complete()` with hand-built lists. Each defines `PROMPT = document_prompt(SYSTEM_PROMPT)` once and calls `structured_chain(PROMPT, tier=, schema=, purpose=, account_id=, complete_fn=complete).invoke(documents(...))`, which returns the parsed object or `None`. The chain is `ChatPromptTemplate | CompleteChatModel.with_structured_output(schema)`:
+
+- The system prompt is a `SystemMessage` object, not a template, so braces in JSON examples are sent as written.
+- Documents (postings, READMEs, resumes, model output under revision) are ready-made user messages through a `MessagesPlaceholder`. Untrusted text is never a template string and never reaches the system message.
+- The messages `complete()` receives are byte-for-byte what the hand-built lists were, so the response cache keeps matching. `BaseChatModel` rewrites an OpenAI-style file part into LangChain's standard block (with a random id) before the model sees it; `chat_model._litellm_part()` puts it back.
+- `complete_fn=complete` passes the feature module's own `complete` name, so tests that patch it there still reach every call.
+- LLM errors propagate unchanged, so each caller keeps its own failure handling.
 
 **Key failover.** `complete()` tries each stored key for the provider in turn. Errors that every key would hit (provider overloaded, prompt too long, content refused) skip failover and fail once. In a batch, `is_out_of_keys(error)` tells the caller to stop: every remaining item would fail the same way. Items not yet tried stay pending, and the next run picks up from there.
 
@@ -150,6 +160,12 @@ The recheck lists models instead of generating text. It proves the credential wo
 - `real.py`: the real-text set in `evals/real/`: public postings and pinned open-source repositories, labels, and the PII scrub applied on download.
 - `injection.py`: detection and false positive rates for `app/profile/injection.py` on development, held-out and ordinary postings.
 - `llm_evals.py`: billed evals of job and resume extraction, the groundedness judge against human labels (accuracy, Cohen's kappa), and extraction under prompt injection. Run by `scripts/run_llm_evals.py` only.
+
+### `app/agent` and `app/mcp_server.py`
+
+- `app/mcp_server.py`: two FastMCP servers for one profile, fixed at startup. `profile` (`search_evidence`, `list_projects`) and `jobs` (`list_job_postings`, `get_build_status`, and the writing `add_job_posting`, `start_resume_build`). `build_server()` puts every tool on one server for desktop clients. Transports: stdio, or streamable HTTP bound to 127.0.0.1 (`make mcp-http`). `read_only` drops the writing tools.
+- `mcp_hub.py`: the profile agent's MCP hub. For each question it connects the app's own servers in memory (read-only, bound to the asking profile) and any configured outside server (GitHub's remote MCP server when `MCP_GITHUB_ENABLED` and `GITHUB_TOKEN` are set), loads their tools through langchain-mcp-adapters with the server name as prefix, and puts `ToolPolicy` in front of all of them: a tool not on the server's allowlist is never offered, every call is checked again in an interceptor, and a GitHub call must name a repo in the profile's `repositories` rows. An outside server that fails to connect is skipped and reported in the answer. The app's own servers failing is raised, since that is a bug.
+- `profile_agent.py`: a LangGraph `StateGraph` (agent, `ToolNode`, back to agent) over the hub's tools. The prompt is a `ChatPromptTemplate` with the conversation in a `MessagesPlaceholder`; the model is `CompleteChatModel.bind_tools()`. Six model turns at most. Returns the answer, the tools and servers used, steps and cost.
 
 ### `app/api` and `app/web`
 
@@ -246,6 +262,7 @@ The app has no login. It is built for one person on their own machine, and the a
 - **LaTeX.** Every value in a resume template goes through `escape_latex` or `escape_latex_url` (`app/resume_build/latex.py`). Tectonic runs with shell escape off, in untrusted mode, with only the environment variables it needs.
 - **Secrets.** API keys are encrypted at rest and shown only as masked previews. Provider keys travel in request headers, not URLs.
 - **Key ownership.** Every key added through the app belongs to one profile (`ApiKey.account_id`), and only that profile's work dispatches with it. A profile can hold any number of keys; two profiles that enter the same key get separate rows. Every key route takes `account_id` and treats another profile's key as missing. The monthly budget is counted per profile. A key with no owner comes only from the eval harness or from a database that had no profiles when ownership arrived; it serves every profile locally and is never used in the public demo.
-- **Outbound requests.** Links in job postings are stored and not opened. The server calls only GitHub, the configured LLM providers, and the embedding model and Tectonic package downloads. The one user-set URL it calls is the `api_base` of an Azure OpenAI or Ollama key.
+- **Outbound requests.** Links in job postings are stored and not opened. The server calls only GitHub, the configured LLM providers, and the embedding model and Tectonic package downloads. The one user-set URL it calls is the `api_base` of an Azure OpenAI or Ollama key. With `MCP_GITHUB_ENABLED`, the profile agent also calls GitHub's remote MCP server with the deployment's `GITHUB_TOKEN`, read-only, through `ToolPolicy`.
+- **MCP.** The agent's servers are built read-only, and `ToolPolicy` (`app/agent/mcp_hub.py`) checks every call against a per-server allowlist and, for GitHub, the asking profile's own repos, so instructions inside a README, posting or repo file cannot make it write or read someone else's code. `make mcp-http` binds to 127.0.0.1 and has no auth of its own: the profile is fixed at startup, so it is for a client on the same machine.
 - **Build inputs.** Every file the Dockerfile downloads (Tailwind CLI, Tectonic, Alpine.js, marked, DOMPurify) is pinned to a version and checked against its SHA-256 with `ADD --checksum`. The Qdrant image is pinned to a version.
-- **Untrusted text.** Job posting text and repo README and description text go to the model as separate user messages labeled as reference material. They are not placed in a system prompt or formatted into a prompt template.
+- **Untrusted text.** Job posting text and repo README and description text go to the model as separate user messages labeled as reference material. They are not placed in a system prompt or formatted into a prompt template: `app/core/chains.py` passes them as finished messages through a `MessagesPlaceholder`.

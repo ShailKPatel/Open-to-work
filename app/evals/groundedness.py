@@ -21,14 +21,13 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.chains import document_prompt, documents, structured_chain
 from app.core.db import Repository, Resume, get_db
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
     LLMRateLimitedError,
     complete,
-    system_message,
-    user_message,
 )
 from app.resume_build.orchestrator import format_project_evidence, project_skills
 
@@ -55,6 +54,8 @@ _SYSTEM_PROMPT = (
     "A user note is the account holder's own statement about the project "
     "and counts as evidence."
 )
+
+_PROMPT = document_prompt(_SYSTEM_PROMPT)
 
 _DEFAULT_SAMPLE_SIZE = 5
 _DEFAULT_MAX_CHECKS = 20
@@ -87,19 +88,17 @@ def judge_bullet(evidence: str, bullet: str, account_id: int | None) -> bool | N
     Provider errors (no key, budget, rate limit) propagate to the caller.
     One function so the eval that validates the judge against human labels
     (app/evals/llm_evals.py) runs exactly the judge this module uses."""
-    response = complete(
-        "bulk",
-        [
-            system_message(_SYSTEM_PROMPT),
-            user_message(f"Evidence:\n{evidence}\n\nBullet: {bullet}"),
-        ],
+    parsed = structured_chain(
+        _PROMPT,
+        tier="bulk",
         schema=_SCHEMA,
-        account_id=account_id,
         purpose="groundedness_eval",
-    )
-    if response.parsed is None:
+        account_id=account_id,
+        complete_fn=complete,
+    ).invoke(documents(f"Evidence:\n{evidence}\n\nBullet: {bullet}"))
+    if parsed is None:
         return None
-    return bool(response.parsed.get("grounded", False))
+    return bool(parsed.get("grounded", False))
 
 
 def score_groundedness(

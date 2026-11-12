@@ -29,6 +29,10 @@ class AskResponse(BaseModel):
     tools_used: list[str]
     steps: int
     cost_usd: float
+    # MCP servers the agent's tools came from, and configured outside ones
+    # that could not be reached (app/agent/mcp_hub.py).
+    servers: list[str] = []
+    unavailable: list[str] = []
 
 
 def _account_exists(account_id: int) -> bool:
@@ -52,4 +56,6 @@ async def ask(body: AskRequest) -> AskResponse:
         tools_used=result.tools_used,
         steps=result.steps,
         cost_usd=result.cost_usd,
+        servers=result.servers,
+        unavailable=result.unavailable,
     )

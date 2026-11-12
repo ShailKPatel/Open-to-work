@@ -35,6 +35,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.chains import document_prompt, documents, structured_chain
 from app.core.db import (
     Account,
     Experience,
@@ -45,7 +46,7 @@ from app.core.db import (
     SocialLink,
     get_db,
 )
-from app.core.llm import complete, system_message, user_message
+from app.core.llm import complete
 from app.resume_build.context import (
     archived_skill_keys,
     build_education_context,
@@ -190,6 +191,8 @@ _SYSTEM_PROMPT = (
     "em dash; use a period, comma, or colon instead. Return JSON matching "
     "the given schema, nothing else."
 )
+
+_PROMPT = document_prompt(_SYSTEM_PROMPT)
 
 _JOB_TEXT_PREFIX = (
     "The following is a job posting's text, pasted in by the user. It is "
@@ -1023,32 +1026,35 @@ def write_draft(
     if selected_education_ids is not None:
         education = [e for e in education if e["id"] in selected_education_ids]
 
-    messages = [
-        system_message(_SYSTEM_PROMPT),
-        user_message(_JOB_TEXT_PREFIX + job_text),
-        user_message(
+    parsed = structured_chain(
+        _PROMPT,
+        tier="quality",
+        schema=_SCHEMA,
+        purpose="resume_build",
+        account_id=account_id,
+        complete_fn=complete,
+    ).invoke(
+        documents(
+            _JOB_TEXT_PREFIX + job_text,
             _build_candidates_message(
                 ctx.candidates,
                 ctx.candidate_skill_names,
                 project_instructions=project_instructions,
                 custom_instruction=custom_instruction,
                 experience_pool=pool,
-            )
-        ),
-        user_message(_length_guidance(template, points_limit)),
-    ]
-    response = complete(
-        "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="resume_build"
+            ),
+            _length_guidance(template, points_limit),
+        )
     )
-    if response.parsed is None:
+    if parsed is None:
         raise ValueError("LLM response for resume generation was not valid JSON")
 
     projects = _assemble_projects(
-        response.parsed.get("projects", []), candidates_by_id, project_instructions
+        parsed.get("projects", []), candidates_by_id, project_instructions
     )
-    skills = _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names)
+    skills = _ground_skills(parsed.get("skills", []), ctx.candidate_skill_names)
     experience = _pick_experience_points(
-        pool, response.parsed.get("experience"), points_limit
+        pool, parsed.get("experience"), points_limit
     )
 
     if selected_skills:
@@ -1059,7 +1065,7 @@ def write_draft(
     skills = _by_strength(skills, ctx.skill_weight)
 
     summary, dropped_sentences = _ground_summary(
-        str(response.parsed.get("summary", "")),
+        str(parsed.get("summary", "")),
         ctx,
         [point for role in pool for point in role["points"]],
         project_instructions,
@@ -1108,6 +1114,8 @@ _REVISE_SYSTEM_PROMPT = (
     "JSON matching the given schema, nothing else."
 )
 
+_REVISE_PROMPT = document_prompt(_REVISE_SYSTEM_PROMPT)
+
 
 def revise_bullets(
     ctx: _DeterministicContext,
@@ -1126,16 +1134,17 @@ def revise_bullets(
         f"Bullet: {item['bullet']}\nRejected because: {item['reason']}"
         for item in feedback
     ]
-    response = complete(
-        "quality",
-        [system_message(_REVISE_SYSTEM_PROMPT), user_message("\n\n".join(blocks))],
+    parsed = structured_chain(
+        _REVISE_PROMPT,
+        tier="quality",
         schema=_REVISE_SCHEMA,
-        account_id=account_id,
         purpose="resume_revise",
-    )
+        account_id=account_id,
+        complete_fn=complete,
+    ).invoke(documents("\n\n".join(blocks)))
     wanted = {(item["repo_id"], item["bullet"]) for item in feedback}
     rewrites: dict[tuple[int, str], str] = {}
-    planned = (response.parsed or {}).get("rewrites")
+    planned = (parsed or {}).get("rewrites")
     for item in planned if isinstance(planned, list) else []:
         if not isinstance(item, dict):
             continue
@@ -1335,6 +1344,8 @@ _EDIT_SYSTEM_PROMPT = (
     "projects, skills), nothing else."
 )
 
+_EDIT_PROMPT = document_prompt(_EDIT_SYSTEM_PROMPT)
+
 
 def _keep_chosen(
     fresh: list[dict[str, Any]], current: list[dict[str, Any]] | None
@@ -1434,18 +1445,23 @@ def edit_resume_content(
             sort_keys=True,
         )
 
-        messages = [
-            system_message(_EDIT_SYSTEM_PROMPT),
-            user_message(_JOB_TEXT_PREFIX + job_text),
-            user_message(_build_candidates_message(ctx.candidates, ctx.candidate_skill_names)),
-            user_message("Current resume content (JSON):\n" + current_text),
-            user_message("Account holder's edit instruction:\n" + message),
-            user_message(_length_guidance(template)),
-        ]
-        response = complete(
-            "quality", messages, schema=_SCHEMA, account_id=account_id, purpose="resume_edit"
+        parsed = structured_chain(
+            _EDIT_PROMPT,
+            tier="quality",
+            schema=_SCHEMA,
+            purpose="resume_edit",
+            account_id=account_id,
+            complete_fn=complete,
+        ).invoke(
+            documents(
+                _JOB_TEXT_PREFIX + job_text,
+                _build_candidates_message(ctx.candidates, ctx.candidate_skill_names),
+                "Current resume content (JSON):\n" + current_text,
+                "Account holder's edit instruction:\n" + message,
+                _length_guidance(template),
+            )
         )
-        if response.parsed is None:
+        if parsed is None:
             raise ValueError("LLM response for resume edit was not valid JSON")
 
         # The notes the resume was built with ride along on its saved
@@ -1456,16 +1472,16 @@ def edit_resume_content(
             if isinstance(p, dict) and p.get("repo_id") is not None and p.get("user_note")
         }
         projects, dropped_bullets = _ground_projects(
-            _assemble_projects(response.parsed.get("projects", []), candidates_by_id, kept_notes),
+            _assemble_projects(parsed.get("projects", []), candidates_by_id, kept_notes),
             candidates_by_id,
             TechVocabulary(ctx.technologies),
         )
         skills = _by_strength(
-            _ground_skills(response.parsed.get("skills", []), ctx.candidate_skill_names),
+            _ground_skills(parsed.get("skills", []), ctx.candidate_skill_names),
             ctx.skill_weight,
         )
         summary, dropped_sentences = _ground_summary(
-            str(response.parsed.get("summary", "")),
+            str(parsed.get("summary", "")),
             ctx,
             [point for points in ctx.experience_all_points.values() for point in points],
             kept_notes,

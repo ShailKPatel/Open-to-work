@@ -22,8 +22,9 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
+from app.core.chains import document_prompt, documents, structured_chain
 from app.core.db import RoleFamily, get_db
-from app.core.llm import complete, system_message, user_message
+from app.core.llm import complete
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ _CANONICALIZE_SYSTEM_PROMPT = (
     "(\"Senior Software Engineer\" stays as given; strip something like "
     "\"L5\" or \"IC4\" that only means something inside one company)."
 )
+
+_CANONICALIZE_PROMPT = document_prompt(_CANONICALIZE_SYSTEM_PROMPT)
 
 
 class RoleFamilyResolutionError(Exception):
@@ -93,19 +96,17 @@ def resolve_role_family(title: str, account_id: int | None = None) -> RoleFamily
             db.close()
 
     try:
-        response = complete(
-            "bulk",
-            [
-                system_message(_CANONICALIZE_SYSTEM_PROMPT),
-                user_message(f"Job title: {title}"),
-            ],
+        parsed = structured_chain(
+            _CANONICALIZE_PROMPT,
+            tier="bulk",
             schema=_CANONICALIZE_SCHEMA,
-            account_id=account_id,
             purpose="role_family",
-        )
-        if response.parsed is None:
+            account_id=account_id,
+            complete_fn=complete,
+        ).invoke(documents(f"Job title: {title}"))
+        if parsed is None:
             raise RoleFamilyResolutionError("LLM response was not valid JSON")
-        canonical_name = str(response.parsed.get("canonical_name", "")).strip()
+        canonical_name = str(parsed.get("canonical_name", "")).strip()
         if not canonical_name:
             raise RoleFamilyResolutionError("LLM returned an empty canonical_name")
     except Exception:

@@ -35,12 +35,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.core.chains import document_prompt, documents, structured_chain
 from app.core.llm import (
     ApiKeyMissingError,
     BudgetExceededError,
     LLMDispatchError,
     complete,
-    system_message,
     user_message,
 )
 from app.resume_build.compile import CompileError, compile_tex
@@ -131,6 +131,8 @@ _REWRITE_SYSTEM_PROMPT = (
     "list. Return JSON matching the given schema, nothing else."
 )
 
+_REWRITE_PROMPT = document_prompt(_REWRITE_SYSTEM_PROMPT)
+
 _TRIM_SCHEMA = {
     "type": "object",
     "properties": {"cuts": {"type": "array", "items": _CUT_SCHEMA}},
@@ -159,6 +161,8 @@ _SYSTEM_PROMPT = (
     "in the PDF (a long line, a near-empty last page, a widow line), not "
     "a guess. Return JSON matching the given schema, nothing else."
 )
+
+_TRIM_PROMPT = document_prompt(_SYSTEM_PROMPT)
 
 
 class PageFitNotAchievedError(RuntimeError):
@@ -418,10 +422,15 @@ def _plan_rewrites(
     """One look at the overflowing PDF, a list of shorter wordings in the
     shape _apply_rewrite() takes. Quality tier, unlike the cut plan: this
     one writes text that ends up on the resume."""
-    response = complete(
-        "quality",
-        [
-            system_message(_REWRITE_SYSTEM_PROMPT),
+    parsed = structured_chain(
+        _REWRITE_PROMPT,
+        tier="quality",
+        schema=_REWRITE_SCHEMA,
+        purpose="pagefit_rewrite",
+        account_id=account_id,
+        complete_fn=complete,
+    ).invoke(
+        documents(
             user_message(
                 f"Target: {target_pages} page(s). "
                 f"Current: {overflowing.pages} page(s). "
@@ -429,13 +438,10 @@ def _plan_rewrites(
                 + "Summary: " + (data.get("summary") or "(none)") + "\n"
                 + _describe_data(data),
                 files=[overflowing.pdf_bytes],
-            ),
-        ],
-        schema=_REWRITE_SCHEMA,
-        account_id=account_id,
-        purpose="pagefit_rewrite",
+            )
+        )
     )
-    planned = (response.parsed or {}).get("rewrites")
+    planned = (parsed or {}).get("rewrites")
     if not isinstance(planned, list):
         return []
     return [r for r in planned if isinstance(r, dict)][:_MAX_REWRITES]
@@ -590,23 +596,25 @@ def _plan_cuts(
     a bad resume.
     """
     wanted = max(1, min(remaining, _MAX_PLANNED_CUTS))
-    response = complete(
-        "bulk",
-        [
-            system_message(_SYSTEM_PROMPT),
+    parsed = structured_chain(
+        _TRIM_PROMPT,
+        tier="bulk",
+        schema=_TRIM_SCHEMA,
+        purpose="pagefit_trim",
+        account_id=account_id,
+        complete_fn=complete,
+    ).invoke(
+        documents(
             user_message(
                 f"Target: {target_pages} page(s). "
                 f"Current: {overflowing.pages} page(s). "
                 f"Give up to {wanted} cut(s), weakest first.\n\n"
                 + _describe_data(data),
                 files=[overflowing.pdf_bytes],
-            ),
-        ],
-        schema=_TRIM_SCHEMA,
-        account_id=account_id,
-        purpose="pagefit_trim",
+            )
+        )
     )
-    planned = (response.parsed or {}).get("cuts")
+    planned = (parsed or {}).get("cuts")
     if not isinstance(planned, list):
         return []
     return [cut for cut in planned if isinstance(cut, dict)][:wanted]

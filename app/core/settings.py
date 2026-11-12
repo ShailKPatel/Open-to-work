@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     # (app/core/tracing.py). Needs LANGSMITH_API_KEY too.
     tracing_enabled: bool = False
 
+    # Lets the profile agent (app/agent/mcp_hub.py) read the profile's own
+    # repos live through GitHub's remote MCP server, next to the app's own
+    # MCP servers. Off by default; needs GITHUB_TOKEN as well, sent to that
+    # server as a bearer token. The URL asks for the repos toolset in
+    # read-only mode, and the hub still allows only a fixed list of read
+    # tools on repos that belong to the asking profile.
+    mcp_github_enabled: bool = False
+    mcp_github_url: str = "https://api.githubcopilot.com/mcp/x/repos/readonly"
+
     # Public demo (app/api/demo.py, docs/DEPLOY.md). Off for the local app.
     demo_mode: bool = False
     demo_public_host: str = ""

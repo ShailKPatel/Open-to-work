@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 
 from pypdf import PdfReader
 
-from app.core.llm import complete, file_part, image_part, system_message
+from app.core.chains import document_prompt, documents, structured_chain
+from app.core.llm import complete, file_part, image_part
 from app.profile.month_year import normalize_or_none
 
 _SCHEMA = {
@@ -165,6 +166,8 @@ _SYSTEM_PROMPT = (
     "every claim on what the document actually shows, do not invent "
     "experience or education it doesn't contain."
 )
+
+_PROMPT = document_prompt(_SYSTEM_PROMPT)
 
 _PDF_MIME = "application/pdf"
 _IMAGE_MIMES = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
@@ -317,36 +320,26 @@ def extract_resume(
             f"can't read {mime_type or 'this file type'} yet, upload a PDF or image instead"
         )
 
-    messages = [
-        system_message(_SYSTEM_PROMPT),
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": intro},
-                attachment,
-            ],
-        },
-    ]
-
-    response = complete(
-        "quality",
-        messages,
+    parsed = structured_chain(
+        _PROMPT,
+        tier="quality",
         schema=_SCHEMA,
-        account_id=account_id,
         purpose="resume_extract",
+        account_id=account_id,
         bypass_cache=bypass_cache,
-    )
-    if response.parsed is None:
+        complete_fn=complete,
+    ).invoke(documents({"role": "user", "content": [{"type": "text", "text": intro}, attachment]}))
+    if parsed is None:
         raise ValueError("LLM response for resume extraction was not valid JSON")
 
-    tags = [str(t).strip() for t in response.parsed.get("tags", []) if str(t).strip()]
+    tags = [str(t).strip() for t in parsed.get("tags", []) if str(t).strip()]
     target_roles = [
-        str(r).strip() for r in response.parsed.get("target_roles", []) if str(r).strip()
+        str(r).strip() for r in parsed.get("target_roles", []) if str(r).strip()
     ]
-    summary = str(response.parsed.get("summary", "")).strip()
+    summary = str(parsed.get("summary", "")).strip()
 
     experiences = []
-    for item in response.parsed.get("experiences", []):
+    for item in parsed.get("experiences", []):
         company = str(item.get("company", "")).strip()
         title = str(item.get("title", "")).strip()
         if not company or not title:
@@ -367,7 +360,7 @@ def extract_resume(
         )
 
     education = []
-    for item in response.parsed.get("education", []):
+    for item in parsed.get("education", []):
         institution = str(item.get("institution", "")).strip()
         degree = str(item.get("degree", "")).strip()
         if not institution or not degree:
@@ -391,5 +384,5 @@ def extract_resume(
         summary=summary,
         experiences=experiences,
         education=education,
-        contact=_parse_contact(response.parsed.get("contact")),
+        contact=_parse_contact(parsed.get("contact")),
     )
